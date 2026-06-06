@@ -1,0 +1,17 @@
+-- 装备配置数据
+return {
+    ["木剑"] = { name = "木剑", slot = "weapon", quality = "white", desc = "新手用的木剑，聊胜于无", atk = 3, def = 0, hp = 0, level_req = 1, price_buy = 10, price_sell = 3 },
+    ["铁剑"] = { name = "铁剑", slot = "weapon", quality = "green", desc = "普通铁剑，还算锋利", atk = 8, def = 0, hp = 0, level_req = 3, price_buy = 50, price_sell = 20 },
+    ["精钢剑"] = { name = "精钢剑", slot = "weapon", quality = "blue", desc = "精心打造的钢剑，寒光闪闪", atk = 15, def = 1, hp = 0, level_req = 5, price_buy = 150, price_sell = 60 },
+    ["青云剑"] = { name = "青云剑", slot = "weapon", quality = "purple", desc = "青云宗的标志性法剑，灵气流转", atk = 28, def = 3, hp = 20, level_req = 8, price_buy = 500, price_sell = 200 },
+    ["天雷剑"] = { name = "天雷剑", slot = "weapon", quality = "gold", desc = "蕴含雷霆之力的神剑，一剑可劈山岳", atk = 50, def = 5, hp = 50, level_req = 12, price_buy = 2000, price_sell = 800 },
+    ["布衣"] = { name = "布衣", slot = "armor", quality = "white", desc = "普通的布衣，提供基本防护", atk = 0, def = 2, hp = 10, level_req = 1, price_buy = 8, price_sell = 3 },
+    ["皮甲"] = { name = "皮甲", slot = "armor", quality = "green", desc = "兽皮制成的护甲，轻便耐用", atk = 0, def = 6, hp = 20, level_req = 3, price_buy = 40, price_sell = 15 },
+    ["锁子甲"] = { name = "锁子甲", slot = "armor", quality = "blue", desc = "精铁环环相扣，防御力出众", atk = 0, def = 12, hp = 40, level_req = 5, price_buy = 120, price_sell = 50 },
+    ["玄铁战甲"] = { name = "玄铁战甲", slot = "armor", quality = "purple", desc = "玄铁打造，刀枪不入", atk = 2, def = 22, hp = 80, level_req = 8, price_buy = 400, price_sell = 160 },
+    ["天蚕宝衣"] = { name = "天蚕宝衣", slot = "armor", quality = "gold", desc = "天蚕丝织就，轻若无物却坚逾金铁", atk = 5, def = 40, hp = 150, level_req = 12, price_buy = 1800, price_sell = 720 },
+    ["灵石戒指"] = { name = "灵石戒指", slot = "accessory", quality = "green", desc = "镶嵌灵石的戒指，增强灵力", atk = 3, def = 1, hp = 15, level_req = 2, price_buy = 30, price_sell = 12 },
+    ["护身玉佩"] = { name = "护身玉佩", slot = "accessory", quality = "blue", desc = "温润的玉佩，能护主挡灾", atk = 2, def = 5, hp = 30, level_req = 4, price_buy = 100, price_sell = 40 },
+    ["乾坤袋"] = { name = "乾坤袋", slot = "accessory", quality = "purple", desc = "内有乾坤的储物袋，佩戴可增强实力", atk = 8, def = 8, hp = 50, level_req = 7, price_buy = 350, price_sell = 140 },
+    ["混元珠"] = { name = "混元珠", slot = "accessory", quality = "gold", desc = "上古神器碎片，蕴含天地之力", atk = 15, def = 15, hp = 100, level_req = 10, price_buy = 1500, price_sell = 600 },
+}

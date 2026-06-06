@@ -1,0 +1,8 @@
+-- 副本配置数据
+return {
+    ["dungeon_001"] = { name = "新手试炼场", desc = "适合初入修仙界的修士，怪物较弱", level_req = 1, waves = 3, wave_1 = "野鸡,野鸡,野兔", wave_2 = "野兔,野兔,野鸡", wave_3 = "野兔,野兔,野兔", boss = "", reward_exp = 30, reward_gold = 40, reward_items = "小回血丹:3,铁矿石:1" },
+    ["dungeon_002"] = { name = "灵狐巢穴", desc = "灵狐的巢穴，深处似乎有什么东西", level_req = 4, waves = 3, wave_1 = "灵狐,灵狐", wave_2 = "灵狐,毒蛇,灵狐", wave_3 = "毒蛇,毒蛇,灵狐", boss = "灵狐", reward_exp = 60, reward_gold = 80, reward_items = "灵狐内丹:1,中回血丹:2" },
+    ["dungeon_003"] = { name = "荒野狼穴", desc = "荒原狼的老巢，危险重重", level_req = 6, waves = 4, wave_1 = "荒原狼,荒原狼", wave_2 = "荒原狼,石头怪", wave_3 = "石头怪,石头怪,荒原狼", wave_4 = "荒原狼,荒原狼,石头怪", boss = "荒原狼", reward_exp = 100, reward_gold = 150, reward_items = "精钢剑:1,灵石碎片:2" },
+    ["dungeon_004"] = { name = "幽暗密林深处", desc = "密林最深处，妖气冲天", level_req = 8, waves = 4, wave_1 = "树妖,食人花", wave_2 = "暗影蛇,暗影蛇", wave_3 = "树妖,暗影蛇,食人花", wave_4 = "树妖,树妖,暗影蛇", boss = "树妖", reward_exp = 180, reward_gold = 250, reward_items = "护身玉佩:1,千年树根:2" },
+    ["dungeon_005"] = { name = "黑风洞", desc = "黑风妖的巢穴，只有最强的修士才能挑战", level_req = 10, waves = 5, wave_1 = "蝙蝠精,蝙蝠精,洞穴蜘蛛", wave_2 = "洞穴蜘蛛,洞穴蜘蛛,蝙蝠精", wave_3 = "蝙蝠精,洞穴蜘蛛,蝙蝠精,洞穴蜘蛛", wave_4 = "洞穴蜘蛛,洞穴蜘蛛,洞穴蜘蛛", wave_5 = "蝙蝠精,蝙蝠精,洞穴蜘蛛,蝙蝠精", boss = "黑风妖", reward_exp = 350, reward_gold = 500, reward_items = "玄铁战甲:1,妖王内丹:1,上品灵石:1" },
+}

@@ -6,6 +6,9 @@ local IniParser = require("Utils.IniParser")
 
 local DataManager = {}
 
+-- 注意：IniParser 仅用于玩家数据的云端序列化/反序列化
+-- 系统配置使用 require 加载 Lua 数据模块（确保构建系统正确打包）
+
 -- 系统数据（只读）
 DataManager.maps = {}
 DataManager.monsters = {}
@@ -25,15 +28,15 @@ DataManager.currentAccount = nil
 function DataManager.LoadSystemData()
     print("[DataManager] 加载系统配置...")
 
-    DataManager.gameConfig = IniParser.LoadFile("Config/System/game_config.ini") or {}
-    DataManager.maps = IniParser.LoadFile("Config/System/maps.ini") or {}
-    DataManager.monsters = IniParser.LoadFile("Config/System/monsters.ini") or {}
-    DataManager.npcs = IniParser.LoadFile("Config/System/npcs.ini") or {}
-    DataManager.items = IniParser.LoadFile("Config/System/items.ini") or {}
-    DataManager.equipment = IniParser.LoadFile("Config/System/equipment.ini") or {}
-    DataManager.quests = IniParser.LoadFile("Config/System/quests.ini") or {}
-    DataManager.shops = IniParser.LoadFile("Config/System/shops.ini") or {}
-    DataManager.dungeons = IniParser.LoadFile("Config/System/dungeons.ini") or {}
+    DataManager.gameConfig = require("Config.game_config")
+    DataManager.maps = require("Config.maps")
+    DataManager.monsters = require("Config.monsters")
+    DataManager.npcs = require("Config.npcs")
+    DataManager.items = require("Config.items")
+    DataManager.equipment = require("Config.equipment")
+    DataManager.quests = require("Config.quests")
+    DataManager.shops = require("Config.shops")
+    DataManager.dungeons = require("Config.dungeons")
 
     print("[DataManager] 地图数量: " .. DataManager.CountTable(DataManager.maps))
     print("[DataManager] 怪物数量: " .. DataManager.CountTable(DataManager.monsters))
@@ -116,7 +119,7 @@ function DataManager.PlayerDataToIni(playerData)
 
     -- bag section (item_1=物品名:数量)
     sections["bag"] = {}
-    sections["bag"]["count"] = #playerData.bag
+    sections["bag"]["count"] = tostring(#playerData.bag)
     for i, item in ipairs(playerData.bag) do
         sections["bag"]["item_" .. i] = item.name .. ":" .. item.count
     end
@@ -129,13 +132,13 @@ function DataManager.PlayerDataToIni(playerData)
 
     -- quests section
     sections["quests_active"] = {}
-    sections["quests_active"]["count"] = #playerData.quests.active
+    sections["quests_active"]["count"] = tostring(#playerData.quests.active)
     for i, q in ipairs(playerData.quests.active) do
         sections["quests_active"]["quest_" .. i] = q.id .. ":" .. q.progress
     end
 
     sections["quests_completed"] = {}
-    sections["quests_completed"]["count"] = #playerData.quests.completed
+    sections["quests_completed"]["count"] = tostring(#playerData.quests.completed)
     for i, qid in ipairs(playerData.quests.completed) do
         sections["quests_completed"]["quest_" .. i] = qid
     end
