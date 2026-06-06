@@ -172,11 +172,21 @@ function LoginUI.DoRegister()
     end
 
     print("[LoginUI] 注册新账号: " .. username)
-    DataManager.currentAccount = username
-    msgLabel_:SetText("")
+    msgLabel_:SetText("正在检查...")
 
-    -- 进入角色创建
-    SwitchState("create_char")
+    -- 先检查云端是否已有存档
+    DataManager.LoadFromCloud(function(playerData)
+        if playerData and playerData.account and playerData.account.username then
+            -- 云端已有账号，不允许重复注册
+            print("[LoginUI] 云端已有账号: " .. playerData.account.username)
+            msgLabel_:SetText("该设备已有账号「" .. playerData.account.username .. "」，请直接登录")
+        else
+            -- 云端无存档，可以注册
+            DataManager.currentAccount = username
+            msgLabel_:SetText("")
+            SwitchState("create_char")
+        end
+    end)
 end
 
 return LoginUI
