@@ -1,0 +1,6 @@
+{
+  "preload_groups": ["default"],
+  "groups": {
+    "default": ["**"]
+  }
+}
