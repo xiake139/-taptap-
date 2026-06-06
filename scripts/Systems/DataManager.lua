@@ -99,14 +99,23 @@ function DataManager.CreateNewPlayer(username, charName)
     return playerData
 end
 
---- 将玩家数据序列化为 INI sections（中文键名）
----@param playerData table
----@return table sections
-function DataManager.PlayerDataToIni(playerData)
-    local sections = {}
+--- 获取玩家云端存储路径前缀
+---@param username string
+---@return string
+function DataManager.GetCloudPath(username)
+    return "player/" .. username .. "/"
+end
 
-    -- 账号配置
-    sections["账号配置"] = {}
+--- 将玩家数据序列化为多个 INI 文件内容
+--- 每个文件对应一个云端 key: player/账号/文件名.ini
+---@param playerData table
+---@return table<string, string> fileMap {文件名 = INI内容}
+function DataManager.PlayerDataToFiles(playerData)
+    local files = {}
+
+    -- 账号配置.ini
+    local accountSections = {}
+    accountSections["账号配置"] = {}
     local accountMap = {
         username = "用户名",
         char_name = "角色名",
@@ -114,11 +123,13 @@ function DataManager.PlayerDataToIni(playerData)
     }
     for k, v in pairs(playerData.account) do
         local zhKey = accountMap[k] or k
-        sections["账号配置"][zhKey] = tostring(v)
+        accountSections["账号配置"][zhKey] = tostring(v)
     end
+    files["账号配置.ini"] = IniParser.Serialize(accountSections)
 
-    -- 角色属性
-    sections["角色属性"] = {}
+    -- 状态数据.ini
+    local statusSections = {}
+    statusSections["角色属性"] = {}
     local statusMap = {
         name = "姓名",
         level = "等级",
@@ -135,43 +146,48 @@ function DataManager.PlayerDataToIni(playerData)
     }
     for k, v in pairs(playerData.status) do
         local zhKey = statusMap[k] or k
-        sections["角色属性"][zhKey] = tostring(v)
+        statusSections["角色属性"][zhKey] = tostring(v)
     end
+    files["状态数据.ini"] = IniParser.Serialize(statusSections)
 
-    -- 背包物品
-    sections["背包物品"] = {}
-    sections["背包物品"]["数量"] = tostring(#playerData.bag)
+    -- 背包数据.ini
+    local bagSections = {}
+    bagSections["背包物品"] = {}
+    bagSections["背包物品"]["数量"] = tostring(#playerData.bag)
     for i, item in ipairs(playerData.bag) do
-        sections["背包物品"]["物品_" .. i] = item.name .. ":" .. item.count
+        bagSections["背包物品"]["物品_" .. i] = item.name .. ":" .. item.count
     end
+    files["背包数据.ini"] = IniParser.Serialize(bagSections)
 
-    -- 装备栏
-    sections["装备栏"] = {}
-    sections["装备栏"]["武器"] = playerData.equip.weapon or ""
-    sections["装备栏"]["防具"] = playerData.equip.armor or ""
-    sections["装备栏"]["饰品"] = playerData.equip.accessory or ""
+    -- 装备数据.ini
+    local equipSections = {}
+    equipSections["装备栏"] = {}
+    equipSections["装备栏"]["武器"] = playerData.equip.weapon or ""
+    equipSections["装备栏"]["防具"] = playerData.equip.armor or ""
+    equipSections["装备栏"]["饰品"] = playerData.equip.accessory or ""
+    files["装备数据.ini"] = IniParser.Serialize(equipSections)
 
-    -- 进行中任务
-    sections["进行中任务"] = {}
-    sections["进行中任务"]["数量"] = tostring(#playerData.quests.active)
+    -- 任务数据.ini
+    local questSections = {}
+    questSections["进行中任务"] = {}
+    questSections["进行中任务"]["数量"] = tostring(#playerData.quests.active)
     for i, q in ipairs(playerData.quests.active) do
-        sections["进行中任务"]["任务_" .. i] = q.id .. ":" .. q.progress
+        questSections["进行中任务"]["任务_" .. i] = q.id .. ":" .. q.progress
     end
-
-    -- 已完成任务
-    sections["已完成任务"] = {}
-    sections["已完成任务"]["数量"] = tostring(#playerData.quests.completed)
+    questSections["已完成任务"] = {}
+    questSections["已完成任务"]["数量"] = tostring(#playerData.quests.completed)
     for i, qid in ipairs(playerData.quests.completed) do
-        sections["已完成任务"]["任务_" .. i] = qid
+        questSections["已完成任务"]["任务_" .. i] = qid
     end
+    files["任务数据.ini"] = IniParser.Serialize(questSections)
 
-    return sections
+    return files
 end
 
---- 从 INI sections 反序列化为玩家数据（中文键名）
----@param sections table
+--- 从多个 INI 文件内容反序列化为玩家数据
+---@param fileMap table<string, string> {文件名 = INI内容}
 ---@return table playerData
-function DataManager.IniToPlayerData(sections)
+function DataManager.FilesToPlayerData(fileMap)
     local playerData = {
         account = {},
         status = {},
@@ -201,70 +217,84 @@ function DataManager.IniToPlayerData(sections)
         ["当前地图"] = "current_map",
     }
 
-    -- 账号配置（兼容新旧格式）
-    local accSection = sections["账号配置"] or sections["account"]
-    if accSection then
-        for k, v in pairs(accSection) do
-            local internalKey = accountReverseMap[k] or k
-            playerData.account[internalKey] = v
+    -- 解析 账号配置.ini
+    if fileMap["账号配置.ini"] then
+        local sections = IniParser.Parse(fileMap["账号配置.ini"])
+        local accSection = sections["账号配置"] or sections["account"]
+        if accSection then
+            for k, v in pairs(accSection) do
+                local internalKey = accountReverseMap[k] or k
+                playerData.account[internalKey] = v
+            end
         end
     end
 
-    -- 角色属性
-    local statusSection = sections["角色属性"] or sections["status"]
-    if statusSection then
-        for k, v in pairs(statusSection) do
-            local internalKey = statusReverseMap[k] or k
-            playerData.status[internalKey] = v
+    -- 解析 状态数据.ini
+    if fileMap["状态数据.ini"] then
+        local sections = IniParser.Parse(fileMap["状态数据.ini"])
+        local statusSection = sections["角色属性"] or sections["status"]
+        if statusSection then
+            for k, v in pairs(statusSection) do
+                local internalKey = statusReverseMap[k] or k
+                playerData.status[internalKey] = v
+            end
         end
     end
 
-    -- 背包物品
-    local bagSection = sections["背包物品"] or sections["bag"]
-    if bagSection then
-        local count = tonumber(bagSection["数量"] or bagSection["count"]) or 0
-        for i = 1, count do
-            local raw = bagSection["物品_" .. i] or bagSection["item_" .. i]
-            if raw then
-                local name, cnt = raw:match("^(.+):(%d+)$")
-                if name then
-                    table.insert(playerData.bag, { name = name, count = tonumber(cnt) or 1 })
+    -- 解析 背包数据.ini
+    if fileMap["背包数据.ini"] then
+        local sections = IniParser.Parse(fileMap["背包数据.ini"])
+        local bagSection = sections["背包物品"] or sections["bag"]
+        if bagSection then
+            local count = tonumber(bagSection["数量"] or bagSection["count"]) or 0
+            for i = 1, count do
+                local raw = bagSection["物品_" .. i] or bagSection["item_" .. i]
+                if raw then
+                    local name, cnt = raw:match("^(.+):(%d+)$")
+                    if name then
+                        table.insert(playerData.bag, { name = name, count = tonumber(cnt) or 1 })
+                    end
                 end
             end
         end
     end
 
-    -- 装备栏
-    local equipSection = sections["装备栏"] or sections["equip"]
-    if equipSection then
-        playerData.equip.weapon = equipSection["武器"] or equipSection["weapon"] or ""
-        playerData.equip.armor = equipSection["防具"] or equipSection["armor"] or ""
-        playerData.equip.accessory = equipSection["饰品"] or equipSection["accessory"] or ""
-    end
-
-    -- 进行中任务
-    local activeSection = sections["进行中任务"] or sections["quests_active"]
-    if activeSection then
-        local count = tonumber(activeSection["数量"] or activeSection["count"]) or 0
-        for i = 1, count do
-            local raw = activeSection["任务_" .. i] or activeSection["quest_" .. i]
-            if raw then
-                local id, progress = raw:match("^(.+):(%d+)$")
-                if id then
-                    table.insert(playerData.quests.active, { id = id, progress = tonumber(progress) or 0 })
-                end
-            end
+    -- 解析 装备数据.ini
+    if fileMap["装备数据.ini"] then
+        local sections = IniParser.Parse(fileMap["装备数据.ini"])
+        local equipSection = sections["装备栏"] or sections["equip"]
+        if equipSection then
+            playerData.equip.weapon = equipSection["武器"] or equipSection["weapon"] or ""
+            playerData.equip.armor = equipSection["防具"] or equipSection["armor"] or ""
+            playerData.equip.accessory = equipSection["饰品"] or equipSection["accessory"] or ""
         end
     end
 
-    -- 已完成任务
-    local completedSection = sections["已完成任务"] or sections["quests_completed"]
-    if completedSection then
-        local count = tonumber(completedSection["数量"] or completedSection["count"]) or 0
-        for i = 1, count do
-            local qid = completedSection["任务_" .. i] or completedSection["quest_" .. i]
-            if qid then
-                table.insert(playerData.quests.completed, qid)
+    -- 解析 任务数据.ini
+    if fileMap["任务数据.ini"] then
+        local sections = IniParser.Parse(fileMap["任务数据.ini"])
+        local activeSection = sections["进行中任务"] or sections["quests_active"]
+        if activeSection then
+            local count = tonumber(activeSection["数量"] or activeSection["count"]) or 0
+            for i = 1, count do
+                local raw = activeSection["任务_" .. i] or activeSection["quest_" .. i]
+                if raw then
+                    local id, progress = raw:match("^(.+):(%d+)$")
+                    if id then
+                        table.insert(playerData.quests.active, { id = id, progress = tonumber(progress) or 0 })
+                    end
+                end
+            end
+        end
+
+        local completedSection = sections["已完成任务"] or sections["quests_completed"]
+        if completedSection then
+            local count = tonumber(completedSection["数量"] or completedSection["count"]) or 0
+            for i = 1, count do
+                local qid = completedSection["任务_" .. i] or completedSection["quest_" .. i]
+                if qid then
+                    table.insert(playerData.quests.completed, qid)
+                end
             end
         end
     end
@@ -272,7 +302,11 @@ function DataManager.IniToPlayerData(sections)
     return playerData
 end
 
---- 保存玩家数据到云端
+--- 云端文件名列表
+DataManager.CLOUD_FILES = { "账号配置.ini", "状态数据.ini", "背包数据.ini", "装备数据.ini", "任务数据.ini" }
+
+--- 保存玩家数据到云端（拆分为多个文件）
+--- 存储结构: player/账号名/账号配置.ini, player/账号名/状态数据.ini, ...
 ---@param playerData table
 ---@param callback function|nil 完成回调
 function DataManager.SaveToCloud(playerData, callback)
@@ -282,12 +316,19 @@ function DataManager.SaveToCloud(playerData, callback)
         return
     end
 
-    local sections = DataManager.PlayerDataToIni(playerData)
-    local iniContent = IniParser.Serialize(sections)
+    local username = playerData.account.username or "unknown"
+    local path = DataManager.GetCloudPath(username)
+    local files = DataManager.PlayerDataToFiles(playerData)
 
-    clientCloud:Set("player_save", iniContent, {
+    print("[DataManager] 保存到云端: " .. path)
+
+    local batch = clientCloud:BatchSet()
+    for fileName, content in pairs(files) do
+        batch:Set(path .. fileName, content)
+    end
+    batch:Save("保存玩家数据", {
         ok = function()
-            print("[DataManager] 云端保存成功")
+            print("[DataManager] 云端保存成功 (" .. path .. ")")
             if callback then callback(true) end
         end,
         error = function(code, reason)
@@ -297,27 +338,103 @@ function DataManager.SaveToCloud(playerData, callback)
     })
 end
 
---- 从云端加载玩家数据
+--- 从云端加载玩家数据（批量读取多个文件）
 ---@param callback function(playerData|nil)
-function DataManager.LoadFromCloud(callback)
+---@param username string|nil 指定账号名（可选，默认用 currentAccount）
+function DataManager.LoadFromCloud(callback, username)
     if not clientCloud then
         print("[DataManager] clientCloud 不可用")
         callback(nil)
         return
     end
 
-    clientCloud:Get("player_save", {
-        ok = function(values, iscores)
-            local iniContent = values.player_save
-            if iniContent and type(iniContent) == "string" and iniContent ~= "" then
-                local sections = IniParser.Parse(iniContent)
-                local playerData = DataManager.IniToPlayerData(sections)
-                print("[DataManager] 云端加载成功")
-                callback(playerData)
-            else
-                print("[DataManager] 云端无存档")
+    local name = username or DataManager.currentAccount
+    if not name or name == "" then
+        -- 没有指定账号，尝试用通配方式检查是否有存档
+        -- 先尝试读取旧格式（兼容）
+        clientCloud:Get("player_save", {
+            ok = function(values, iscores)
+                local iniContent = values.player_save
+                if iniContent and type(iniContent) == "string" and iniContent ~= "" then
+                    -- 旧格式存档，迁移解析
+                    print("[DataManager] 检测到旧格式存档，进行兼容加载")
+                    local sections = IniParser.Parse(iniContent)
+                    local accSection = sections["账号配置"] or sections["account"]
+                    if accSection then
+                        local oldName = accSection["用户名"] or accSection["username"]
+                        if oldName then
+                            -- 用旧存档的账号名加载新格式
+                            DataManager.LoadFromCloud(callback, oldName)
+                            return
+                        end
+                    end
+                    -- 直接用旧格式解析
+                    local fileMap = { ["账号配置.ini"] = iniContent, ["状态数据.ini"] = iniContent,
+                        ["背包数据.ini"] = iniContent, ["装备数据.ini"] = iniContent, ["任务数据.ini"] = iniContent }
+                    local playerData = DataManager.FilesToPlayerData(fileMap)
+                    callback(playerData)
+                else
+                    print("[DataManager] 云端无存档")
+                    callback(nil)
+                end
+            end,
+            error = function(code, reason)
+                print("[DataManager] 云端加载失败: " .. tostring(reason))
                 callback(nil)
+            end,
+        })
+        return
+    end
+
+    local path = DataManager.GetCloudPath(name)
+    print("[DataManager] 从云端加载: " .. path)
+
+    local batch = clientCloud:BatchGet()
+    for _, fileName in ipairs(DataManager.CLOUD_FILES) do
+        batch:Key(path .. fileName)
+    end
+    batch:Fetch({
+        ok = function(values, iscores)
+            -- 检查是否有数据
+            local firstKey = path .. "账号配置.ini"
+            local accountContent = values[firstKey]
+            if not accountContent or accountContent == "" then
+                -- 新格式无数据，尝试旧格式兼容
+                clientCloud:Get("player_save", {
+                    ok = function(oldValues, _)
+                        local iniContent = oldValues.player_save
+                        if iniContent and type(iniContent) == "string" and iniContent ~= "" then
+                            print("[DataManager] 兼容加载旧格式存档")
+                            local sections = IniParser.Parse(iniContent)
+                            -- 旧格式是合并的，每个文件都用同一份数据
+                            local fileMap = { ["账号配置.ini"] = iniContent, ["状态数据.ini"] = iniContent,
+                                ["背包数据.ini"] = iniContent, ["装备数据.ini"] = iniContent, ["任务数据.ini"] = iniContent }
+                            local playerData = DataManager.FilesToPlayerData(fileMap)
+                            callback(playerData)
+                        else
+                            print("[DataManager] 云端无存档")
+                            callback(nil)
+                        end
+                    end,
+                    error = function()
+                        callback(nil)
+                    end,
+                })
+                return
             end
+
+            -- 新格式：组装文件映射
+            local fileMap = {}
+            for _, fileName in ipairs(DataManager.CLOUD_FILES) do
+                local key = path .. fileName
+                if values[key] and values[key] ~= "" then
+                    fileMap[fileName] = values[key]
+                end
+            end
+
+            local playerData = DataManager.FilesToPlayerData(fileMap)
+            print("[DataManager] 云端加载成功 (" .. path .. ")")
+            callback(playerData)
         end,
         error = function(code, reason)
             print("[DataManager] 云端加载失败: " .. tostring(reason))

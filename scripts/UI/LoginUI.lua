@@ -132,21 +132,23 @@ function LoginUI.DoLogin()
     end
 
     print("[LoginUI] 尝试登录: " .. username)
+    msgLabel_:SetText("正在登录...")
 
-    -- 从云端验证账号
+    -- 从云端验证账号（传入用户名构建路径 player/用户名/）
+    DataManager.currentAccount = username
     DataManager.LoadFromCloud(function(playerData)
         if playerData and playerData.account and playerData.account.username == username then
             -- 登录成功，加载玩家数据
             DataManager.playerData = playerData
-            DataManager.currentAccount = username
             print("[LoginUI] 登录成功!")
             msgLabel_:SetText("")
             SwitchState("game")
         else
             -- 云端无此账号数据，提示注册
+            DataManager.currentAccount = nil
             msgLabel_:SetText("账号不存在或密码错误，请注册")
         end
-    end)
+    end, username)
 end
 
 --- 执行注册
@@ -174,19 +176,19 @@ function LoginUI.DoRegister()
     print("[LoginUI] 注册新账号: " .. username)
     msgLabel_:SetText("正在检查...")
 
-    -- 先检查云端是否已有存档
+    -- 先检查云端该账号是否已有存档
     DataManager.LoadFromCloud(function(playerData)
         if playerData and playerData.account and playerData.account.username then
-            -- 云端已有账号，不允许重复注册
+            -- 云端已有此账号，不允许重复注册
             print("[LoginUI] 云端已有账号: " .. playerData.account.username)
-            msgLabel_:SetText("该设备已有账号「" .. playerData.account.username .. "」，请直接登录")
+            msgLabel_:SetText("账号「" .. playerData.account.username .. "」已存在，请直接登录")
         else
             -- 云端无存档，可以注册
             DataManager.currentAccount = username
             msgLabel_:SetText("")
             SwitchState("create_char")
         end
-    end)
+    end, username)
 end
 
 return LoginUI
