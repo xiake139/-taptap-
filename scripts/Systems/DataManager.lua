@@ -99,54 +99,76 @@ function DataManager.CreateNewPlayer(username, charName)
     return playerData
 end
 
---- 将玩家数据序列化为 INI sections
+--- 将玩家数据序列化为 INI sections（中文键名）
 ---@param playerData table
 ---@return table sections
 function DataManager.PlayerDataToIni(playerData)
     local sections = {}
 
-    -- account section
-    sections["account"] = {}
+    -- 账号配置
+    sections["账号配置"] = {}
+    local accountMap = {
+        username = "用户名",
+        char_name = "角色名",
+        created_time = "创建时间",
+    }
     for k, v in pairs(playerData.account) do
-        sections["account"][k] = tostring(v)
+        local zhKey = accountMap[k] or k
+        sections["账号配置"][zhKey] = tostring(v)
     end
 
-    -- status section
-    sections["status"] = {}
+    -- 角色属性
+    sections["角色属性"] = {}
+    local statusMap = {
+        name = "姓名",
+        level = "等级",
+        exp = "经验",
+        hp = "生命值",
+        max_hp = "最大生命",
+        mp = "法力值",
+        max_mp = "最大法力",
+        atk = "攻击力",
+        def = "防御力",
+        gold = "金币",
+        cultivation = "境界",
+        current_map = "当前地图",
+    }
     for k, v in pairs(playerData.status) do
-        sections["status"][k] = tostring(v)
+        local zhKey = statusMap[k] or k
+        sections["角色属性"][zhKey] = tostring(v)
     end
 
-    -- bag section (item_1=物品名:数量)
-    sections["bag"] = {}
-    sections["bag"]["count"] = tostring(#playerData.bag)
+    -- 背包物品
+    sections["背包物品"] = {}
+    sections["背包物品"]["数量"] = tostring(#playerData.bag)
     for i, item in ipairs(playerData.bag) do
-        sections["bag"]["item_" .. i] = item.name .. ":" .. item.count
+        sections["背包物品"]["物品_" .. i] = item.name .. ":" .. item.count
     end
 
-    -- equip section
-    sections["equip"] = {}
-    sections["equip"]["weapon"] = playerData.equip.weapon or ""
-    sections["equip"]["armor"] = playerData.equip.armor or ""
-    sections["equip"]["accessory"] = playerData.equip.accessory or ""
+    -- 装备栏
+    sections["装备栏"] = {}
+    sections["装备栏"]["武器"] = playerData.equip.weapon or ""
+    sections["装备栏"]["防具"] = playerData.equip.armor or ""
+    sections["装备栏"]["饰品"] = playerData.equip.accessory or ""
 
-    -- quests section
-    sections["quests_active"] = {}
-    sections["quests_active"]["count"] = tostring(#playerData.quests.active)
+    -- 进行中任务
+    sections["进行中任务"] = {}
+    sections["进行中任务"]["数量"] = tostring(#playerData.quests.active)
     for i, q in ipairs(playerData.quests.active) do
-        sections["quests_active"]["quest_" .. i] = q.id .. ":" .. q.progress
+        sections["进行中任务"]["任务_" .. i] = q.id .. ":" .. q.progress
     end
 
-    sections["quests_completed"] = {}
-    sections["quests_completed"]["count"] = tostring(#playerData.quests.completed)
+    -- 已完成任务
+    sections["已完成任务"] = {}
+    sections["已完成任务"]["数量"] = tostring(#playerData.quests.completed)
     for i, qid in ipairs(playerData.quests.completed) do
-        sections["quests_completed"]["quest_" .. i] = qid
+        sections["已完成任务"]["任务_" .. i] = qid
     end
 
     return sections
 end
 
---- 从 INI sections 反序列化为玩家数据
+--- 从 INI sections 反序列化为玩家数据（中文键名）
 ---@param sections table
 ---@return table playerData
 function DataManager.IniToPlayerData(sections)
@@ -158,23 +180,51 @@ function DataManager.IniToPlayerData(sections)
         quests = { active = {}, completed = {} },
     }
 
-    -- account
-    if sections["account"] then
-        playerData.account = sections["account"]
-    end
+    -- 中文键名 → 内部键名映射
+    local accountReverseMap = {
+        ["用户名"] = "username",
+        ["角色名"] = "char_name",
+        ["创建时间"] = "created_time",
+    }
+    local statusReverseMap = {
+        ["姓名"] = "name",
+        ["等级"] = "level",
+        ["经验"] = "exp",
+        ["生命值"] = "hp",
+        ["最大生命"] = "max_hp",
+        ["法力值"] = "mp",
+        ["最大法力"] = "max_mp",
+        ["攻击力"] = "atk",
+        ["防御力"] = "def",
+        ["金币"] = "gold",
+        ["境界"] = "cultivation",
+        ["当前地图"] = "current_map",
+    }
 
-    -- status (convert numbers)
-    if sections["status"] then
-        for k, v in pairs(sections["status"]) do
-            playerData.status[k] = v
+    -- 账号配置（兼容新旧格式）
+    local accSection = sections["账号配置"] or sections["account"]
+    if accSection then
+        for k, v in pairs(accSection) do
+            local internalKey = accountReverseMap[k] or k
+            playerData.account[internalKey] = v
         end
     end
 
-    -- bag
-    if sections["bag"] then
-        local count = tonumber(sections["bag"]["count"]) or 0
+    -- 角色属性
+    local statusSection = sections["角色属性"] or sections["status"]
+    if statusSection then
+        for k, v in pairs(statusSection) do
+            local internalKey = statusReverseMap[k] or k
+            playerData.status[internalKey] = v
+        end
+    end
+
+    -- 背包物品
+    local bagSection = sections["背包物品"] or sections["bag"]
+    if bagSection then
+        local count = tonumber(bagSection["数量"] or bagSection["count"]) or 0
         for i = 1, count do
-            local raw = sections["bag"]["item_" .. i]
+            local raw = bagSection["物品_" .. i] or bagSection["item_" .. i]
             if raw then
                 local name, cnt = raw:match("^(.+):(%d+)$")
                 if name then
@@ -184,18 +234,20 @@ function DataManager.IniToPlayerData(sections)
         end
     end
 
-    -- equip
-    if sections["equip"] then
-        playerData.equip.weapon = sections["equip"]["weapon"] or ""
-        playerData.equip.armor = sections["equip"]["armor"] or ""
-        playerData.equip.accessory = sections["equip"]["accessory"] or ""
+    -- 装备栏
+    local equipSection = sections["装备栏"] or sections["equip"]
+    if equipSection then
+        playerData.equip.weapon = equipSection["武器"] or equipSection["weapon"] or ""
+        playerData.equip.armor = equipSection["防具"] or equipSection["armor"] or ""
+        playerData.equip.accessory = equipSection["饰品"] or equipSection["accessory"] or ""
     end
 
-    -- quests active
-    if sections["quests_active"] then
-        local count = tonumber(sections["quests_active"]["count"]) or 0
+    -- 进行中任务
+    local activeSection = sections["进行中任务"] or sections["quests_active"]
+    if activeSection then
+        local count = tonumber(activeSection["数量"] or activeSection["count"]) or 0
         for i = 1, count do
-            local raw = sections["quests_active"]["quest_" .. i]
+            local raw = activeSection["任务_" .. i] or activeSection["quest_" .. i]
             if raw then
                 local id, progress = raw:match("^(.+):(%d+)$")
                 if id then
@@ -205,11 +257,12 @@ function DataManager.IniToPlayerData(sections)
         end
     end
 
-    -- quests completed
-    if sections["quests_completed"] then
-        local count = tonumber(sections["quests_completed"]["count"]) or 0
+    -- 已完成任务
+    local completedSection = sections["已完成任务"] or sections["quests_completed"]
+    if completedSection then
+        local count = tonumber(completedSection["数量"] or completedSection["count"]) or 0
         for i = 1, count do
-            local qid = sections["quests_completed"]["quest_" .. i]
+            local qid = completedSection["任务_" .. i] or completedSection["quest_" .. i]
             if qid then
                 table.insert(playerData.quests.completed, qid)
             end

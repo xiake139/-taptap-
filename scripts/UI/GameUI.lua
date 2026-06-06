@@ -380,7 +380,7 @@ function GameUI.AddLog(msg)
     -- 限制最多5条日志
     local children = logPanel_:GetChildren()
     if children and #children >= 5 then
-        logPanel_:RemoveChildAt(0)
+        logPanel_:RemoveChild(children[1])
     end
 
     logPanel_:AddChild(UI.Label {
