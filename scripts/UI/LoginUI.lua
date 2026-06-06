@@ -137,17 +137,27 @@ function LoginUI.DoLogin()
     -- 从云端验证账号（传入用户名构建路径 player/用户名/）
     DataManager.currentAccount = username
     DataManager.LoadFromCloud(function(playerData)
-        if playerData and playerData.account and playerData.account.username == username then
-            -- 登录成功，加载玩家数据
-            DataManager.playerData = playerData
-            print("[LoginUI] 登录成功!")
-            msgLabel_:SetText("")
-            SwitchState("game")
-        else
-            -- 云端无此账号数据，提示注册
+        if not playerData or not playerData.account or playerData.account.username ~= username then
+            -- 云端无此账号
             DataManager.currentAccount = nil
-            msgLabel_:SetText("账号不存在或密码错误，请注册")
+            msgLabel_:SetText("账号不存在，请先注册")
+            return
         end
+
+        -- 验证密码
+        local savedPassword = playerData.account.password or ""
+        if savedPassword ~= "" and savedPassword ~= password then
+            DataManager.currentAccount = nil
+            msgLabel_:SetText("密码错误")
+            return
+        end
+
+        -- 登录成功
+        DataManager.playerData = playerData
+        DataManager.currentPassword = password
+        print("[LoginUI] 登录成功!")
+        msgLabel_:SetText("")
+        SwitchState("game")
     end, username)
 end
 
@@ -185,6 +195,7 @@ function LoginUI.DoRegister()
         else
             -- 云端无存档，可以注册
             DataManager.currentAccount = username
+            DataManager.currentPassword = password
             msgLabel_:SetText("")
             SwitchState("create_char")
         end

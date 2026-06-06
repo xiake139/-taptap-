@@ -23,6 +23,7 @@ DataManager.gameConfig = {}
 -- 当前玩家数据
 DataManager.playerData = nil
 DataManager.currentAccount = nil
+DataManager.currentPassword = nil
 
 --- 加载所有系统配置
 function DataManager.LoadSystemData()
@@ -67,6 +68,7 @@ function DataManager.CreateNewPlayer(username, charName)
     local playerData = {
         account = {
             username = username,
+            password = DataManager.currentPassword or "",
             char_name = charName,
             created_time = os.time and os.time() or 0,
         },
@@ -118,6 +120,7 @@ function DataManager.PlayerDataToFiles(playerData)
     accountSections["账号配置"] = {}
     local accountMap = {
         username = "用户名",
+        password = "密码",
         char_name = "角色名",
         created_time = "创建时间",
     }
@@ -199,6 +202,7 @@ function DataManager.FilesToPlayerData(fileMap)
     -- 中文键名 → 内部键名映射
     local accountReverseMap = {
         ["用户名"] = "username",
+        ["密码"] = "password",
         ["角色名"] = "char_name",
         ["创建时间"] = "created_time",
     }
@@ -369,8 +373,9 @@ function DataManager.LoadFromCloud(callback, username)
                         end
                     end
                     -- 直接用旧格式解析
-                    local fileMap = { ["账号配置.ini"] = iniContent, ["状态数据.ini"] = iniContent,
-                        ["背包数据.ini"] = iniContent, ["装备数据.ini"] = iniContent, ["任务数据.ini"] = iniContent }
+                    local content = tostring(iniContent)
+                    local fileMap = { ["账号配置.ini"] = content, ["状态数据.ini"] = content,
+                        ["背包数据.ini"] = content, ["装备数据.ini"] = content, ["任务数据.ini"] = content }
                     local playerData = DataManager.FilesToPlayerData(fileMap)
                     callback(playerData)
                 else
@@ -404,13 +409,21 @@ function DataManager.LoadFromCloud(callback, username)
                     ok = function(oldValues, _)
                         local iniContent = oldValues.player_save
                         if iniContent and type(iniContent) == "string" and iniContent ~= "" then
-                            print("[DataManager] 兼容加载旧格式存档")
+                            -- 旧格式存档：必须验证用户名一致才返回
                             local sections = IniParser.Parse(iniContent)
-                            -- 旧格式是合并的，每个文件都用同一份数据
-                            local fileMap = { ["账号配置.ini"] = iniContent, ["状态数据.ini"] = iniContent,
-                                ["背包数据.ini"] = iniContent, ["装备数据.ini"] = iniContent, ["任务数据.ini"] = iniContent }
-                            local playerData = DataManager.FilesToPlayerData(fileMap)
-                            callback(playerData)
+                            local accSection = sections["账号配置"] or sections["account"]
+                            local oldUsername = accSection and (accSection["用户名"] or accSection["username"])
+                            if oldUsername and oldUsername == name then
+                                print("[DataManager] 兼容加载旧格式存档: " .. name)
+                                local fileMap = { ["账号配置.ini"] = iniContent, ["状态数据.ini"] = iniContent,
+                                    ["背包数据.ini"] = iniContent, ["装备数据.ini"] = iniContent, ["任务数据.ini"] = iniContent }
+                                local playerData = DataManager.FilesToPlayerData(fileMap)
+                                callback(playerData)
+                            else
+                                -- 旧格式用户名不匹配，视为无此账号
+                                print("[DataManager] 旧格式用户名不匹配 (需要:" .. name .. " 实际:" .. tostring(oldUsername) .. ")")
+                                callback(nil)
+                            end
                         else
                             print("[DataManager] 云端无存档")
                             callback(nil)
