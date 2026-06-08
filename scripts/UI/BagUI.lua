@@ -7,6 +7,14 @@ local BigNum = require("Utils.BigNum")
 
 local BagUI = {}
 
+--- 中文部位→英文key映射
+local SLOT_CN_TO_KEY = {
+    ["武器"] = "weapon", ["头盔"] = "helmet", ["铠甲"] = "armor", ["护腕"] = "bracer",
+    ["腰带"] = "belt", ["战靴"] = "boots", ["披风"] = "cloak", ["项链"] = "necklace",
+    ["戒指"] = "ring", ["法宝"] = "artifact", ["坐骑"] = "mount", ["灵翼"] = "wings",
+    ["护盾"] = "shield", ["防具"] = "armor", ["饰品"] = "accessory",
+}
+
 local parentRef_ = nil
 
 --- 渲染背包面板
@@ -317,7 +325,8 @@ function BagUI.EquipItem(index)
     local itemData = DataManager.GetItem(item.name)
     if not itemData or not itemData.slot then return end
 
-    local slot = itemData.slot
+    -- 将中文部位名转换为英文key
+    local slot = SLOT_CN_TO_KEY[itemData.slot] or itemData.slot
 
     -- 卸下旧装备
     local oldEquip = player.equip[slot]

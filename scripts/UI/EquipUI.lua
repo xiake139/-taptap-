@@ -263,7 +263,7 @@ function EquipUI.EquipFromBag(bagIndex)
         table.remove(player.bag, bagIndex)
     end
 
-    print("[EquipUI] 装备了 " .. item.name)
+    print("[EquipUI] 装备了 " .. item.name .. " → " .. slot)
     DataManager.SaveToCloud(player)
     EquipUI.Refresh()
 end

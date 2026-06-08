@@ -702,7 +702,11 @@ function DataManager.FilesToPlayerData(fileMap)
         account = {},
         status = {},
         bag = {},
-        equip = { weapon = "", armor = "", accessory = "" },
+        equip = {
+            weapon = "", helmet = "", armor = "", bracer = "",
+            belt = "", boots = "", cloak = "", necklace = "",
+            ring = "", artifact = "", mount = "", wings = "", shield = "",
+        },
         quests = { active = {}, completed = {} },
     }
 
