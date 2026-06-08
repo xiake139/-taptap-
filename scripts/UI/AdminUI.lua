@@ -2989,6 +2989,63 @@ end
 
 --- 一键部署：将地图、怪物、NPC、商店等数据关联在一起
 local function DeployAll()
+    local changes = 0
+
+    -- 0a. 如果地图数据中没有"新手村"，自动添加
+    if not DataManager.maps["新手村"] then
+        DataManager.maps["新手村"] = {
+            name = "新手村",
+            desc = "修仙者初入仙途的起始之地，灵气稀薄但安全祥和。",
+            monsters = "",
+            npcs = "",
+            front = "",
+            back = "",
+            left = "",
+            right = "",
+            level_req = "0",
+        }
+        changes = changes + 1
+    end
+
+    -- 0b. 如果没有主线任务，自动生成新手主线任务链
+    local hasMainQuest = false
+    for _, q in pairs(DataManager.quests) do
+        if q.type == "主线" then
+            hasMainQuest = true
+            break
+        end
+    end
+    if not hasMainQuest then
+        -- 生成一组适合新手的主线任务
+        local mainQuests = {
+            { id = "main_01", name = "初入仙途", desc = "与村长对话，了解修仙世界的基本知识。", target_type = "talk", target_name = "村长", target_count = "1", reward_exp = "50", reward_gold = "100", next_quest = "main_02" },
+            { id = "main_02", name = "初试身手", desc = "击败新手村附近的野兽，证明你的实力。", target_type = "kill", target_name = "", target_count = "3", reward_exp = "100", reward_gold = "150", next_quest = "main_03" },
+            { id = "main_03", name = "采集灵草", desc = "为村中药师采集灵草，学习基础炼丹知识。", target_type = "collect", target_name = "灵草", target_count = "5", reward_exp = "150", reward_gold = "200", next_quest = "main_04" },
+            { id = "main_04", name = "修炼入门", desc = "通过冥想提升修为，突破练气期一层。", target_type = "level", target_name = "", target_count = "2", reward_exp = "200", reward_gold = "300", next_quest = "main_05" },
+            { id = "main_05", name = "踏上征途", desc = "告别新手村，前往更广阔的修仙世界探索。", target_type = "explore", target_name = "", target_count = "1", reward_exp = "300", reward_gold = "500", next_quest = "" },
+        }
+        -- 如果有怪物数据，给第二个任务设置具体击杀目标
+        for id in pairs(DataManager.monsters) do
+            mainQuests[2].target_name = id
+            break
+        end
+        for _, q in ipairs(mainQuests) do
+            DataManager.quests[q.id] = {
+                name = q.name,
+                type = "主线",
+                desc = q.desc,
+                target_type = q.target_type,
+                target_name = q.target_name,
+                target_count = q.target_count,
+                reward_exp = q.reward_exp,
+                reward_gold = q.reward_gold,
+                reward_items = "",
+                next_quest = q.next_quest,
+            }
+        end
+        changes = changes + 5
+    end
+
     -- 收集所有已有数据名
     local mapNames = {}
     for id in pairs(DataManager.maps) do table.insert(mapNames, id) end
@@ -3004,8 +3061,6 @@ local function DeployAll()
     for id in pairs(DataManager.shops) do table.insert(shopIds, id) end
 
     if #mapNames == 0 then return 0 end
-
-    local changes = 0
 
     -- 1. 给每个地图分配怪物（如果没有怪物）
     if #monsterNames > 0 then
@@ -3177,19 +3232,17 @@ local function DeployAll()
         end
     end
 
-    -- 11. 检查玩家起始地是否有效，如果不存在于地图数据中则更新
+    -- 11. 检查玩家起始地是否有效，如果不存在于地图数据中则设为新手村
     local gc = DataManager.gameConfig or {}
     local gameSec = gc["game"] or {}
     local startMap = gameSec.start_map or ""
     if startMap == "" or not DataManager.maps[startMap] then
-        -- 起始地不存在于当前地图中，设为第一个地图
-        if #mapNames > 0 then
-            local newStart = mapNames[1]
-            -- 更新 DataManager.gameConfig（UI 数据源）
+        -- 优先设为"新手村"，否则使用第一个地图
+        local newStart = DataManager.maps["新手村"] and "新手村" or (mapNames[1] or "")
+        if newStart ~= "" then
             if not gc["game"] then gc["game"] = {} end
             gc["game"].start_map = newStart
             DataManager.gameConfig = gc
-            -- 同步更新 require 的 game_config 模块
             local gameConfigMod = require("Config.game_config")
             if gameConfigMod.game then
                 gameConfigMod.game.start_map = newStart
