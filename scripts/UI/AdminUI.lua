@@ -35,6 +35,7 @@ local CATEGORIES = {
     { id = "dungeons", name = "副本" },
     { id = "npcs", name = "NPC" },
     { id = "giftpacks", name = "礼包" },
+    { id = "generator", name = "一键生成" },
 }
 
 -- =============== 工具函数 ===============
@@ -2535,6 +2536,536 @@ end
 
 
 
+-- =============== 一键生成 ===============
+
+-- 修仙主题名称库
+local GEN_NAMES = {
+    map_prefix = { "灵", "玄", "幽", "天", "冥", "紫", "苍", "碧", "赤", "金", "翠", "墨", "银", "血", "星" },
+    map_suffix = { "峰", "谷", "渊", "林", "泽", "洞", "原", "崖", "岛", "海", "域", "殿", "塔", "城", "池" },
+    map_desc_prefix = { "灵气充沛的", "危机四伏的", "云雾缭绕的", "充满神秘气息的", "传说中的", "被遗忘的", "古老的", "荒芜的" },
+    monster_prefix = { "炎", "冰", "雷", "风", "毒", "暗", "光", "石", "铁", "血", "骨", "魂", "幽", "狂", "妖" },
+    monster_suffix = { "蛟", "蟒", "狼", "熊", "鹰", "蝎", "蜂", "猿", "虎", "豹", "蛛", "龟", "鹤", "凤", "龙" },
+    equip_prefix = { "烈焰", "寒冰", "紫电", "玄铁", "碧玉", "金刚", "幽冥", "天蚕", "赤霄", "青莲", "星辰", "混沌" },
+    equip_weapon = { "剑", "刀", "枪", "戟", "斧", "锤", "鞭", "杖", "扇", "琴" },
+    equip_armor = { "甲", "袍", "衣", "铠", "裙", "衫" },
+    equip_accessory = { "戒", "佩", "链", "珠", "冠", "环" },
+    item_prefix = { "灵", "仙", "妖", "魔", "圣", "玄", "冰", "火", "雷", "风" },
+    item_consumable = { "丹", "散", "露", "液", "果", "膏" },
+    item_material = { "石", "晶", "粉", "精", "髓", "核", "翎", "鳞", "角", "牙" },
+    dungeon_prefix = { "远古", "蛮荒", "上古", "太虚", "九幽", "混沌", "万妖", "天魔", "神秘", "禁忌" },
+    dungeon_suffix = { "秘境", "遗迹", "禁地", "魔窟", "试炼场", "战场", "深渊", "迷宫", "圣地", "仙府" },
+}
+
+--- 从表中随机取一个元素
+local function RandPick(tbl)
+    return tbl[math.random(1, #tbl)]
+end
+
+--- 生成地图数据
+---@param count number
+local function GenerateMaps(count)
+    local existingMaps = {}
+    for id in pairs(DataManager.maps) do
+        table.insert(existingMaps, id)
+    end
+    local generated = 0
+    for i = 1, count do
+        local name = RandPick(GEN_NAMES.map_prefix) .. RandPick(GEN_NAMES.map_suffix)
+        -- 避免重复名
+        if DataManager.maps[name] then
+            name = name .. tostring(i)
+        end
+        local desc = RandPick(GEN_NAMES.map_desc_prefix) .. name .. "，修仙者的历练之地"
+        local lvReq = tostring(math.random(1, 15))
+        -- 随机连接已有地图
+        local front, back = "", ""
+        if #existingMaps > 0 then
+            back = existingMaps[math.random(1, #existingMaps)]
+        end
+        DataManager.maps[name] = {
+            name = name,
+            desc = desc,
+            monsters = "",
+            npcs = "",
+            front = front,
+            back = back,
+            left = "",
+            right = "",
+            level_req = lvReq,
+        }
+        table.insert(existingMaps, name)
+        generated = generated + 1
+    end
+    SaveCategoryToCloud("maps")
+    return generated
+end
+
+--- 生成怪物数据
+---@param count number
+local function GenerateMonsters(count)
+    local generated = 0
+    for i = 1, count do
+        local name = RandPick(GEN_NAMES.monster_prefix) .. RandPick(GEN_NAMES.monster_suffix)
+        if DataManager.monsters[name] then
+            name = name .. tostring(i)
+        end
+        local tier = math.random(1, 5) -- 1=弱 5=强
+        local hp = tostring(tier * math.random(30, 60))
+        local atk = tostring(tier * math.random(5, 12))
+        local def = tostring(tier * math.random(2, 8))
+        local exp = tostring(tier * math.random(8, 20))
+        local gold = tostring(tier * math.random(5, 15))
+        DataManager.monsters[name] = {
+            name = name,
+            desc = "一只实力不俗的" .. name .. "，散发着妖气",
+            hp = hp,
+            atk = atk,
+            def = def,
+            exp = exp,
+            gold = gold,
+            drops = "",
+        }
+        generated = generated + 1
+    end
+    SaveCategoryToCloud("monsters")
+    return generated
+end
+
+--- 生成装备数据
+---@param count number
+local function GenerateEquipment(count)
+    local slots = { "weapon", "armor", "accessory" }
+    local qualities = { "white", "green", "blue", "purple", "gold" }
+    local qualityMult = { 1, 2, 3, 5, 8 }
+    local generated = 0
+    for i = 1, count do
+        local slot = slots[math.random(1, #slots)]
+        local qIdx = math.random(1, #qualities)
+        local prefix = RandPick(GEN_NAMES.equip_prefix)
+        local suffix
+        if slot == "weapon" then suffix = RandPick(GEN_NAMES.equip_weapon)
+        elseif slot == "armor" then suffix = RandPick(GEN_NAMES.equip_armor)
+        else suffix = RandPick(GEN_NAMES.equip_accessory)
+        end
+        local name = prefix .. suffix
+        if DataManager.equipment[name] then
+            name = name .. tostring(i)
+        end
+        local mult = qualityMult[qIdx]
+        local atkVal = (slot == "weapon") and tostring(mult * math.random(3, 10)) or tostring(math.random(0, math.floor(mult * 2)))
+        local defVal = (slot == "armor") and tostring(mult * math.random(3, 8)) or tostring(math.random(0, math.floor(mult * 2)))
+        local hpVal = tostring(mult * math.random(5, 20))
+        local lvReq = tostring(math.max(1, qIdx * 2 + math.random(-1, 1)))
+        local price = tostring(mult * math.random(20, 100))
+        local sell = tostring(math.floor(tonumber(price) * 0.4))
+        DataManager.equipment[name] = {
+            name = name,
+            slot = slot,
+            quality = qualities[qIdx],
+            desc = "一件" .. qualities[qIdx] .. "品质的" .. name,
+            atk = atkVal,
+            def = defVal,
+            hp = hpVal,
+            level_req = lvReq,
+            price_buy = price,
+            price_sell = sell,
+        }
+        generated = generated + 1
+    end
+    SaveCategoryToCloud("equipment")
+    return generated
+end
+
+--- 生成道具数据
+---@param count number
+local function GenerateItems(count)
+    local types = { "consumable", "material" }
+    local generated = 0
+    for i = 1, count do
+        local itemType = types[math.random(1, #types)]
+        local prefix = RandPick(GEN_NAMES.item_prefix)
+        local suffix
+        if itemType == "consumable" then
+            suffix = RandPick(GEN_NAMES.item_consumable)
+        else
+            suffix = RandPick(GEN_NAMES.item_material)
+        end
+        local name = prefix .. suffix
+        if DataManager.items[name] then
+            name = name .. tostring(i)
+        end
+        local value = "0"
+        local effect = "none"
+        if itemType == "consumable" then
+            effect = "heal"
+            value = tostring(math.random(10, 200))
+        end
+        DataManager.items[name] = {
+            name = name,
+            type = itemType,
+            desc = (itemType == "consumable") and ("服用后可恢复" .. value .. "点生命") or ("修炼用的珍贵材料"),
+            effect = effect,
+            value = value,
+        }
+        generated = generated + 1
+    end
+    SaveCategoryToCloud("items")
+    return generated
+end
+
+--- 生成副本数据
+---@param count number
+local function GenerateDungeons(count)
+    local generated = 0
+    for i = 1, count do
+        local name = RandPick(GEN_NAMES.dungeon_prefix) .. RandPick(GEN_NAMES.dungeon_suffix)
+        if DataManager.dungeons[name] then
+            name = name .. tostring(i)
+        end
+        local lvReq = tostring(math.random(1, 12))
+        local waves = math.random(3, 5)
+        -- 获取已有怪物名列表作为波次内容
+        local monsterNames = {}
+        for mId in pairs(DataManager.monsters) do
+            table.insert(monsterNames, mId)
+        end
+        local dungeonData = {
+            name = name,
+            desc = "危险的" .. name .. "，只有勇者才能挑战",
+            level_req = lvReq,
+            waves = tostring(waves),
+            boss = (#monsterNames > 0) and monsterNames[math.random(1, #monsterNames)] or "",
+            reward_exp = tostring(math.random(30, 200)),
+            reward_gold = tostring(math.random(50, 300)),
+            reward_items = "",
+        }
+        for w = 1, waves do
+            local waveMonsters = {}
+            local waveSize = math.random(2, 4)
+            for _ = 1, waveSize do
+                if #monsterNames > 0 then
+                    table.insert(waveMonsters, monsterNames[math.random(1, #monsterNames)])
+                end
+            end
+            dungeonData["wave_" .. w] = table.concat(waveMonsters, ",")
+        end
+        DataManager.dungeons[name] = dungeonData
+        generated = generated + 1
+    end
+    SaveCategoryToCloud("dungeons")
+    return generated
+end
+
+--- 一键部署：将地图、怪物、NPC、商店等数据关联在一起
+local function DeployAll()
+    -- 收集所有已有数据名
+    local mapNames = {}
+    for id in pairs(DataManager.maps) do table.insert(mapNames, id) end
+    local monsterNames = {}
+    for id in pairs(DataManager.monsters) do table.insert(monsterNames, id) end
+    local itemNames = {}
+    for id in pairs(DataManager.items) do table.insert(itemNames, id) end
+    local equipNames = {}
+    for id in pairs(DataManager.equipment) do table.insert(equipNames, id) end
+    local npcNames = {}
+    for id in pairs(DataManager.npcs) do table.insert(npcNames, id) end
+    local shopIds = {}
+    for id in pairs(DataManager.shops) do table.insert(shopIds, id) end
+
+    if #mapNames == 0 then return 0 end
+
+    local changes = 0
+
+    -- 1. 给每个地图分配怪物（如果没有怪物）
+    if #monsterNames > 0 then
+        for id, data in pairs(DataManager.maps) do
+            if not data.monsters or data.monsters == "" then
+                local assigned = {}
+                local num = math.random(2, math.min(4, #monsterNames))
+                for _ = 1, num do
+                    local m = monsterNames[math.random(1, #monsterNames)]
+                    assigned[m] = true
+                end
+                local list = {}
+                for m in pairs(assigned) do table.insert(list, m) end
+                data.monsters = table.concat(list, ",")
+                changes = changes + 1
+            end
+        end
+    end
+
+    -- 2. 给每个地图分配NPC（如果没有NPC）
+    if #npcNames > 0 then
+        for id, data in pairs(DataManager.maps) do
+            if not data.npcs or data.npcs == "" then
+                local num = math.random(1, math.min(3, #npcNames))
+                local assigned = {}
+                for _ = 1, num do
+                    local n = npcNames[math.random(1, #npcNames)]
+                    assigned[n] = true
+                end
+                local list = {}
+                for n in pairs(assigned) do table.insert(list, n) end
+                data.npcs = table.concat(list, ",")
+                changes = changes + 1
+            end
+        end
+    end
+
+    -- 3. 地图之间相互连接（前后左右）
+    for i, id in ipairs(mapNames) do
+        local data = DataManager.maps[id]
+        if (not data.front or data.front == "") and i < #mapNames then
+            data.front = mapNames[i + 1]
+            changes = changes + 1
+        end
+        if (not data.back or data.back == "") and i > 1 then
+            data.back = mapNames[i - 1]
+            changes = changes + 1
+        end
+    end
+
+    -- 4. 给怪物分配掉落（关联道具/装备）
+    local allDropItems = {}
+    for _, n in ipairs(itemNames) do table.insert(allDropItems, n) end
+    for _, n in ipairs(equipNames) do table.insert(allDropItems, n) end
+    if #allDropItems > 0 then
+        for id, data in pairs(DataManager.monsters) do
+            if not data.drops or data.drops == "" then
+                local num = math.random(1, 3)
+                local drops = {}
+                for _ = 1, num do
+                    local item = allDropItems[math.random(1, #allDropItems)]
+                    local rate = math.random(10, 80)
+                    table.insert(drops, item .. ":" .. rate)
+                end
+                data.drops = table.concat(drops, ",")
+                changes = changes + 1
+            end
+        end
+    end
+
+    -- 5. 给商店分配商品（如果商品为空）
+    if #allDropItems > 0 then
+        for id, data in pairs(DataManager.shops) do
+            if not data.items or #data.items == 0 then
+                local shopItems = {}
+                local num = math.random(3, 6)
+                for _ = 1, num do
+                    local itemName = allDropItems[math.random(1, #allDropItems)]
+                    table.insert(shopItems, { name = itemName, price = tostring(math.random(10, 500)), desc = "" })
+                end
+                data.items = shopItems
+                changes = changes + 1
+            end
+        end
+    end
+
+    -- 6. 给副本分配奖励物品（如果为空）
+    if #allDropItems > 0 then
+        for id, data in pairs(DataManager.dungeons) do
+            if not data.reward_items or data.reward_items == "" then
+                local num = math.random(1, 3)
+                local rewards = {}
+                for _ = 1, num do
+                    local item = allDropItems[math.random(1, #allDropItems)]
+                    table.insert(rewards, item .. ":1")
+                end
+                data.reward_items = table.concat(rewards, ",")
+                changes = changes + 1
+            end
+        end
+    end
+
+    -- 保存所有改动
+    SaveCategoryToCloud("maps")
+    SaveCategoryToCloud("monsters")
+    SaveCategoryToCloud("shops")
+    SaveCategoryToCloud("dungeons")
+
+    return changes
+end
+
+--- 渲染一键生成面板
+local function RenderGenerator()
+    ClearContent()
+    ShowMsg("一键生成 - 快速生成游戏数据")
+
+    -- 生成数量输入引用
+    local genFields = {}
+
+    --- 创建一个生成区块
+    ---@param title string 区块标题
+    ---@param key string 类型 key
+    ---@param defaultNum string 默认数量
+    ---@param onGenerate fun(count: number): number 生成回调，返回生成数量
+    local function CreateGenSection(title, key, defaultNum, onGenerate)
+        local numField = UI.TextField {
+            value = defaultNum,
+            placeholder = "数量",
+            width = 60,
+            height = 30,
+            fontSize = 13,
+        }
+        genFields[key] = numField
+
+        local resultLabel = UI.Label {
+            text = "",
+            fontSize = 11,
+            fontColor = { 100, 255, 150, 255 },
+            height = 16,
+        }
+
+        return UI.Panel {
+            width = "100%",
+            flexDirection = "column",
+            backgroundColor = { 25, 20, 45, 200 },
+            borderRadius = 8,
+            padding = 12,
+            marginBottom = 8,
+            children = {
+                UI.Label {
+                    text = title,
+                    fontSize = 14,
+                    fontColor = { 255, 200, 100, 255 },
+                    marginBottom = 6,
+                },
+                UI.Panel {
+                    flexDirection = "row",
+                    alignItems = "center",
+                    gap = 8,
+                    children = {
+                        UI.Label {
+                            text = "一键生成",
+                            fontSize = 12,
+                            fontColor = { 200, 200, 220, 255 },
+                        },
+                        numField,
+                        UI.Label {
+                            text = "个" .. title,
+                            fontSize = 12,
+                            fontColor = { 200, 200, 220, 255 },
+                        },
+                        UI.Button {
+                            text = "生成",
+                            variant = "primary",
+                            width = 60,
+                            height = 28,
+                            fontSize = 12,
+                            onClick = function()
+                                local n = tonumber(numField:GetValue()) or 0
+                                if n <= 0 then
+                                    resultLabel:SetText("请输入有效数量")
+                                    return
+                                end
+                                if n > 100 then n = 100 end -- 上限保护
+                                local generated = onGenerate(n)
+                                resultLabel:SetText("成功生成 " .. generated .. " 个" .. title)
+                                ShowMsg(title .. "生成完成: " .. generated .. " 个")
+                            end,
+                        },
+                    },
+                },
+                resultLabel,
+            },
+        }
+    end
+
+    -- 各类型生成区块
+    local mapSection = CreateGenSection("地图", "maps", "5", GenerateMaps)
+    local monsterSection = CreateGenSection("怪物", "monsters", "10", GenerateMonsters)
+    local equipSection = CreateGenSection("装备", "equipment", "10", GenerateEquipment)
+    local itemSection = CreateGenSection("道具", "items", "10", GenerateItems)
+    local dungeonSection = CreateGenSection("副本", "dungeons", "5", GenerateDungeons)
+
+    -- 一键部署区块
+    local deployResult = UI.Label {
+        text = "",
+        fontSize = 12,
+        fontColor = { 100, 255, 200, 255 },
+        height = 18,
+    }
+
+    local deploySection = UI.Panel {
+        width = "100%",
+        flexDirection = "column",
+        backgroundColor = { 35, 20, 50, 220 },
+        borderRadius = 8,
+        padding = 12,
+        marginTop = 12,
+        borderColor = { 255, 180, 80, 100 },
+        borderWidth = 1,
+        children = {
+            UI.Label {
+                text = "一键部署",
+                fontSize = 16,
+                fontColor = { 255, 150, 50, 255 },
+                marginBottom = 4,
+            },
+            UI.Label {
+                text = "将地图、怪物、NPC、商店、副本等数据关联在一起",
+                fontSize = 11,
+                fontColor = { 160, 160, 180, 255 },
+                marginBottom = 8,
+            },
+            UI.Label {
+                text = "• 为空白地图分配怪物和NPC",
+                fontSize = 11,
+                fontColor = { 140, 140, 160, 255 },
+            },
+            UI.Label {
+                text = "• 将地图前后左右连通",
+                fontSize = 11,
+                fontColor = { 140, 140, 160, 255 },
+            },
+            UI.Label {
+                text = "• 为怪物分配掉落物品/装备",
+                fontSize = 11,
+                fontColor = { 140, 140, 160, 255 },
+            },
+            UI.Label {
+                text = "• 为商店填充商品",
+                fontSize = 11,
+                fontColor = { 140, 140, 160, 255 },
+            },
+            UI.Label {
+                text = "• 为副本分配奖励物品",
+                fontSize = 11,
+                fontColor = { 140, 140, 160, 255 },
+                marginBottom = 10,
+            },
+            UI.Button {
+                text = "一键部署",
+                variant = "primary",
+                width = 120,
+                height = 36,
+                fontSize = 14,
+                onClick = function()
+                    local changes = DeployAll()
+                    deployResult:SetText("部署完成！共关联 " .. changes .. " 处数据")
+                    ShowMsg("一键部署完成: " .. changes .. " 处关联")
+                end,
+            },
+            deployResult,
+        },
+    }
+
+    -- 将所有区块添加到内容面板
+    contentPanel_:AddChild(UI.Panel {
+        width = "100%",
+        padding = 10,
+        flexDirection = "column",
+        children = {
+            mapSection,
+            monsterSection,
+            equipSection,
+            itemSection,
+            dungeonSection,
+            deploySection,
+        },
+    })
+end
+
 -- =============== 分类切换 ===============
 
 --- 根据分类渲染内容
@@ -2551,6 +3082,7 @@ local function RenderCategory(catId)
     elseif catId == "dungeons" then RenderDungeons()
     elseif catId == "npcs" then RenderNPCs()
     elseif catId == "giftpacks" then RenderGiftPacks()
+    elseif catId == "generator" then RenderGenerator()
     end
 end
 
