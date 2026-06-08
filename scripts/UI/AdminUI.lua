@@ -389,15 +389,21 @@ local function LoadAdminsFromCloud(onDone)
     cloud:Get("系统配置/admins.txt", {
         ok = function(val)
             DataManager.admins = {}
-            if val and val ~= "" then
-                for username in string.gmatch(val, "([^,]+)") do
+            local str = ""
+            if type(val) == "string" then
+                str = val
+            elseif type(val) == "table" then
+                str = tostring(val.value or val[1] or "")
+            end
+            if str ~= "" then
+                for username in string.gmatch(str, "([^,]+)") do
                     local trimmed = username:match("^%s*(.-)%s*$")
                     if trimmed ~= "" then
                         DataManager.admins[trimmed] = true
                     end
                 end
             end
-            print("[Admin] 管理员列表已加载: " .. tostring(val))
+            print("[Admin] 管理员列表已加载: " .. tostring(str))
             if onDone then onDone() end
         end,
         error = function()
@@ -2773,8 +2779,6 @@ local function GenerateMaps(count)
     return generated
 end
 
---- 生成怪物数据
----@param count number
 -- 怪物类型定义：{ 名称, 属性下限, 属性上限, 描述后缀 }
 local MONSTER_TYPES = {
     { name = "普通怪",  min = "10",            max = "2000",           desc = "散发着微弱的妖气" },
