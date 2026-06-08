@@ -2706,8 +2706,8 @@ local ITEM_TYPE_EFFECTS = {
     ["生命上限"] = { effect = "buff_hp", descFmt = "使用后生命上限提升%d点" },
     ["恢复血量"] = { effect = "heal", descFmt = "服用后可恢复%d点生命" },
     ["恢复灵力"] = { effect = "heal_mp", descFmt = "服用后可恢复%d点灵力" },
-    ["经验倍率"] = { effect = "exp_mult", descFmt = "使用后经验获取提升%d%%持续一段时间" },
-    ["货币倍率"] = { effect = "gold_mult", descFmt = "使用后金币获取提升%d%%持续一段时间" },
+    ["经验倍率"] = { effect = "exp_mult", descFmt = "使用后经验获取提升%d倍持续一段时间" },
+    ["货币倍率"] = { effect = "gold_mult", descFmt = "使用后金币获取提升%d倍持续一段时间" },
     ["材料"] = { effect = "none", descFmt = "修炼用的珍贵材料" },
 }
 
