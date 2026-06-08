@@ -39,7 +39,17 @@ function EquipUI.Refresh()
     local player = DataManager.playerData
     if not player then return end
 
-    parentRef_:AddChild(UI.Label {
+    -- 使用 ScrollView 确保内容可滚动
+    local scrollContent = UI.ScrollView {
+        width = "100%",
+        flexGrow = 1,
+        flexShrink = 1,
+        flexBasis = 0,
+        flexDirection = "column",
+    }
+    parentRef_:AddChild(scrollContent)
+
+    scrollContent:AddChild(UI.Label {
         text = "— 装备栏 —",
         fontSize = 16,
         fontColor = { 200, 170, 100, 255 },
@@ -71,7 +81,7 @@ function EquipUI.Refresh()
         local statsText = ""
 
         if equipName ~= "" then
-            eData = DataManager.GetItem(equipName)
+            eData = DataManager.GetEquipData(equipName)
             if eData then
                 local parts = {}
                 if BigNum.gt(eData.atk or "0", "0") then table.insert(parts, "攻+" .. BigNum.toShort(eData.atk)) end
@@ -83,7 +93,7 @@ function EquipUI.Refresh()
 
         local qualityColor = EquipUI.GetQualityColor(eData and eData.quality or "white")
 
-        parentRef_:AddChild(UI.Panel {
+        scrollContent:AddChild(UI.Panel {
             flexDirection = "row",
             alignItems = "center",
             width = "100%",
@@ -122,10 +132,10 @@ function EquipUI.Refresh()
     end
 
     -- 分隔
-    parentRef_:AddChild(UI.Panel { width = "100%", height = 1, backgroundColor = { 50, 40, 70, 255 }, marginTop = 8, marginBottom = 8 })
+    scrollContent:AddChild(UI.Panel { width = "100%", height = 1, backgroundColor = { 50, 40, 70, 255 }, marginTop = 8, marginBottom = 8 })
 
     -- 可装备物品列表
-    parentRef_:AddChild(UI.Label {
+    scrollContent:AddChild(UI.Label {
         text = "背包中可装备的物品",
         fontSize = 14,
         fontColor = { 150, 150, 180, 255 },
@@ -135,7 +145,7 @@ function EquipUI.Refresh()
 
     local hasEquippable = false
     for i, item in ipairs(player.bag) do
-        local itemData = DataManager.GetItem(item.name)
+        local itemData = DataManager.GetEquipData(item.name)
         if itemData and itemData.slot then
             hasEquippable = true
             local qualityColor = EquipUI.GetQualityColor(itemData.quality or "white")
@@ -148,7 +158,7 @@ function EquipUI.Refresh()
             local slotKey = SLOT_CN_TO_KEY[itemData.slot] or itemData.slot
             local slotLabel = SLOT_KEY_TO_LABEL[slotKey] or itemData.slot or "未知"
 
-            parentRef_:AddChild(UI.Panel {
+            scrollContent:AddChild(UI.Panel {
                 flexDirection = "row",
                 alignItems = "center",
                 width = "100%",
@@ -180,7 +190,7 @@ function EquipUI.Refresh()
     end
 
     if not hasEquippable then
-        parentRef_:AddChild(UI.Label {
+        scrollContent:AddChild(UI.Label {
             text = "无可装备物品",
             fontSize = 12,
             fontColor = { 100, 100, 120, 255 },
@@ -220,18 +230,24 @@ end
 --- 从背包装备
 ---@param bagIndex number
 function EquipUI.EquipFromBag(bagIndex)
+    print("[EquipUI] EquipFromBag 被调用, bagIndex=" .. tostring(bagIndex))
     local player = DataManager.playerData
-    if not player then return end
+    if not player then print("[EquipUI] player为nil"); return end
 
     local item = player.bag[bagIndex]
-    if not item then return end
+    if not item then print("[EquipUI] bag[" .. tostring(bagIndex) .. "]为nil, bag长度=" .. #player.bag); return end
 
-    local itemData = DataManager.GetItem(item.name)
-    if not itemData or not itemData.slot then return end
+    print("[EquipUI] 尝试装备: " .. tostring(item.name))
+    local itemData = DataManager.GetEquipData(item.name)
+    if not itemData then print("[EquipUI] GetEquipData返回nil, name=" .. tostring(item.name)); return end
+    if not itemData.slot then print("[EquipUI] itemData.slot为nil, name=" .. tostring(item.name)); return end
+
+    print("[EquipUI] 物品部位: " .. tostring(itemData.slot))
 
     -- 检查等级需求
     local levelReq = itemData.level_req or "0"
     local playerLevel = player.status.level or "1"
+    print("[EquipUI] 等级检查: 玩家=" .. playerLevel .. " 需求=" .. levelReq)
     if BigNum.lt(playerLevel, levelReq) then
         print("[EquipUI] 等级不足，需要等级 " .. levelReq)
         return

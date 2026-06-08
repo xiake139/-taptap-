@@ -53,6 +53,11 @@ function BagUI.Refresh()
 
     for i, item in ipairs(player.bag) do
         local itemData = DataManager.GetItem(item.name)
+        -- 如果items表找到但无slot，尝试从equipment表补充装备数据
+        local equipData = DataManager.GetEquipData(item.name)
+        if equipData and equipData.slot then
+            itemData = equipData
+        end
         local desc = itemData and (itemData.desc or "") or ""
         local sellPrice = itemData and (itemData.price_sell or "0") or "0"
 
@@ -322,7 +327,7 @@ function BagUI.EquipItem(index)
     local item = player.bag[index]
     if not item then return end
 
-    local itemData = DataManager.GetItem(item.name)
+    local itemData = DataManager.GetEquipData(item.name)
     if not itemData or not itemData.slot then return end
 
     -- 将中文部位名转换为英文key

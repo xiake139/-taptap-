@@ -1489,11 +1489,29 @@ function DataManager.GetItem(itemName)
     return nil
 end
 
---- 获取装备信息
+--- 获取装备信息（仅按key直接查找）
 ---@param equipName string
 ---@return table|nil
 function DataManager.GetEquipment(equipName)
     return DataManager.equipment[equipName]
+end
+
+--- 获取装备数据（优先equipment表，支持key和name字段回退）
+--- 用于装备面板等需要确保返回有slot字段的场景
+---@param itemName string
+---@return table|nil
+function DataManager.GetEquipData(itemName)
+    -- 先从装备表按 key 找
+    if DataManager.equipment[itemName] then
+        return DataManager.equipment[itemName]
+    end
+    -- 按显示名称回退查找装备表
+    for _, data in pairs(DataManager.equipment) do
+        if data.name == itemName then
+            return data
+        end
+    end
+    return nil
 end
 
 --- 获取任务信息
