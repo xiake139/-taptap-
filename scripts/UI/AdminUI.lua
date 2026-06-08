@@ -1762,7 +1762,7 @@ RenderItems = function()
 end
 
 --- 装备部位选项
-local EQUIP_SLOTS = { "武器", "防具", "饰品" }
+local EQUIP_SLOTS = { "武器", "头盔", "铠甲", "护腕", "腰带", "战靴", "披风", "项链", "戒指", "法宝", "坐骑", "灵翼", "护盾" }
 --- 装备品质选项
 local EQUIP_QUALITIES = { "白色", "绿色", "橙色", "红色", "彩色", "地级", "天级", "帝级", "仙级", "神级", "创世级" }
 
@@ -2727,8 +2727,18 @@ local GEN_NAMES = {
     monster_suffix = { "蛟", "蟒", "狼", "熊", "鹰", "蝎", "蜂", "猿", "虎", "豹", "蛛", "龟", "鹤", "凤", "龙" },
     equip_prefix = { "烈焰", "寒冰", "紫电", "玄铁", "碧玉", "金刚", "幽冥", "天蚕", "赤霄", "青莲", "星辰", "混沌" },
     equip_weapon = { "剑", "刀", "枪", "戟", "斧", "锤", "鞭", "杖", "扇", "琴" },
-    equip_armor = { "甲", "袍", "衣", "铠", "裙", "衫" },
-    equip_accessory = { "戒", "佩", "链", "珠", "冠", "环" },
+    equip_helmet = { "冠", "盔", "面具", "兜", "发簪", "额饰" },
+    equip_armor = { "甲", "袍", "衣", "铠", "战袍", "天衣" },
+    equip_bracer = { "护腕", "臂环", "腕甲", "护手", "灵袖", "缚灵带" },
+    equip_belt = { "腰带", "玉带", "锁链", "束腰", "灵绳", "仙带" },
+    equip_boots = { "战靴", "云履", "踏风靴", "灵步鞋", "天行靴", "飞羽靴" },
+    equip_cloak = { "披风", "斗篷", "羽衣", "灵袍", "仙衣", "天幕" },
+    equip_necklace = { "链", "坠", "珠串", "灵珠", "仙坠", "神链" },
+    equip_ring = { "戒", "环", "指轮", "灵戒", "天环", "命戒" },
+    equip_artifact = { "塔", "印", "镜", "铃", "葫芦", "玉如意" },
+    equip_mount = { "灵驹", "仙鹤", "飞龙", "麒麟", "神鹏", "天马" },
+    equip_wings = { "灵翼", "羽翅", "龙翼", "凤翅", "光翼", "魔翼" },
+    equip_shield = { "盾", "壁", "龟甲", "灵壁", "天盾", "圣壁" },
     item_prefix = { "灵", "仙", "妖", "魔", "圣", "玄", "冰", "火", "雷", "风" },
     item_consumable = { "丹", "散", "露", "液", "果", "膏" },
     item_material = { "石", "晶", "粉", "精", "髓", "核", "翎", "鳞", "角", "牙" },
@@ -2866,7 +2876,11 @@ local function GenerateMonsters(count, monsterType)
 end
 
 --- 装备部位映射
-local EQUIP_SLOT_MAP = { ["武器"] = "weapon", ["防具"] = "armor", ["饰品"] = "accessory" }
+local EQUIP_SLOT_MAP = {
+    ["武器"] = "weapon", ["头盔"] = "helmet", ["铠甲"] = "armor", ["护腕"] = "bracer",
+    ["腰带"] = "belt", ["战靴"] = "boots", ["披风"] = "cloak", ["项链"] = "necklace",
+    ["戒指"] = "ring", ["法宝"] = "artifact", ["坐骑"] = "mount", ["灵翼"] = "wings", ["护盾"] = "shield",
+}
 
 --- 装备品质属性区间定义（min~max）
 local EQUIP_QUALITY_RANGES = {
@@ -2888,62 +2902,64 @@ local EQUIP_QUALITY_RANGES = {
 ---@param filterSlots string[]|nil 选中的部位中文列表
 ---@param filterQualities string[]|nil 选中的品质中文列表
 local function GenerateEquipment(count, filterSlots, filterQualities)
-    -- 构建实际使用的部位列表
+    -- 构建实际使用的部位列表（中文）
     local slots = {}
     if filterSlots and #filterSlots > 0 then
         for _, s in ipairs(filterSlots) do
-            local en = EQUIP_SLOT_MAP[s]
-            if en then table.insert(slots, en) end
+            if EQUIP_SLOT_MAP[s] then table.insert(slots, s) end
         end
     end
-    if #slots == 0 then slots = { "weapon", "armor", "accessory" } end
+    if #slots == 0 then for _, s in ipairs(EQUIP_SLOTS) do table.insert(slots, s) end end
 
-    -- 构建品质列表（直接使用中文名）
+    -- 构建品质列表（中文）
     local qualities = {}
     if filterQualities and #filterQualities > 0 then
         for _, q in ipairs(filterQualities) do
             if EQUIP_QUALITY_RANGES[q] then table.insert(qualities, q) end
         end
     end
-    if #qualities == 0 then qualities = { "白色", "绿色", "橙色", "红色", "彩色", "地级", "天级", "帝级", "仙级", "神级", "创世级" } end
+    if #qualities == 0 then for _, q in ipairs(EQUIP_QUALITIES) do table.insert(qualities, q) end end
 
     local generated = 0
     for i = 1, count do
-        local slot = slots[math.random(1, #slots)]
+        local slotCN = slots[math.random(1, #slots)]
+        local slot = EQUIP_SLOT_MAP[slotCN] or "weapon"
         local quality = qualities[math.random(1, #qualities)]
         local range = EQUIP_QUALITY_RANGES[quality]
         local prefix = RandPick(GEN_NAMES.equip_prefix)
-        local suffix
-        if slot == "weapon" then suffix = RandPick(GEN_NAMES.equip_weapon)
-        elseif slot == "armor" then suffix = RandPick(GEN_NAMES.equip_armor)
-        else suffix = RandPick(GEN_NAMES.equip_accessory)
-        end
+        local suffixTable = GEN_NAMES["equip_" .. slot] or GEN_NAMES.equip_weapon
+        local suffix = RandPick(suffixTable)
         local name = prefix .. suffix
         if DataManager.equipment[name] then
             name = name .. tostring(i)
         end
-        -- 根据品质区间生成属性（武器偏攻击，防具偏防御，饰品偏生命）
+        -- 根据部位决定属性偏向：攻击型/防御型/生命型
         local baseVal = BigNumRandRange(range.min, range.max)
+        local subMax = BigNum.div(BigNum.add(range.min, range.max), "3")
+        local subVal = BigNumRandRange(range.min, subMax)
         local atkVal, defVal, hpVal
-        if slot == "weapon" then
+        -- 攻击型部位：武器、法宝、戒指
+        if slot == "weapon" or slot == "artifact" or slot == "ring" then
             atkVal = baseVal
-            defVal = BigNumRandRange(range.min, BigNum.div(BigNum.add(range.min, range.max), "4"))
-            hpVal = BigNumRandRange(range.min, BigNum.div(BigNum.add(range.min, range.max), "3"))
-        elseif slot == "armor" then
+            defVal = subVal
+            hpVal = BigNumRandRange(range.min, subMax)
+        -- 防御型部位：铠甲、头盔、护腕、护盾
+        elseif slot == "armor" or slot == "helmet" or slot == "bracer" or slot == "shield" then
             defVal = baseVal
-            atkVal = BigNumRandRange(range.min, BigNum.div(BigNum.add(range.min, range.max), "4"))
-            hpVal = BigNumRandRange(range.min, BigNum.div(BigNum.add(range.min, range.max), "2"))
+            atkVal = subVal
+            hpVal = BigNumRandRange(range.min, subMax)
+        -- 生命/辅助型部位：腰带、战靴、披风、项链、坐骑、灵翼
         else
             hpVal = baseVal
-            atkVal = BigNumRandRange(range.min, BigNum.div(BigNum.add(range.min, range.max), "3"))
-            defVal = BigNumRandRange(range.min, BigNum.div(BigNum.add(range.min, range.max), "3"))
+            atkVal = subVal
+            defVal = BigNumRandRange(range.min, subMax)
         end
         local lvReq = tostring(math.random(1, 100))
         local price = BigNum.mul(baseVal, tostring(math.random(2, 5)))
         local sell = BigNum.div(price, "3")
         DataManager.equipment[name] = {
             name = name,
-            slot = slot,
+            slot = slotCN,
             quality = quality,
             desc = "一件" .. quality .. "品质的" .. name,
             atk = atkVal,
@@ -3695,7 +3711,8 @@ local function RenderGenerator()
 
     -- 部位多选
     local equipSlotBtns = {}
-    local equipSlotSelected = { ["武器"] = true, ["防具"] = true, ["饰品"] = true }
+    local equipSlotSelected = {}
+    for _, s in ipairs(EQUIP_SLOTS) do equipSlotSelected[s] = true end
     local function refreshEquipSlotBtns()
         for name, btn in pairs(equipSlotBtns) do
             btn:SetVariant(equipSlotSelected[name] and "primary" or "secondary")
@@ -3704,7 +3721,7 @@ local function RenderGenerator()
     local equipSlotChildren = {}
     for _, slotName in ipairs(EQUIP_SLOTS) do
         local btn = UI.Button {
-            text = slotName, fontSize = 10, width = 50, height = 22,
+            text = slotName, fontSize = 9, width = 42, height = 20,
             variant = "primary",
             onClick = function()
                 if equipSlotSelected[slotName] then
