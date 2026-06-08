@@ -318,17 +318,46 @@ function BagUI.UseItem(index)
     end
 end
 
+--- 显示操作提示
+---@param msg string
+function BagUI.ShowTip(msg)
+    print("[BagUI] " .. msg)
+    if not parentRef_ then return end
+    local tip = parentRef_:FindById("bagTip")
+    if tip then
+        tip:SetText("> " .. msg)
+    else
+        parentRef_:AddChild(UI.Label {
+            id = "bagTip",
+            text = "> " .. msg,
+            fontSize = 12,
+            fontColor = { 255, 200, 100, 255 },
+            textAlign = "center",
+            marginBottom = 4,
+        })
+    end
+end
+
 --- 装备物品
 ---@param index number
 function BagUI.EquipItem(index)
     local player = DataManager.playerData
-    if not player then return end
+    if not player then BagUI.ShowTip("数据异常"); return end
 
     local item = player.bag[index]
-    if not item then return end
+    if not item then BagUI.ShowTip("物品不存在"); return end
 
     local itemData = DataManager.GetEquipData(item.name)
-    if not itemData or not itemData.slot then return end
+    if not itemData then BagUI.ShowTip("找不到装备数据: " .. tostring(item.name)); return end
+    if not itemData.slot then BagUI.ShowTip("该物品无法装备"); return end
+
+    -- 检查等级需求
+    local levelReq = itemData.level_req or "0"
+    local playerLevel = player.status.level or "1"
+    if BigNum.lt(playerLevel, levelReq) then
+        BagUI.ShowTip("等级不足! 需要等级" .. levelReq .. ", 当前" .. playerLevel)
+        return
+    end
 
     -- 将中文部位名转换为英文key
     local slot = SLOT_CN_TO_KEY[itemData.slot] or itemData.slot
@@ -351,15 +380,17 @@ function BagUI.EquipItem(index)
     end
 
     -- 装备新物品
-    player.equip[slot] = item.name
+    local equipedName = item.name
+    player.equip[slot] = equipedName
     item.count = BigNum.sub(item.count or "1", "1")
     if BigNum.lte(item.count, "0") then
         table.remove(player.bag, index)
     end
 
-    print("[BagUI] 装备了 " .. item.name)
+    print("[BagUI] 装备了 " .. equipedName)
     DataManager.SaveToCloud(player)
     BagUI.Refresh()
+    BagUI.ShowTip("已装备: " .. equipedName)
 end
 
 --- 出售物品
