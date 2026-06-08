@@ -2834,10 +2834,20 @@ local function GenerateShops(count)
                     used[itemName] = true
                     table.insert(shopItems, {
                         name = itemName,
-                        price = tostring(math.random(10, 500)),
+                        price = tostring(math.random(50, 1000)),
                         desc = "",
                     })
                 end
+            end
+        else
+            -- 没有已有道具时生成默认商品
+            local defaultItems = { "回血丹", "回灵丹", "强化石", "经验丹", "护身符" }
+            for j = 1, math.min(itemCount, #defaultItems) do
+                table.insert(shopItems, {
+                    name = defaultItems[j],
+                    price = tostring(math.random(50, 500)),
+                    desc = "",
+                })
             end
         end
         DataManager.shops[shopId] = {
