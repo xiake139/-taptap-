@@ -2808,11 +2808,17 @@ local MONSTER_TYPES = {
 ---@param maxStr string
 ---@return string
 local function BigNumRandRange(minStr, maxStr)
+    -- 保护：如果 min >= max，直接返回 min
+    if minStr == maxStr then return minStr end
+    if BigNum.gt(minStr, maxStr) then return minStr end
     -- 如果数字足够小，用 math.random
     local minN = tonumber(minStr)
     local maxN = tonumber(maxStr)
     if minN and maxN and maxN <= 2000000000 then
-        return tostring(math.random(math.floor(minN), math.floor(maxN)))
+        local lo = math.floor(minN)
+        local hi = math.floor(maxN)
+        if lo > hi then return tostring(lo) end
+        return tostring(math.random(lo, hi))
     end
     -- 大数：用 BigNum 做区间内随机
     -- 计算 range = max - min
@@ -2936,6 +2942,7 @@ local function GenerateEquipment(count, filterSlots, filterQualities)
         -- 根据部位决定属性偏向：攻击型/防御型/生命型
         local baseVal = BigNumRandRange(range.min, range.max)
         local subMax = BigNum.div(BigNum.add(range.min, range.max), "3")
+        if BigNum.gt(range.min, subMax) then subMax = range.min end
         local subVal = BigNumRandRange(range.min, subMax)
         local atkVal, defVal, hpVal
         -- 攻击型部位：武器、法宝、戒指
