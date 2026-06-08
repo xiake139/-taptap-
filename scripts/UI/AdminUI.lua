@@ -2756,6 +2756,132 @@ local function GenerateDungeons(count)
     return generated
 end
 
+--- 生成NPC数据
+---@param count number
+local function GenerateNPCs(count)
+    local npcTypes = { "quest", "merchant" }
+    local surnames = { "李", "王", "张", "陈", "赵", "刘", "杨", "孙", "周", "吴", "林", "徐", "黄", "马", "高" }
+    local titles = { "长老", "掌柜", "师傅", "道人", "仙子", "前辈", "散人", "居士", "真人", "隐士" }
+    local dialogs_quest = {
+        "年轻人，你来得正好，我这有一事相求。",
+        "修仙之路漫漫，若你愿意助我一臂之力，必有重谢。",
+        "听闻你实力不俗，可否帮我解决一个麻烦？",
+        "施主有缘，贫道有一事相托。",
+        "少侠请留步，老夫有要事相商。",
+    }
+    local dialogs_merchant = {
+        "客官请看，都是好东西，童叟无欺！",
+        "本店货真价实，绝无虚言。",
+        "仙友可有需要？本摊修仙好物应有尽有。",
+        "买卖不成仁义在，看看总不收钱。",
+        "难得来客，给你便宜些。",
+    }
+    local generated = 0
+    for i = 1, count do
+        local nType = npcTypes[math.random(1, #npcTypes)]
+        local name = surnames[math.random(1, #surnames)] .. titles[math.random(1, #titles)]
+        if DataManager.npcs[name] then
+            name = name .. tostring(i)
+        end
+        local dialog
+        if nType == "quest" then
+            dialog = dialogs_quest[math.random(1, #dialogs_quest)]
+        else
+            dialog = dialogs_merchant[math.random(1, #dialogs_merchant)]
+        end
+        DataManager.npcs[name] = {
+            name = name,
+            type = nType,
+            dialog = dialog,
+            location = "",
+            quest_id = "",
+            shop_id = "",
+        }
+        generated = generated + 1
+    end
+    SaveCategoryToCloud("npcs")
+    return generated
+end
+
+--- 生成任务数据
+---@param count number
+local function GenerateQuests(count)
+    local questTypes = { "main", "side", "side", "side" } -- side 更多
+    local targetTypes = { "kill", "collect", "explore" }
+    local verbs_kill = { "消灭", "击败", "讨伐", "清除", "歼灭" }
+    local verbs_collect = { "收集", "采集", "寻找", "获取", "搜寻" }
+    local verbs_explore = { "前往", "探索", "到达", "寻访", "探查" }
+    local generated = 0
+    -- 收集已有怪物和地图名
+    local monsterNames = {}
+    for id in pairs(DataManager.monsters) do table.insert(monsterNames, id) end
+    local mapNames = {}
+    for id in pairs(DataManager.maps) do table.insert(mapNames, id) end
+    local itemNames = {}
+    for id in pairs(DataManager.items) do table.insert(itemNames, id) end
+    local equipNames = {}
+    for id in pairs(DataManager.equipment) do table.insert(equipNames, id) end
+
+    for i = 1, count do
+        local qType = questTypes[math.random(1, #questTypes)]
+        local tType = targetTypes[math.random(1, #targetTypes)]
+        local targetName = ""
+        local desc = ""
+        local targetCount = math.random(1, 5)
+
+        if tType == "kill" and #monsterNames > 0 then
+            targetName = monsterNames[math.random(1, #monsterNames)]
+            desc = RandPick(verbs_kill) .. targetCount .. "只" .. targetName
+        elseif tType == "collect" and #itemNames > 0 then
+            targetName = itemNames[math.random(1, #itemNames)]
+            desc = RandPick(verbs_collect) .. targetCount .. "个" .. targetName
+        elseif tType == "explore" and #mapNames > 0 then
+            targetName = mapNames[math.random(1, #mapNames)]
+            targetCount = 1
+            desc = RandPick(verbs_explore) .. targetName
+        else
+            tType = "kill"
+            targetName = "未知妖兽"
+            desc = "消灭" .. targetCount .. "只未知妖兽"
+        end
+
+        local questId = "gen_" .. string.format("%03d", i) .. "_" .. tostring(math.random(100, 999))
+        if DataManager.quests[questId] then
+            questId = questId .. "x"
+        end
+
+        -- 随机奖励
+        local rewardItems = ""
+        local allRewardPool = {}
+        for _, n in ipairs(itemNames) do table.insert(allRewardPool, n) end
+        for _, n in ipairs(equipNames) do table.insert(allRewardPool, n) end
+        if #allRewardPool > 0 then
+            local rNum = math.random(1, 2)
+            local parts = {}
+            for _ = 1, rNum do
+                table.insert(parts, allRewardPool[math.random(1, #allRewardPool)] .. ":1")
+            end
+            rewardItems = table.concat(parts, ",")
+        end
+
+        DataManager.quests[questId] = {
+            name = desc,
+            type = qType,
+            desc = "有人委托你：" .. desc .. "，完成后可获得丰厚奖励。",
+            target_type = tType,
+            target_name = targetName,
+            target_count = tostring(targetCount),
+            reward_exp = tostring(math.random(20, 150)),
+            reward_gold = tostring(math.random(30, 200)),
+            reward_items = rewardItems,
+            next_quest = "",
+        }
+        generated = generated + 1
+    end
+    SaveCategoryToCloud("quests")
+    return generated
+end
+
 --- 一键部署：将地图、怪物、NPC、商店等数据关联在一起
 local function DeployAll()
     -- 收集所有已有数据名
@@ -2877,11 +3003,82 @@ local function DeployAll()
         end
     end
 
+    -- 7. 给NPC分配所在地（如果为空）
+    if #mapNames > 0 then
+        for id, data in pairs(DataManager.npcs) do
+            if not data.location or data.location == "" then
+                data.location = mapNames[math.random(1, #mapNames)]
+                changes = changes + 1
+            end
+        end
+    end
+
+    -- 8. 给任务型NPC分配任务（如果没有绑定）
+    local questIds = {}
+    for id in pairs(DataManager.quests) do table.insert(questIds, id) end
+    local usedQuests = {}
+    -- 先记录已被绑定的任务
+    for _, data in pairs(DataManager.npcs) do
+        if data.quest_id and data.quest_id ~= "" then
+            usedQuests[data.quest_id] = true
+        end
+    end
+    if #questIds > 0 then
+        for id, data in pairs(DataManager.npcs) do
+            if data.type == "quest" and (not data.quest_id or data.quest_id == "") then
+                -- 尝试分配一个未使用的任务
+                for _, qId in ipairs(questIds) do
+                    if not usedQuests[qId] then
+                        data.quest_id = qId
+                        usedQuests[qId] = true
+                        changes = changes + 1
+                        break
+                    end
+                end
+                -- 没有空闲任务就随机分配一个
+                if not data.quest_id or data.quest_id == "" then
+                    data.quest_id = questIds[math.random(1, #questIds)]
+                    changes = changes + 1
+                end
+            end
+        end
+    end
+
+    -- 9. 给商人NPC分配商店（如果没有绑定）
+    if #shopIds > 0 then
+        for id, data in pairs(DataManager.npcs) do
+            if data.type == "merchant" and (not data.shop_id or data.shop_id == "") then
+                data.shop_id = shopIds[math.random(1, #shopIds)]
+                changes = changes + 1
+            end
+        end
+    end
+
+    -- 10. 将NPC名添加到对应地图的NPC列表中
+    for id, data in pairs(DataManager.npcs) do
+        if data.location and data.location ~= "" then
+            local mapData = DataManager.maps[data.location]
+            if mapData then
+                local existingNpcs = mapData.npcs or ""
+                if not string.find(existingNpcs, id, 1, true) then
+                    if existingNpcs == "" then
+                        mapData.npcs = id
+                    else
+                        mapData.npcs = existingNpcs .. "," .. id
+                    end
+                    changes = changes + 1
+                end
+            end
+        end
+    end
+
     -- 保存所有改动
     SaveCategoryToCloud("maps")
     SaveCategoryToCloud("monsters")
     SaveCategoryToCloud("shops")
     SaveCategoryToCloud("dungeons")
+    SaveCategoryToCloud("npcs")
+    SaveCategoryToCloud("quests")
 
     return changes
 end
@@ -2977,6 +3174,8 @@ local function RenderGenerator()
     local equipSection = CreateGenSection("装备", "equipment", "10", GenerateEquipment)
     local itemSection = CreateGenSection("道具", "items", "10", GenerateItems)
     local dungeonSection = CreateGenSection("副本", "dungeons", "5", GenerateDungeons)
+    local npcSection = CreateGenSection("NPC", "npcs", "5", GenerateNPCs)
+    local questSection = CreateGenSection("任务", "quests", "10", GenerateQuests)
 
     -- 一键部署区块
     local deployResult = UI.Label {
@@ -3061,6 +3260,8 @@ local function RenderGenerator()
             equipSection,
             itemSection,
             dungeonSection,
+            npcSection,
+            questSection,
             deploySection,
         },
     })
