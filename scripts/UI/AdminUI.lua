@@ -2554,6 +2554,8 @@ local GEN_NAMES = {
     item_material = { "石", "晶", "粉", "精", "髓", "核", "翎", "鳞", "角", "牙" },
     dungeon_prefix = { "远古", "蛮荒", "上古", "太虚", "九幽", "混沌", "万妖", "天魔", "神秘", "禁忌" },
     dungeon_suffix = { "秘境", "遗迹", "禁地", "魔窟", "试炼场", "战场", "深渊", "迷宫", "圣地", "仙府" },
+    shop_prefix = { "百宝", "万灵", "天机", "玄妙", "灵宝", "仙缘", "宝源", "聚仙", "星辰", "紫霄" },
+    shop_suffix = { "阁", "坊", "铺", "堂", "轩", "庄", "楼", "斋", "馆", "居" },
 }
 
 --- 从表中随机取一个元素
@@ -2794,6 +2796,49 @@ local function GenerateDungeons(count)
         generated = generated + 1
     end
     SaveCategoryToCloud("dungeons")
+    return generated
+end
+
+--- 生成商店数据
+---@param count number
+local function GenerateShops(count)
+    -- 收集已有道具和装备名作为商品来源
+    local allItems = {}
+    for id in pairs(DataManager.items) do table.insert(allItems, id) end
+    for id in pairs(DataManager.equipment) do table.insert(allItems, id) end
+
+    local generated = 0
+    for i = 1, count do
+        local name = RandPick(GEN_NAMES.shop_prefix) .. RandPick(GEN_NAMES.shop_suffix)
+        local shopId = "shop_gen_" .. tostring(i) .. "_" .. tostring(math.random(100, 999))
+        if DataManager.shops[shopId] then
+            shopId = shopId .. "_" .. tostring(math.random(1000, 9999))
+        end
+        -- 随机 3~6 个商品
+        local shopItems = {}
+        local itemCount = math.random(3, 6)
+        if #allItems > 0 then
+            local used = {}
+            for _ = 1, itemCount do
+                local itemName = allItems[math.random(1, #allItems)]
+                if not used[itemName] then
+                    used[itemName] = true
+                    table.insert(shopItems, {
+                        name = itemName,
+                        price = tostring(math.random(10, 500)),
+                        desc = "",
+                    })
+                end
+            end
+        end
+        DataManager.shops[shopId] = {
+            name = name,
+            desc = name .. "，修仙界闻名的交易之所",
+            items = shopItems,
+        }
+        generated = generated + 1
+    end
+    SaveCategoryToCloud("shops")
     return generated
 end
 
@@ -3113,6 +3158,23 @@ local function DeployAll()
         end
     end
 
+    -- 11. 检查玩家起始地是否有效，如果不存在于地图数据中则更新
+    local gameConfig = require("Config.game_config")
+    local startMap = gameConfig.game and gameConfig.game.start_map or ""
+    if startMap == "" or not DataManager.maps[startMap] then
+        -- 起始地不存在于当前地图中，设为第一个地图
+        if #mapNames > 0 then
+            local newStart = mapNames[1]
+            gameConfig.game.start_map = newStart
+            -- 同步写入 ConfigData 全局配置
+            if DataManager.global_config then
+                DataManager.global_config.start_map = newStart
+            end
+            SaveCategoryToCloud("global")
+            changes = changes + 1
+        end
+    end
+
     -- 保存所有改动
     SaveCategoryToCloud("maps")
     SaveCategoryToCloud("monsters")
@@ -3384,6 +3446,7 @@ local function RenderGenerator()
         },
     }
     local dungeonSection = CreateGenSection("副本", "dungeons", "5", GenerateDungeons)
+    local shopSection = CreateGenSection("商店", "shops", "3", GenerateShops)
     local npcSection = CreateGenSection("NPC", "npcs", "5", GenerateNPCs)
     local questSection = CreateGenSection("任务", "quests", "10", GenerateQuests)
 
@@ -3470,6 +3533,7 @@ local function RenderGenerator()
             equipSection,
             itemSection,
             dungeonSection,
+            shopSection,
             npcSection,
             questSection,
             deploySection,
