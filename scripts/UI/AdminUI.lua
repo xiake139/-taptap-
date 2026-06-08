@@ -386,15 +386,18 @@ local function LoadAdminsFromCloud(onDone)
         if onDone then onDone() end
         return
     end
-    cloud:Get("系统配置/admins.txt", {
-        ok = function(val)
+    local adminKey = "系统配置/admins.txt"
+    cloud:Get(adminKey, {
+        ok = function(values)
             DataManager.admins = {}
+            -- CloudProxy 返回 { [key] = value } 表; clientCloud 可能返回 string
             local str = ""
-            if type(val) == "string" then
-                str = val
-            elseif type(val) == "table" then
-                str = tostring(val.value or val[1] or "")
+            if type(values) == "string" then
+                str = values
+            elseif type(values) == "table" then
+                str = values[adminKey] or values.value or values[1] or ""
             end
+            if type(str) ~= "string" then str = tostring(str or "") end
             if str ~= "" then
                 for username in string.gmatch(str, "([^,]+)") do
                     local trimmed = username:match("^%s*(.-)%s*$")
