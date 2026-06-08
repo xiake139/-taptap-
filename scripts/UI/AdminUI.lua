@@ -2631,16 +2631,40 @@ local function GenerateMonsters(count)
     return generated
 end
 
---- 生成装备数据
+--- 装备部位/品质中文到英文映射
+local EQUIP_SLOT_MAP = { ["武器"] = "weapon", ["防具"] = "armor", ["饰品"] = "accessory" }
+local EQUIP_QUALITY_MAP = { ["白色"] = "white", ["绿色"] = "green", ["蓝色"] = "blue", ["紫色"] = "purple", ["金色"] = "gold" }
+local EQUIP_QUALITY_MULT = { ["white"] = 1, ["green"] = 2, ["blue"] = 3, ["purple"] = 5, ["gold"] = 8 }
+
+--- 生成装备数据（支持部位和品质过滤）
 ---@param count number
-local function GenerateEquipment(count)
-    local slots = { "weapon", "armor", "accessory" }
-    local qualities = { "white", "green", "blue", "purple", "gold" }
-    local qualityMult = { 1, 2, 3, 5, 8 }
+---@param filterSlots string[]|nil 选中的部位中文列表
+---@param filterQualities string[]|nil 选中的品质中文列表
+local function GenerateEquipment(count, filterSlots, filterQualities)
+    -- 构建实际使用的英文列表
+    local slots = {}
+    if filterSlots and #filterSlots > 0 then
+        for _, s in ipairs(filterSlots) do
+            local en = EQUIP_SLOT_MAP[s]
+            if en then table.insert(slots, en) end
+        end
+    end
+    if #slots == 0 then slots = { "weapon", "armor", "accessory" } end
+
+    local qualities = {}
+    if filterQualities and #filterQualities > 0 then
+        for _, q in ipairs(filterQualities) do
+            local en = EQUIP_QUALITY_MAP[q]
+            if en then table.insert(qualities, en) end
+        end
+    end
+    if #qualities == 0 then qualities = { "white", "green", "blue", "purple", "gold" } end
+
     local generated = 0
     for i = 1, count do
         local slot = slots[math.random(1, #slots)]
-        local qIdx = math.random(1, #qualities)
+        local quality = qualities[math.random(1, #qualities)]
+        local mult = EQUIP_QUALITY_MULT[quality] or 1
         local prefix = RandPick(GEN_NAMES.equip_prefix)
         local suffix
         if slot == "weapon" then suffix = RandPick(GEN_NAMES.equip_weapon)
@@ -2651,18 +2675,17 @@ local function GenerateEquipment(count)
         if DataManager.equipment[name] then
             name = name .. tostring(i)
         end
-        local mult = qualityMult[qIdx]
         local atkVal = (slot == "weapon") and tostring(mult * math.random(3, 10)) or tostring(math.random(0, math.floor(mult * 2)))
         local defVal = (slot == "armor") and tostring(mult * math.random(3, 8)) or tostring(math.random(0, math.floor(mult * 2)))
         local hpVal = tostring(mult * math.random(5, 20))
-        local lvReq = tostring(math.max(1, qIdx * 2 + math.random(-1, 1)))
+        local lvReq = tostring(math.max(1, mult * 2 + math.random(-1, 1)))
         local price = tostring(mult * math.random(20, 100))
         local sell = tostring(math.floor(tonumber(price) * 0.4))
         DataManager.equipment[name] = {
             name = name,
             slot = slot,
-            quality = qualities[qIdx],
-            desc = "一件" .. qualities[qIdx] .. "品质的" .. name,
+            quality = quality,
+            desc = "一件" .. quality .. "品质的" .. name,
             atk = atkVal,
             def = defVal,
             hp = hpVal,
@@ -2676,37 +2699,55 @@ local function GenerateEquipment(count)
     return generated
 end
 
---- 生成道具数据
+--- 道具类型到效果的映射
+local ITEM_TYPE_EFFECTS = {
+    ["攻击"] = { effect = "buff_atk", descFmt = "使用后攻击力提升%d点" },
+    ["防御"] = { effect = "buff_def", descFmt = "使用后防御力提升%d点" },
+    ["生命上限"] = { effect = "buff_hp", descFmt = "使用后生命上限提升%d点" },
+    ["恢复血量"] = { effect = "heal", descFmt = "服用后可恢复%d点生命" },
+    ["恢复灵力"] = { effect = "heal_mp", descFmt = "服用后可恢复%d点灵力" },
+    ["经验倍率"] = { effect = "exp_mult", descFmt = "使用后经验获取提升%d%%持续一段时间" },
+    ["货币倍率"] = { effect = "gold_mult", descFmt = "使用后金币获取提升%d%%持续一段时间" },
+    ["材料"] = { effect = "none", descFmt = "修炼用的珍贵材料" },
+}
+
+--- 生成道具数据（支持类型过滤和限时设置）
 ---@param count number
-local function GenerateItems(count)
-    local types = { "consumable", "material" }
+---@param selectedTypes string[]|nil 选中的类型列表
+---@param duration number|nil 限时时间（秒），0或nil表示不限时
+local function GenerateItems(count, selectedTypes, duration)
+    local typeList = selectedTypes or { "恢复血量", "材料" }
     local generated = 0
     for i = 1, count do
-        local itemType = types[math.random(1, #types)]
+        local typeName = typeList[math.random(1, #typeList)]
+        local info = ITEM_TYPE_EFFECTS[typeName] or ITEM_TYPE_EFFECTS["材料"]
         local prefix = RandPick(GEN_NAMES.item_prefix)
         local suffix
-        if itemType == "consumable" then
-            suffix = RandPick(GEN_NAMES.item_consumable)
-        else
+        if typeName == "材料" then
             suffix = RandPick(GEN_NAMES.item_material)
+        else
+            suffix = RandPick(GEN_NAMES.item_consumable)
         end
         local name = prefix .. suffix
         if DataManager.items[name] then
             name = name .. tostring(i)
         end
         local value = "0"
-        local effect = "none"
-        if itemType == "consumable" then
-            effect = "heal"
+        if typeName ~= "材料" then
             value = tostring(math.random(10, 200))
         end
-        DataManager.items[name] = {
+        local desc = (typeName == "材料") and info.descFmt or string.format(info.descFmt, tonumber(value) or 0)
+        local itemData = {
             name = name,
-            type = itemType,
-            desc = (itemType == "consumable") and ("服用后可恢复" .. value .. "点生命") or ("修炼用的珍贵材料"),
-            effect = effect,
+            type = typeName,
+            desc = desc,
+            effect = info.effect,
             value = value,
         }
+        if duration and duration > 0 then
+            itemData.duration = tostring(duration)
+        end
+        DataManager.items[name] = itemData
         generated = generated + 1
     end
     SaveCategoryToCloud("items")
@@ -3171,8 +3212,177 @@ local function RenderGenerator()
     -- 各类型生成区块
     local mapSection = CreateGenSection("地图", "maps", "5", GenerateMaps)
     local monsterSection = CreateGenSection("怪物", "monsters", "10", GenerateMonsters)
-    local equipSection = CreateGenSection("装备", "equipment", "10", GenerateEquipment)
-    local itemSection = CreateGenSection("道具", "items", "10", GenerateItems)
+    -- === 装备生成（含部位+品质选择） ===
+    local equipNumField = UI.TextField { value = "10", placeholder = "数量", width = 60, height = 30, fontSize = 13 }
+    genFields["equipment"] = equipNumField
+    local equipResultLabel = UI.Label { text = "", fontSize = 11, fontColor = { 100, 255, 150, 255 }, height = 16 }
+
+    -- 部位多选
+    local equipSlotBtns = {}
+    local equipSlotSelected = { ["武器"] = true, ["防具"] = true, ["饰品"] = true }
+    local function refreshEquipSlotBtns()
+        for name, btn in pairs(equipSlotBtns) do
+            btn:SetVariant(equipSlotSelected[name] and "primary" or "secondary")
+        end
+    end
+    local equipSlotChildren = {}
+    for _, slotName in ipairs(EQUIP_SLOTS) do
+        local btn = UI.Button {
+            text = slotName, fontSize = 10, width = 50, height = 22,
+            variant = "primary",
+            onClick = function()
+                if equipSlotSelected[slotName] then
+                    local cnt = 0; for _ in pairs(equipSlotSelected) do cnt = cnt + 1 end
+                    if cnt > 1 then equipSlotSelected[slotName] = nil end
+                else
+                    equipSlotSelected[slotName] = true
+                end
+                refreshEquipSlotBtns()
+            end,
+        }
+        equipSlotBtns[slotName] = btn
+        table.insert(equipSlotChildren, btn)
+    end
+
+    -- 品质多选
+    local equipQualBtns = {}
+    local equipQualSelected = { ["白色"] = true, ["绿色"] = true, ["蓝色"] = true, ["紫色"] = true, ["金色"] = true }
+    local function refreshEquipQualBtns()
+        for name, btn in pairs(equipQualBtns) do
+            btn:SetVariant(equipQualSelected[name] and "primary" or "secondary")
+        end
+    end
+    local equipQualChildren = {}
+    for _, qName in ipairs(EQUIP_QUALITIES) do
+        local btn = UI.Button {
+            text = qName, fontSize = 10, width = 44, height = 22,
+            variant = "primary",
+            onClick = function()
+                if equipQualSelected[qName] then
+                    local cnt = 0; for _ in pairs(equipQualSelected) do cnt = cnt + 1 end
+                    if cnt > 1 then equipQualSelected[qName] = nil end
+                else
+                    equipQualSelected[qName] = true
+                end
+                refreshEquipQualBtns()
+            end,
+        }
+        equipQualBtns[qName] = btn
+        table.insert(equipQualChildren, btn)
+    end
+
+    local equipSection = UI.Panel {
+        width = "100%", flexDirection = "column",
+        backgroundColor = { 25, 20, 45, 200 }, borderRadius = 8, padding = 12, marginBottom = 8,
+        children = {
+            UI.Label { text = "装备", fontSize = 14, fontColor = { 255, 200, 100, 255 }, marginBottom = 6 },
+            UI.Panel { flexDirection = "row", alignItems = "center", gap = 4, marginBottom = 4, children = {
+                UI.Label { text = "部位", fontSize = 12, fontColor = { 180, 180, 200, 255 }, width = 40 },
+                UI.Panel { flexDirection = "row", flexWrap = "wrap", gap = 3, children = equipSlotChildren },
+            }},
+            UI.Panel { flexDirection = "row", alignItems = "center", gap = 4, marginBottom = 6, children = {
+                UI.Label { text = "品质", fontSize = 12, fontColor = { 180, 180, 200, 255 }, width = 40 },
+                UI.Panel { flexDirection = "row", flexWrap = "wrap", gap = 3, children = equipQualChildren },
+            }},
+            UI.Panel { flexDirection = "row", alignItems = "center", gap = 8, children = {
+                UI.Label { text = "一键生成", fontSize = 12, fontColor = { 200, 200, 220, 255 } },
+                equipNumField,
+                UI.Label { text = "个装备", fontSize = 12, fontColor = { 200, 200, 220, 255 } },
+                UI.Button { text = "生成", variant = "primary", width = 60, height = 28, fontSize = 12,
+                    onClick = function()
+                        local n = tonumber(equipNumField:GetValue()) or 0
+                        if n <= 0 then equipResultLabel:SetText("请输入有效数量"); return end
+                        if n > 100 then n = 100 end
+                        local selSlots = {}
+                        for _, s in ipairs(EQUIP_SLOTS) do
+                            if equipSlotSelected[s] then table.insert(selSlots, s) end
+                        end
+                        local selQuals = {}
+                        for _, q in ipairs(EQUIP_QUALITIES) do
+                            if equipQualSelected[q] then table.insert(selQuals, q) end
+                        end
+                        local generated = GenerateEquipment(n, selSlots, selQuals)
+                        equipResultLabel:SetText("成功生成 " .. generated .. " 个装备")
+                        ShowMsg("装备生成完成: " .. generated .. " 个")
+                    end,
+                },
+            }},
+            equipResultLabel,
+        },
+    }
+
+    -- === 道具生成（含类型多选+限时输入） ===
+    local itemNumField = UI.TextField { value = "10", placeholder = "数量", width = 60, height = 30, fontSize = 13 }
+    genFields["items"] = itemNumField
+    local itemResultLabel = UI.Label { text = "", fontSize = 11, fontColor = { 100, 255, 150, 255 }, height = 16 }
+
+    -- 道具类型多选
+    local itemTypeBtns = {}
+    local itemTypeSelected = { ["恢复血量"] = true, ["材料"] = true }
+    local function refreshItemTypeBtns()
+        for name, btn in pairs(itemTypeBtns) do
+            btn:SetVariant(itemTypeSelected[name] and "primary" or "secondary")
+        end
+    end
+    local itemTypeBtnChildren = {}
+    for _, typeName in ipairs(ITEM_TYPES) do
+        local btn = UI.Button {
+            text = typeName, fontSize = 10, width = 56, height = 22,
+            variant = itemTypeSelected[typeName] and "primary" or "secondary",
+            onClick = function()
+                if itemTypeSelected[typeName] then
+                    local cnt = 0; for _ in pairs(itemTypeSelected) do cnt = cnt + 1 end
+                    if cnt > 1 then itemTypeSelected[typeName] = nil end
+                else
+                    itemTypeSelected[typeName] = true
+                end
+                refreshItemTypeBtns()
+            end,
+        }
+        itemTypeBtns[typeName] = btn
+        table.insert(itemTypeBtnChildren, btn)
+    end
+
+    -- 限时输入框（选中限时类相关类型时可用）
+    local itemDurationField = UI.TextField { value = "0", placeholder = "秒(0=永久)", width = 80, height = 28, fontSize = 12 }
+
+    local itemSection = UI.Panel {
+        width = "100%", flexDirection = "column",
+        backgroundColor = { 25, 20, 45, 200 }, borderRadius = 8, padding = 12, marginBottom = 8,
+        children = {
+            UI.Label { text = "道具", fontSize = 14, fontColor = { 255, 200, 100, 255 }, marginBottom = 6 },
+            UI.Panel { flexDirection = "column", gap = 2, marginBottom = 4, children = {
+                UI.Label { text = "类型（可多选）", fontSize = 12, fontColor = { 180, 180, 200, 255 } },
+                UI.Panel { flexDirection = "row", flexWrap = "wrap", gap = 3, children = itemTypeBtnChildren },
+            }},
+            UI.Panel { flexDirection = "row", alignItems = "center", gap = 6, marginBottom = 6, children = {
+                UI.Label { text = "限时", fontSize = 12, fontColor = { 180, 180, 200, 255 } },
+                itemDurationField,
+                UI.Label { text = "秒 (0=永久)", fontSize = 10, fontColor = { 140, 140, 160, 255 } },
+            }},
+            UI.Panel { flexDirection = "row", alignItems = "center", gap = 8, children = {
+                UI.Label { text = "一键生成", fontSize = 12, fontColor = { 200, 200, 220, 255 } },
+                itemNumField,
+                UI.Label { text = "个道具", fontSize = 12, fontColor = { 200, 200, 220, 255 } },
+                UI.Button { text = "生成", variant = "primary", width = 60, height = 28, fontSize = 12,
+                    onClick = function()
+                        local n = tonumber(itemNumField:GetValue()) or 0
+                        if n <= 0 then itemResultLabel:SetText("请输入有效数量"); return end
+                        if n > 100 then n = 100 end
+                        local selTypes = {}
+                        for _, t in ipairs(ITEM_TYPES) do
+                            if itemTypeSelected[t] then table.insert(selTypes, t) end
+                        end
+                        local dur = tonumber(itemDurationField:GetValue()) or 0
+                        local generated = GenerateItems(n, selTypes, dur)
+                        itemResultLabel:SetText("成功生成 " .. generated .. " 个道具")
+                        ShowMsg("道具生成完成: " .. generated .. " 个")
+                    end,
+                },
+            }},
+            itemResultLabel,
+        },
+    }
     local dungeonSection = CreateGenSection("副本", "dungeons", "5", GenerateDungeons)
     local npcSection = CreateGenSection("NPC", "npcs", "5", GenerateNPCs)
     local questSection = CreateGenSection("任务", "quests", "10", GenerateQuests)
