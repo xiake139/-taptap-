@@ -304,16 +304,32 @@ function HandleCloudSetResult(eventType, eventData)
     end
 end
 
+-- 分片缓冲区: reqId -> { chunks = {}, received = 0, total = N }
+local chunkBuffers_ = {}
+
 function HandleCloudBatchGetResult(eventType, eventData)
     local reqId = eventData["ReqId"]:GetString()
     local cb = pendingCallbacks_[reqId]
     if not cb then return end
-    pendingCallbacks_[reqId] = nil
 
     local success = eventData["Success"]:GetBool()
-    if success then
-        local encoded = eventData["Data"]:GetString()
-        -- 解码: key\1value\2key\1value\2...
+    if not success then
+        pendingCallbacks_[reqId] = nil
+        chunkBuffers_[reqId] = nil
+        local errMsg = eventData["Error"]:GetString()
+        if cb.error then cb.error(-1, errMsg) end
+        return
+    end
+
+    local chunkIndex = eventData["ChunkIndex"]:GetInt()
+    local chunkTotal = eventData["ChunkTotal"]:GetInt()
+    local data = eventData["Data"]:GetString()
+
+    -- 无分片或旧协议（没有 ChunkTotal 字段时默认 0）
+    if chunkTotal <= 1 then
+        pendingCallbacks_[reqId] = nil
+        chunkBuffers_[reqId] = nil
+        local encoded = data
         local values = {}
         if encoded ~= "" then
             for part in encoded:gmatch("[^\2]+") do
@@ -326,9 +342,39 @@ function HandleCloudBatchGetResult(eventType, eventData)
             end
         end
         if cb.ok then cb.ok(values, {}) end
-    else
-        local errMsg = eventData["Error"]:GetString()
-        if cb.error then cb.error(-1, errMsg) end
+        return
+    end
+
+    -- 分片累积
+    if not chunkBuffers_[reqId] then
+        chunkBuffers_[reqId] = { chunks = {}, received = 0, total = chunkTotal }
+    end
+    local buf = chunkBuffers_[reqId]
+    buf.chunks[chunkIndex] = data
+    buf.received = buf.received + 1
+
+    -- 所有分片到齐，拼接并处理
+    if buf.received >= buf.total then
+        pendingCallbacks_[reqId] = nil
+        local parts = {}
+        for i = 1, buf.total do
+            parts[i] = buf.chunks[i] or ""
+        end
+        chunkBuffers_[reqId] = nil
+
+        local encoded = table.concat(parts)
+        local values = {}
+        if encoded ~= "" then
+            for part in encoded:gmatch("[^\2]+") do
+                local sep = part:find("\1")
+                if sep then
+                    local key = part:sub(1, sep - 1)
+                    local val = part:sub(sep + 1)
+                    values[key] = val
+                end
+            end
+        end
+        if cb.ok then cb.ok(values, {}) end
     end
 end
 

@@ -169,7 +169,6 @@ function HandleCloudBatchGet(eventType, eventData)
             for _, ek in ipairs(encodedKeys) do
                 local val = ""
                 if scores and scores[ek] ~= nil then
-                    -- scores[ek] 是 {v = "..."} table，提取 .v
                     local stored = scores[ek]
                     if type(stored) == "table" and stored.v ~= nil then
                         val = tostring(stored.v)
@@ -179,17 +178,39 @@ function HandleCloudBatchGet(eventType, eventData)
                         val = tostring(stored)
                     end
                 end
-                -- 返回原始中文 key 给客户端
                 local rawKey = encodedToRaw[ek] or ek
                 table.insert(parts, rawKey .. "\1" .. val)
             end
             local encoded = table.concat(parts, "\2")
 
-            local resp = VariantMap()
-            resp["ReqId"] = Variant(reqId)
-            resp["Success"] = Variant(true)
-            resp["Data"] = Variant(encoded)
-            connection:SendRemoteEvent(EVENTS.CLOUD_BATCH_GET_RESULT, true, resp)
+            -- 分片发送：WebSocket 上限 65535，安全阈值 60000
+            local MAX_CHUNK = 60000
+            local dataLen = #encoded
+            if dataLen <= MAX_CHUNK then
+                -- 单条发送（无需分片）
+                local resp = VariantMap()
+                resp["ReqId"] = Variant(reqId)
+                resp["Success"] = Variant(true)
+                resp["Data"] = Variant(encoded)
+                resp["ChunkIndex"] = Variant(1)
+                resp["ChunkTotal"] = Variant(1)
+                connection:SendRemoteEvent(EVENTS.CLOUD_BATCH_GET_RESULT, true, resp)
+            else
+                -- 分片发送
+                local chunkTotal = math.ceil(dataLen / MAX_CHUNK)
+                for ci = 1, chunkTotal do
+                    local startPos = (ci - 1) * MAX_CHUNK + 1
+                    local endPos = math.min(ci * MAX_CHUNK, dataLen)
+                    local chunk = encoded:sub(startPos, endPos)
+                    local resp = VariantMap()
+                    resp["ReqId"] = Variant(reqId)
+                    resp["Success"] = Variant(true)
+                    resp["Data"] = Variant(chunk)
+                    resp["ChunkIndex"] = Variant(ci)
+                    resp["ChunkTotal"] = Variant(chunkTotal)
+                    connection:SendRemoteEvent(EVENTS.CLOUD_BATCH_GET_RESULT, true, resp)
+                end
+            end
         end,
         error = function(code, reason)
             print("[Server] CloudBatchGet 失败: " .. tostring(reason))
