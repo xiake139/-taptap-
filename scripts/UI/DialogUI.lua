@@ -5,6 +5,7 @@
 local UI = require("urhox-libs/UI")
 local DataManager = require("Systems.DataManager")
 local IniParser = require("Utils.IniParser")
+local BigNum = require("Utils.BigNum")
 
 local DialogUI = {}
 
@@ -187,7 +188,7 @@ function DialogUI.AcceptQuest(questId)
     local player = DataManager.playerData
     if not player then return end
 
-    table.insert(player.quests.active, { id = questId, progress = 0 })
+    table.insert(player.quests.active, { id = questId, progress = "0" })
 
     local qData = DataManager.GetQuest(questId)
     local GameUI = require("UI.GameUI")
@@ -205,13 +206,13 @@ function DialogUI.CheckTalkQuest(npcName)
     for _, quest in ipairs(player.quests.active) do
         local qData = DataManager.GetQuest(quest.id)
         if qData and qData.target_type == "talk" and qData.target_name == npcName then
-            quest.progress = (quest.progress or 0) + 1
-            local targetCount = tonumber(qData.target_count) or 1
+            quest.progress = BigNum.add(tostring(quest.progress or "0"), "1")
+            local targetCount = qData.target_count or "1"
 
             local GameUI = require("UI.GameUI")
             GameUI.AddLog("任务进度：" .. (qData.name or quest.id) .. " (" .. quest.progress .. "/" .. targetCount .. ")")
 
-            if quest.progress >= targetCount then
+            if BigNum.gte(quest.progress, targetCount) then
                 GameUI.CompleteQuest(quest)
             end
             break

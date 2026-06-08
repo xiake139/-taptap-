@@ -15,7 +15,7 @@ function IniParser.Parse(content)
 
     for line in content:gmatch("([^\r\n]*)\r?\n?") do
         -- 去除首尾空白
-        line = line:match("^%s*(.-)%s*$")
+        line = line:match("^%s*(.-)%s*$") or ""
 
         if line == "" or line:sub(1, 1) == ";" or line:sub(1, 1) == "#" then
             -- 空行或注释，跳过
@@ -31,11 +31,9 @@ function IniParser.Parse(content)
             if key and value then
                 key = key:match("^%s*(.-)%s*$")
                 value = value:match("^%s*(.-)%s*$")
-                -- 尝试转换数值
-                local numValue = tonumber(value)
-                if numValue then
-                    sections[currentSection][key] = numValue
-                elseif value == "true" then
+                -- 不再自动 tonumber，所有值保留为字符串
+                -- 避免大数值被浮点精度截断
+                if value == "true" then
                     sections[currentSection][key] = true
                 elseif value == "false" then
                     sections[currentSection][key] = false
@@ -44,6 +42,11 @@ function IniParser.Parse(content)
                 end
             end
         end
+    end
+
+    -- 清理空的 default 节（避免每次解析都产生无用的 default）
+    if sections["default"] and not next(sections["default"]) then
+        sections["default"] = nil
     end
 
     return sections
@@ -56,11 +59,14 @@ function IniParser.Serialize(sections)
     local lines = {}
 
     for section, kvs in pairs(sections) do
-        table.insert(lines, "[" .. section .. "]")
-        for key, value in pairs(kvs) do
-            table.insert(lines, key .. "=" .. tostring(value))
+        -- 跳过 default 节（INI解析器内部产生的无用节）
+        if section ~= "default" and section ~= "" then
+            table.insert(lines, "[" .. section .. "]")
+            for key, value in pairs(kvs) do
+                table.insert(lines, key .. "=" .. tostring(value))
+            end
+            table.insert(lines, "")
         end
-        table.insert(lines, "")
     end
 
     return table.concat(lines, "\n")

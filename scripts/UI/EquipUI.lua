@@ -3,6 +3,7 @@
 ---------------------------------------------------
 local UI = require("urhox-libs/UI")
 local DataManager = require("Systems.DataManager")
+local BigNum = require("Utils.BigNum")
 
 local EquipUI = {}
 
@@ -48,9 +49,9 @@ function EquipUI.Refresh()
             eData = DataManager.GetEquipment(equipName)
             if eData then
                 local parts = {}
-                if (tonumber(eData.atk) or 0) > 0 then table.insert(parts, "攻+" .. eData.atk) end
-                if (tonumber(eData.def) or 0) > 0 then table.insert(parts, "防+" .. eData.def) end
-                if (tonumber(eData.hp) or 0) > 0 then table.insert(parts, "血+" .. eData.hp) end
+                if BigNum.gt(eData.atk or "0", "0") then table.insert(parts, "攻+" .. BigNum.toShort(eData.atk)) end
+                if BigNum.gt(eData.def or "0", "0") then table.insert(parts, "防+" .. BigNum.toShort(eData.def)) end
+                if BigNum.gt(eData.hp or "0", "0") then table.insert(parts, "血+" .. BigNum.toShort(eData.hp)) end
                 statsText = table.concat(parts, " ")
             end
         end
@@ -114,9 +115,9 @@ function EquipUI.Refresh()
             hasEquippable = true
             local qualityColor = EquipUI.GetQualityColor(itemData.quality or "white")
             local parts = {}
-            if (tonumber(itemData.atk) or 0) > 0 then table.insert(parts, "攻+" .. itemData.atk) end
-            if (tonumber(itemData.def) or 0) > 0 then table.insert(parts, "防+" .. itemData.def) end
-            if (tonumber(itemData.hp) or 0) > 0 then table.insert(parts, "血+" .. itemData.hp) end
+            if BigNum.gt(itemData.atk or "0", "0") then table.insert(parts, "攻+" .. BigNum.toShort(itemData.atk)) end
+            if BigNum.gt(itemData.def or "0", "0") then table.insert(parts, "防+" .. BigNum.toShort(itemData.def)) end
+            if BigNum.gt(itemData.hp or "0", "0") then table.insert(parts, "血+" .. BigNum.toShort(itemData.hp)) end
 
             parentRef_:AddChild(UI.Panel {
                 flexDirection = "row",
@@ -171,13 +172,13 @@ function EquipUI.Unequip(slot)
     local found = false
     for _, item in ipairs(player.bag) do
         if item.name == equipName then
-            item.count = item.count + 1
+            item.count = BigNum.add(item.count or "0", "1")
             found = true
             break
         end
     end
     if not found then
-        table.insert(player.bag, { name = equipName, count = 1 })
+        table.insert(player.bag, { name = equipName, count = "1" })
     end
 
     player.equip[slot] = ""
@@ -199,9 +200,9 @@ function EquipUI.EquipFromBag(bagIndex)
     if not itemData or not itemData.slot then return end
 
     -- 检查等级需求
-    local levelReq = tonumber(itemData.level_req) or 0
-    local playerLevel = tonumber(player.status.level) or 1
-    if playerLevel < levelReq then
+    local levelReq = itemData.level_req or "0"
+    local playerLevel = player.status.level or "1"
+    if BigNum.lt(playerLevel, levelReq) then
         print("[EquipUI] 等级不足，需要等级 " .. levelReq)
         return
     end
@@ -214,20 +215,20 @@ function EquipUI.EquipFromBag(bagIndex)
         local found = false
         for _, bagItem in ipairs(player.bag) do
             if bagItem.name == oldEquip then
-                bagItem.count = bagItem.count + 1
+                bagItem.count = BigNum.add(bagItem.count or "0", "1")
                 found = true
                 break
             end
         end
         if not found then
-            table.insert(player.bag, { name = oldEquip, count = 1 })
+            table.insert(player.bag, { name = oldEquip, count = "1" })
         end
     end
 
     -- 装备
     player.equip[slot] = item.name
-    item.count = item.count - 1
-    if item.count <= 0 then
+    item.count = BigNum.sub(item.count or "1", "1")
+    if BigNum.lte(item.count, "0") then
         table.remove(player.bag, bagIndex)
     end
 

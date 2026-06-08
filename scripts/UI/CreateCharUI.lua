@@ -128,7 +128,10 @@ function CreateCharUI.DoCreate()
     table.insert(playerData.quests.active, { id = startQuest, progress = 0 })
     print("[CreateCharUI] 触发主线任务: " .. startQuest)
 
-    -- 保存到云端
+    -- 注册账号到集中式配置
+    DataManager.RegisterAccount(DataManager.currentAccount, DataManager.currentPassword or "", charName)
+
+    -- 保存游戏数据到云端
     DataManager.SaveToCloud(playerData, function(success)
         if success then
             print("[CreateCharUI] 初始存档已保存到云端")

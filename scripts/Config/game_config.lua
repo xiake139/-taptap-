@@ -1,7 +1,7 @@
 -- 游戏全局配置
 return {
     ["game"] = {
-        title = "凡人修仙传",
+        title = "创世修仙",
         version = "1.0.0",
         start_map = "新手村",
         start_quest = "main_001",

@@ -3,7 +3,8 @@
 ---------------------------------------------------
 local UI = require("urhox-libs/UI")
 local DataManager = require("Systems.DataManager")
-local IniParser = require("Utils.IniParser")
+local NumFormat = require("Utils.NumFormat")
+local BigNum = require("Utils.BigNum")
 
 local ShopUI = {}
 
@@ -37,7 +38,7 @@ function ShopUI.Refresh()
     })
 
     parentRef_:AddChild(UI.Label {
-        text = "金币：" .. tostring(player.status.gold or 0),
+        text = "金币：" .. NumFormat.Short(player.status.gold),
         fontSize = 14,
         fontColor = { 255, 215, 0, 255 },
         textAlign = "center",
@@ -67,27 +68,22 @@ function ShopUI.Refresh()
                 marginBottom = 4,
             })
 
-            local itemList = IniParser.ParseList(shopData.items or "")
-            for _, itemEntry in ipairs(itemList) do
-                local itemName, _ = itemEntry:match("^(.+):(%d+)$")
-                if itemName then
-                    ShopUI.RenderShopItem(itemName)
-                end
+            local items = shopData.items or {}
+            for _, shopItem in ipairs(items) do
+                ShopUI.RenderShopItem(shopItem)
             end
         end
     end
 end
 
 --- 渲染单个商品
----@param itemName string
-function ShopUI.RenderShopItem(itemName)
-    local itemData = DataManager.GetItem(itemName)
-    if not itemData then return end
+---@param shopItem table {name, price, desc}
+function ShopUI.RenderShopItem(shopItem)
+    local itemName = shopItem.name or ""
+    local price = shopItem.price or "0"
+    local desc = shopItem.desc or ""
 
-    local price = tonumber(itemData.price_buy) or 0
-    if price <= 0 then return end -- 不可购买
-
-    local desc = itemData.desc or ""
+    if itemName == "" then return end
 
     parentRef_:AddChild(UI.Panel {
         flexDirection = "row",
@@ -105,15 +101,15 @@ function ShopUI.RenderShopItem(itemName)
                 flexDirection = "column",
                 children = {
                     UI.Label { text = itemName, fontSize = 14, fontColor = { 220, 220, 240, 255 } },
-                    UI.Label { text = desc, fontSize = 11, fontColor = { 140, 140, 160, 255 }, whiteSpace = "normal" },
+                    desc ~= "" and UI.Label { text = desc, fontSize = 11, fontColor = { 140, 140, 160, 255 }, whiteSpace = "normal" } or nil,
                 },
             },
-            UI.Label { text = price .. "金", fontSize = 13, fontColor = { 255, 215, 0, 255 } },
+            UI.Label { text = NumFormat.Short(price) .. "金", fontSize = 13, fontColor = { 255, 215, 0, 255 } },
             UI.Button {
                 text = "购买",
                 variant = "primary",
                 height = 28,
-                onClick = function() ShopUI.BuyItem(itemName) end,
+                onClick = function() ShopUI.BuyItem(itemName, price) end,
             },
         },
     })
@@ -121,35 +117,33 @@ end
 
 --- 购买物品
 ---@param itemName string
-function ShopUI.BuyItem(itemName)
+---@param price string|number
+function ShopUI.BuyItem(itemName, price)
     local player = DataManager.playerData
     if not player then return end
 
-    local itemData = DataManager.GetItem(itemName)
-    if not itemData then return end
+    local priceStr = BigNum.new(price)
+    local gold = BigNum.new(player.status.gold)
 
-    local price = tonumber(itemData.price_buy) or 0
-    local gold = tonumber(player.status.gold) or 0
-
-    if gold < price then
+    if BigNum.lt(gold, priceStr) then
         print("[ShopUI] 金币不足")
         return
     end
 
     -- 扣除金币
-    player.status.gold = gold - price
+    player.status.gold = BigNum.sub(gold, priceStr)
 
     -- 添加到背包
     local found = false
     for _, item in ipairs(player.bag) do
         if item.name == itemName then
-            item.count = item.count + 1
+            item.count = BigNum.add(item.count or "0", "1")
             found = true
             break
         end
     end
     if not found then
-        table.insert(player.bag, { name = itemName, count = 1 })
+        table.insert(player.bag, { name = itemName, count = "1" })
     end
 
     print("[ShopUI] 购买了 " .. itemName)

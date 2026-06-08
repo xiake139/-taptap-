@@ -1,0 +1,350 @@
+---------------------------------------------------
+-- CloudProxy.lua - 客户端云存储代理
+-- 提供与 clientCloud 完全相同的 API 接口
+-- 内部通过远程事件与服务端通信，实现数据共享
+---------------------------------------------------
+local Shared = require("network.Shared")
+local EVENTS = Shared.EVENTS
+
+local CloudProxy = {}
+
+-- 请求 ID 计数器（确保唯一）
+local reqIdCounter_ = 0
+
+-- 待处理回调 { [reqId] = {ok=fn, error=fn} }
+local pendingCallbacks_ = {}
+
+-- 是否已初始化
+local initialized_ = false
+
+--- 生成唯一请求 ID
+local function nextReqId()
+    reqIdCounter_ = reqIdCounter_ + 1
+    return "r" .. reqIdCounter_ .. "_" .. tostring(os.time())
+end
+
+-- 连接就绪标志
+local serverReady_ = false
+
+-- 等待队列（连接就绪前的请求暂存在这里）
+local pendingQueue_ = {}
+
+--- 初始化 CloudProxy（客户端启动时调用）
+function CloudProxy.Init()
+    if initialized_ then return end
+    initialized_ = true
+
+    -- 注册远程事件
+    Shared.RegisterEvents()
+
+    -- 订阅服务端响应事件
+    SubscribeToEvent(EVENTS.CLOUD_GET_RESULT, "HandleCloudGetResult")
+    SubscribeToEvent(EVENTS.CLOUD_SET_RESULT, "HandleCloudSetResult")
+    SubscribeToEvent(EVENTS.CLOUD_BATCH_GET_RESULT, "HandleCloudBatchGetResult")
+    SubscribeToEvent(EVENTS.CLOUD_BATCH_SET_RESULT, "HandleCloudBatchSetResult")
+
+    -- 订阅连接成功事件（确保服务器连接建立后再发送 ClientReady）
+    SubscribeToEvent("ServerConnected", "HandleServerConnected")
+
+    -- 如果连接已经建立，立即发送
+    local serverConn = network:GetServerConnection()
+    if serverConn then
+        serverReady_ = true
+        serverConn:SendRemoteEvent(EVENTS.CLIENT_READY, true)
+        print("[CloudProxy] 连接已存在，立即发送 ClientReady")
+    else
+        print("[CloudProxy] 等待服务器连接...")
+    end
+
+    print("[CloudProxy] 初始化完成")
+end
+
+--- 服务器连接成功后发送 ClientReady
+function HandleServerConnected(eventType, eventData)
+    serverReady_ = true
+    local serverConn = network:GetServerConnection()
+    if serverConn then
+        serverConn:SendRemoteEvent(EVENTS.CLIENT_READY, true)
+        print("[CloudProxy] 服务器连接成功，已发送 ClientReady")
+    end
+    -- 处理等待队列中的请求
+    CloudProxy.FlushPendingQueue()
+end
+
+--- 获取服务端连接
+---@return Connection|nil
+local function getServerConn()
+    return network:GetServerConnection()
+end
+
+--- 处理等待队列（连接就绪后调用）
+function CloudProxy.FlushPendingQueue()
+    if #pendingQueue_ == 0 then return end
+    print("[CloudProxy] 处理等待队列，共 " .. #pendingQueue_ .. " 个请求")
+    local queue = pendingQueue_
+    pendingQueue_ = {}
+    for _, req in ipairs(queue) do
+        if req.type == "get" then
+            CloudProxy:Get(req.key, req.events)
+        elseif req.type == "set" then
+            CloudProxy:Set(req.key, req.value, req.events)
+        elseif req.type == "batchget" then
+            local b = CloudProxy:BatchGet()
+            for _, k in ipairs(req.keys) do b:Key(k) end
+            b:Fetch(req.events)
+        elseif req.type == "batchset" then
+            local b = CloudProxy:BatchSet()
+            for _, p in ipairs(req.pairs) do b:Set(p.key, p.value) end
+            b:Save(req.desc, req.events)
+        end
+    end
+end
+
+-- =============== 对外 API（与 clientCloud 接口一致） ===============
+
+--- 单 key 读取
+---@param key string
+---@param events table {ok=function(values, iscores), error=function(code, reason)}
+function CloudProxy:Get(key, events)
+    local serverConn = getServerConn()
+    if not serverConn then
+        -- 连接未就绪，放入队列等待
+        if not serverReady_ then
+            table.insert(pendingQueue_, { type = "get", key = key, events = events })
+            print("[CloudProxy] Get 排队等待连接: " .. key)
+            return
+        end
+        print("[CloudProxy] 无服务器连接")
+        if events and events.error then
+            events.error(-1, "无服务器连接")
+        end
+        return
+    end
+
+    local reqId = nextReqId()
+    pendingCallbacks_[reqId] = {
+        type = "get",
+        key = key,
+        ok = events and events.ok,
+        error = events and events.error,
+    }
+
+    local data = VariantMap()
+    data["ReqId"] = Variant(reqId)
+    data["Key"] = Variant(key)
+    serverConn:SendRemoteEvent(EVENTS.CLOUD_GET, true, data)
+end
+
+--- 单 key 写入
+---@param key string
+---@param value string
+---@param events table {ok=function(), error=function(code, reason)}
+function CloudProxy:Set(key, value, events)
+    local serverConn = getServerConn()
+    if not serverConn then
+        -- 连接未就绪，放入队列等待
+        if not serverReady_ then
+            table.insert(pendingQueue_, { type = "set", key = key, value = value, events = events })
+            print("[CloudProxy] Set 排队等待连接: " .. key)
+            return
+        end
+        print("[CloudProxy] 无服务器连接")
+        if events and events.error then
+            events.error(-1, "无服务器连接")
+        end
+        return
+    end
+
+    local reqId = nextReqId()
+    pendingCallbacks_[reqId] = {
+        type = "set",
+        ok = events and events.ok,
+        error = events and events.error,
+    }
+
+    local data = VariantMap()
+    data["ReqId"] = Variant(reqId)
+    data["Key"] = Variant(key)
+    data["Value"] = Variant(tostring(value))
+    serverConn:SendRemoteEvent(EVENTS.CLOUD_SET, true, data)
+end
+
+-- =============== BatchGet 构建器 ===============
+
+local BatchGetBuilder = {}
+BatchGetBuilder.__index = BatchGetBuilder
+
+function BatchGetBuilder:Key(key)
+    table.insert(self.keys_, key)
+    return self
+end
+
+function BatchGetBuilder:Fetch(events)
+    local serverConn = getServerConn()
+    if not serverConn then
+        -- 连接未就绪，放入队列等待
+        if not serverReady_ then
+            table.insert(pendingQueue_, { type = "batchget", keys = self.keys_, events = events })
+            print("[CloudProxy] BatchGet 排队等待连接")
+            return
+        end
+        print("[CloudProxy] BatchGet 无服务器连接")
+        if events and events.error then
+            events.error(-1, "无服务器连接")
+        end
+        return
+    end
+
+    local reqId = nextReqId()
+    pendingCallbacks_[reqId] = {
+        type = "batchget",
+        keys = self.keys_,
+        ok = events and events.ok,
+        error = events and events.error,
+    }
+
+    local keysStr = table.concat(self.keys_, ",")
+    local data = VariantMap()
+    data["ReqId"] = Variant(reqId)
+    data["Keys"] = Variant(keysStr)
+    serverConn:SendRemoteEvent(EVENTS.CLOUD_BATCH_GET, true, data)
+end
+
+--- 创建 BatchGet 构建器（兼容 clientCloud:BatchGet() 接口）
+function CloudProxy:BatchGet()
+    local builder = setmetatable({ keys_ = {} }, BatchGetBuilder)
+    return builder
+end
+
+-- =============== BatchSet 构建器 ===============
+
+local BatchSetBuilder = {}
+BatchSetBuilder.__index = BatchSetBuilder
+
+function BatchSetBuilder:Set(key, value)
+    table.insert(self.pairs_, { key = key, value = tostring(value) })
+    return self
+end
+
+function BatchSetBuilder:Save(desc, events)
+    local serverConn = getServerConn()
+    if not serverConn then
+        -- 连接未就绪，放入队列等待
+        if not serverReady_ then
+            table.insert(pendingQueue_, { type = "batchset", pairs = self.pairs_, desc = desc or "", events = events })
+            print("[CloudProxy] BatchSet 排队等待连接")
+            return
+        end
+        print("[CloudProxy] BatchSet 无服务器连接")
+        if events and events.error then
+            events.error(-1, "无服务器连接")
+        end
+        return
+    end
+
+    local reqId = nextReqId()
+    pendingCallbacks_[reqId] = {
+        type = "batchset",
+        ok = events and events.ok,
+        error = events and events.error,
+    }
+
+    -- 编码: key\1value\2key\1value\2...
+    local parts = {}
+    for _, p in ipairs(self.pairs_) do
+        table.insert(parts, p.key .. "\1" .. p.value)
+    end
+    local encoded = table.concat(parts, "\2")
+
+    local data = VariantMap()
+    data["ReqId"] = Variant(reqId)
+    data["Data"] = Variant(encoded)
+    serverConn:SendRemoteEvent(EVENTS.CLOUD_BATCH_SET, true, data)
+end
+
+--- 创建 BatchSet 构建器（兼容 clientCloud:BatchSet() 接口）
+function CloudProxy:BatchSet()
+    local builder = setmetatable({ pairs_ = {} }, BatchSetBuilder)
+    return builder
+end
+
+-- =============== 响应处理（全局函数，由事件系统调用） ===============
+
+function HandleCloudGetResult(eventType, eventData)
+    local reqId = eventData["ReqId"]:GetString()
+    local cb = pendingCallbacks_[reqId]
+    if not cb then return end
+    pendingCallbacks_[reqId] = nil
+
+    local success = eventData["Success"]:GetBool()
+    if success then
+        local key = eventData["Key"]:GetString()
+        local value = eventData["Value"]:GetString()
+        -- 构造与 clientCloud 一致的 values 表
+        local values = { [key] = value }
+        if cb.ok then cb.ok(values, {}) end
+    else
+        local errMsg = eventData["Error"]:GetString()
+        if cb.error then cb.error(-1, errMsg) end
+    end
+end
+
+function HandleCloudSetResult(eventType, eventData)
+    local reqId = eventData["ReqId"]:GetString()
+    local cb = pendingCallbacks_[reqId]
+    if not cb then return end
+    pendingCallbacks_[reqId] = nil
+
+    local success = eventData["Success"]:GetBool()
+    if success then
+        if cb.ok then cb.ok() end
+    else
+        local errMsg = eventData["Error"]:GetString()
+        if cb.error then cb.error(-1, errMsg) end
+    end
+end
+
+function HandleCloudBatchGetResult(eventType, eventData)
+    local reqId = eventData["ReqId"]:GetString()
+    local cb = pendingCallbacks_[reqId]
+    if not cb then return end
+    pendingCallbacks_[reqId] = nil
+
+    local success = eventData["Success"]:GetBool()
+    if success then
+        local encoded = eventData["Data"]:GetString()
+        -- 解码: key\1value\2key\1value\2...
+        local values = {}
+        if encoded ~= "" then
+            for part in encoded:gmatch("[^\2]+") do
+                local sep = part:find("\1")
+                if sep then
+                    local key = part:sub(1, sep - 1)
+                    local val = part:sub(sep + 1)
+                    values[key] = val
+                end
+            end
+        end
+        if cb.ok then cb.ok(values, {}) end
+    else
+        local errMsg = eventData["Error"]:GetString()
+        if cb.error then cb.error(-1, errMsg) end
+    end
+end
+
+function HandleCloudBatchSetResult(eventType, eventData)
+    local reqId = eventData["ReqId"]:GetString()
+    local cb = pendingCallbacks_[reqId]
+    if not cb then return end
+    pendingCallbacks_[reqId] = nil
+
+    local success = eventData["Success"]:GetBool()
+    if success then
+        if cb.ok then cb.ok() end
+    else
+        local errMsg = eventData["Error"]:GetString()
+        if cb.error then cb.error(-1, errMsg) end
+    end
+end
+
+return CloudProxy

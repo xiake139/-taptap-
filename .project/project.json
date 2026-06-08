@@ -5,19 +5,45 @@
     "id": "1151987553"
   },
   "entry": "main.lua",
-  "version": "1.0.0",
+  "version": "1.0.14",
   "taptap_publish": {
-    "title": "<game title, required>",
+    "developer_id": 384724,
+    "title": "创世修仙",
     "description": "<game description>",
-    "category": "<game category: rpg, casual, action, strategy, simulation, trivia, arcade, adventure, card, sports, racing, puzzle, educational, music, word, board>",
-    "screen_orientation": "landscape",
+    "category": "rpg",
+    "screen_orientation": "portrait",
     "collection_type": "sce",
     "trial_note": "<developer's note>",
-    "app_platforms": "1,2"
+    "app_platforms": "1,2",
+    "app_id": 867705,
+    "miniapp_id": "tapmcfqqybo8ttkbbp"
   },
   "assets": {
-    "icon": "",
-    "screenshots": [],
-    "promotional_image": ""
+    "icon": "./game_material/ICON_2026-06-07T00-51-30_01.jpg",
+    "screenshots": [
+      "./game_material/SCREENSHOT_2026-06-07T01-05-30_01.jpg",
+      "./game_material/SCREENSHOT_2026-06-07T00-51-30_02.png",
+      "./game_material/SCREENSHOT_2026-06-07T00-51-30_03.png"
+    ],
+    "promotional_image": "./game_material/PROMO_2026-06-07T00-51-30_01.jpg",
+    "icon_url": "https://tapcode-sce.spark.xd.com/assets/game_material/创世修仙/ICON_2026-06-07T00-51-30_01.jpg",
+    "screenshot_urls": [
+      "https://tapcode-sce.spark.xd.com/assets/game_material/创世修仙/SCREENSHOT_2026-06-07T01-05-30_01.jpg",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/创世修仙/SCREENSHOT_2026-06-07T00-51-30_02.png",
+      "https://tapcode-sce.spark.xd.com/assets/game_material/创世修仙/SCREENSHOT_2026-06-07T00-51-30_03.png"
+    ],
+    "promotional_image_url": "https://tapcode-sce.spark.xd.com/assets/game_material/创世修仙/PROMO_2026-06-07T00-51-30_01.jpg",
+    "cover_vertical": "./game_material/COVER_VERTICAL_2026-06-07T01-02-55_01.png",
+    "cover_vertical_url": "https://tapcode-sce.spark.xd.com/assets/game_material/创世修仙/COVER_VERTICAL_2026-06-07T01-02-55_01.png",
+    "cover_horizontal": "./game_material/COVER_HORIZONTAL_2026-06-07T01-04-18_01.png",
+    "cover_horizontal_url": "https://tapcode-sce.spark.xd.com/assets/game_material/创世修仙/COVER_HORIZONTAL_2026-06-07T01-04-18_01.png"
+  },
+  "test_qrcode": {
+    "url": "https://tapcode-sce.spark.xd.com/qrcode/p_edp1_1780815190116.png",
+    "generated_at": "2026-06-07T06:53:10.249Z"
+  },
+  "metadata": {
+    "updated_at": "2026-06-07T06:53:10.249Z",
+    "promo_dependent_hash": "a556436925535e2e4d8e515368a317eb"
   }
 }

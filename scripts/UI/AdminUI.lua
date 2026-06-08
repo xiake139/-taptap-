@@ -1,0 +1,2713 @@
+---------------------------------------------------
+-- AdminUI.lua - 管理员后台界面（完整配置管理版）
+-- 支持所有系统配置的读取、修改、添加
+---------------------------------------------------
+local UI = require("urhox-libs/UI")
+local DataManager = require("Systems.DataManager")
+local IniParser = require("Utils.IniParser")
+local NumFormat = require("Utils.NumFormat")
+local BigNum = require("Utils.BigNum")
+
+local AdminUI = {}
+
+-- 管理员凭据
+local ADMIN_USERNAME = "xiake139"
+local ADMIN_PASSWORD = "114124"
+
+-- 模块状态
+local adminLoggedIn_ = false
+local rootPanel_ = nil
+local contentPanel_ = nil
+local msgLabel_ = nil
+local currentCategory_ = "players"  -- 当前选中分类
+local editDialog_ = nil
+
+-- 分类定义
+local CATEGORIES = {
+    { id = "players", name = "玩家管理" },
+    { id = "game_config", name = "游戏设置" },
+    { id = "maps", name = "地图" },
+    { id = "monsters", name = "怪物" },
+    { id = "items", name = "物品" },
+    { id = "equipment", name = "装备" },
+    { id = "quests", name = "任务" },
+    { id = "shops", name = "商店" },
+    { id = "dungeons", name = "副本" },
+    { id = "npcs", name = "NPC" },
+    { id = "giftpacks", name = "礼包" },
+}
+
+-- =============== 工具函数 ===============
+
+--- 显示提示信息
+local function ShowMsg(text)
+    if msgLabel_ then
+        msgLabel_:SetText(text)
+    end
+end
+
+--- 关闭弹窗
+local function CloseDialog()
+    if editDialog_ and rootPanel_ then
+        rootPanel_:RemoveChild(editDialog_)
+        editDialog_ = nil
+    end
+end
+
+--- 创建表单字段（标签 + 输入框）
+---@param label string
+---@param value string
+---@param opts table|nil {width, placeholder, multiline}
+---@return Widget panel, Widget field
+local function CreateFormField(label, value, opts)
+    opts = opts or {}
+    local field = UI.TextField {
+        value = tostring(value or ""),
+        placeholder = opts.placeholder or "",
+        width = opts.width or 200,
+        height = opts.height or 32,
+        fontSize = 12,
+    }
+    local panel = UI.Panel {
+        flexDirection = "row",
+        alignItems = "center",
+        gap = 8,
+        marginBottom = 4,
+        children = {
+            UI.Label {
+                text = label,
+                fontSize = 12,
+                fontColor = { 180, 180, 200, 255 },
+                width = opts.labelWidth or 80,
+            },
+            field,
+        },
+    }
+    return panel, field
+end
+
+-- 系统配置保存队列：同一个 key 同时只允许一个请求 in-flight
+local configSaving_ = {}     -- configSaving_[key] = true 表示该 key 正在保存
+local configDirty_ = {}      -- configDirty_[key] = {content, onDone} 排队中的最新数据
+local CONFIG_MAX_RETRIES = 2
+
+--- 保存配置到云端（使用 DataManager 的共享云存储）
+---@param configKey string 云端存储 key
+---@param content string INI 内容
+---@param onDone fun(success: boolean)|nil
+local function SaveConfigToCloud(configKey, content, onDone)
+    local cloud = DataManager.GetCloudProvider()
+    if not cloud then
+        print("[Admin] 云存储不可用")
+        if onDone then onDone(false) end
+        return
+    end
+
+    -- 如果该 key 正在保存中，排队最新数据（覆盖旧排队）
+    if configSaving_[configKey] then
+        configDirty_[configKey] = { content = content, onDone = onDone }
+        return
+    end
+
+    configSaving_[configKey] = true
+    configDirty_[configKey] = nil
+
+    local retries = 0
+    local function doSave(c, cb)
+        cloud:Set(configKey, c, {
+            ok = function()
+                configSaving_[configKey] = false
+                print("[Admin] 配置已保存: " .. configKey)
+                if cb then cb(true) end
+                -- 如果保存期间有新数据排队，立即保存最新版
+                local queued = configDirty_[configKey]
+                if queued then
+                    configDirty_[configKey] = nil
+                    SaveConfigToCloud(configKey, queued.content, queued.onDone)
+                end
+            end,
+            error = function(code, reason)
+                if retries < CONFIG_MAX_RETRIES then
+                    retries = retries + 1
+                    print("[Admin] 保存失败，重试 (" .. retries .. "): " .. configKey)
+                    doSave(c, cb)
+                else
+                    configSaving_[configKey] = false
+                    print("[Admin] 保存失败(已重试): " .. tostring(reason))
+                    if cb then cb(false) end
+                    -- 有排队数据也尝试
+                    local queued = configDirty_[configKey]
+                    if queued then
+                        configDirty_[configKey] = nil
+                        SaveConfigToCloud(configKey, queued.content, queued.onDone)
+                    end
+                end
+            end,
+        })
+    end
+    doSave(content, onDone)
+end
+
+--- 将 DataManager 中的数据序列化为 INI 并保存
+---@param category string
+local function SaveCategoryToCloud(category)
+    local content = ""
+    if category == "maps" then
+        local sections = {}
+        for id, data in pairs(DataManager.maps) do
+            sections[id] = {
+                ["名称"] = data.name or id,
+                ["描述"] = data.desc or "",
+                ["怪物"] = data.monsters or "",
+                ["NPC"] = data.npcs or "",
+                ["前方"] = data.front or "",
+                ["后方"] = data.back or "",
+                ["左方"] = data.left or "",
+                ["右方"] = data.right or "",
+                ["等级要求"] = NumFormat.Int(data.level_req or 0),
+            }
+        end
+        content = IniParser.Serialize(sections)
+        SaveConfigToCloud("系统配置/maps.ini", content, function(ok)
+            ShowMsg(ok and "地图配置已保存到云端" or "保存失败")
+        end)
+    elseif category == "monsters" then
+        local sections = {}
+        for id, data in pairs(DataManager.monsters) do
+            sections[id] = {
+                ["名称"] = data.name or id,
+                ["描述"] = data.desc or "",
+                ["生命值"] = NumFormat.Int(data.hp or 20),
+                ["攻击力"] = NumFormat.Int(data.atk or 3),
+                ["防御力"] = NumFormat.Int(data.def or 1),
+                ["经验值"] = NumFormat.Int(data.exp or 5),
+                ["金币"] = NumFormat.Int(data.gold or 2),
+                ["掉落"] = data.drops or "",
+            }
+        end
+        content = IniParser.Serialize(sections)
+        SaveConfigToCloud("系统配置/monsters.ini", content, function(ok)
+            ShowMsg(ok and "怪物配置已保存到云端" or "保存失败")
+        end)
+    elseif category == "items" then
+        local sections = {}
+        for id, data in pairs(DataManager.items) do
+            local sec = {
+                ["名称"] = data.name or id,
+                ["类型"] = data.type or "材料",
+                ["数值"] = tostring(data.value or "0"),
+                ["描述"] = data.desc or "",
+            }
+            if data.duration and tonumber(data.duration) and tonumber(data.duration) > 0 then
+                sec["持续时间"] = tostring(data.duration)
+            end
+            sections[id] = sec
+        end
+        content = IniParser.Serialize(sections)
+        SaveConfigToCloud("系统配置/items.ini", content, function(ok)
+            ShowMsg(ok and "物品配置已保存到云端" or "保存失败")
+        end)
+    elseif category == "equipment" then
+        local sections = {}
+        for id, data in pairs(DataManager.equipment) do
+            sections[id] = {
+                ["名称"] = data.name or id,
+                ["部位"] = data.slot or "武器",
+                ["品质"] = data.quality or "白色",
+                ["描述"] = data.desc or "",
+                ["攻击"] = NumFormat.Int(data.atk or 0),
+                ["防御"] = NumFormat.Int(data.def or 0),
+                ["生命"] = NumFormat.Int(data.hp or 0),
+                ["等级需求"] = NumFormat.Int(data.level_req or 1),
+                ["购买价"] = NumFormat.Int(data.price_buy or 0),
+                ["出售价"] = NumFormat.Int(data.price_sell or 0),
+            }
+        end
+        content = IniParser.Serialize(sections)
+        SaveConfigToCloud("系统配置/equipment.ini", content, function(ok)
+            ShowMsg(ok and "装备配置已保存到云端" or "保存失败")
+        end)
+    elseif category == "quests" then
+        local sections = {}
+        for id, data in pairs(DataManager.quests) do
+            sections[id] = {
+                ["名称"] = data.name or id,
+                ["类型"] = data.type or "主线",
+                ["描述"] = data.desc or "",
+                ["目标类型"] = data.target_type or "击杀",
+                ["目标名称"] = data.target_name or "",
+                ["目标数量"] = NumFormat.Int(data.target_count or 1),
+                ["奖励经验"] = NumFormat.Int(data.reward_exp or 0),
+                ["奖励金币"] = NumFormat.Int(data.reward_gold or 0),
+                ["奖励物品"] = data.reward_items or "",
+                ["后续任务"] = data.next_quest or "",
+            }
+        end
+        content = IniParser.Serialize(sections)
+        SaveConfigToCloud("系统配置/quests.ini", content, function(ok)
+            ShowMsg(ok and "任务配置已保存到云端" or "保存失败")
+        end)
+    elseif category == "shops" then
+        local sections = {}
+        for id, data in pairs(DataManager.shops) do
+            local sec = {
+                ["名称"] = data.name or id,
+                ["描述"] = data.desc or "",
+                ["商品数量"] = tostring(#(data.items or {})),
+            }
+            for i, item in ipairs(data.items or {}) do
+                sec["商品_" .. i] = (item.name or "") .. ":" .. tostring(item.price or 0) .. ":" .. (item.desc or "")
+            end
+            sections[id] = sec
+        end
+        content = IniParser.Serialize(sections)
+        SaveConfigToCloud("系统配置/shops.ini", content, function(ok)
+            ShowMsg(ok and "商店配置已保存到云端" or "保存失败")
+        end)
+    elseif category == "dungeons" then
+        local sections = {}
+        for id, data in pairs(DataManager.dungeons) do
+            local sec = {
+                ["名称"] = data.name or id,
+                ["描述"] = data.desc or "",
+                ["等级需求"] = NumFormat.Int(data.level_req or 1),
+                ["波数"] = NumFormat.Int(data.waves or 1),
+                ["首领"] = data.boss or "",
+                ["奖励经验"] = NumFormat.Int(data.reward_exp or 0),
+                ["奖励金币"] = NumFormat.Int(data.reward_gold or 0),
+                ["奖励物品"] = data.reward_items or "",
+            }
+            for i = 1, (data.waves or 1) do
+                sec["第" .. i .. "波"] = data["wave_" .. i] or ""
+            end
+            sections[id] = sec
+        end
+        content = IniParser.Serialize(sections)
+        SaveConfigToCloud("系统配置/dungeons.ini", content, function(ok)
+            ShowMsg(ok and "副本配置已保存到云端" or "保存失败")
+        end)
+    elseif category == "npcs" then
+        local sections = {}
+        for id, data in pairs(DataManager.npcs) do
+            local sec = {
+                ["名称"] = data.name or id,
+                ["类型"] = data.type or "任务",
+                ["对话"] = data.dialog or "",
+                ["所在地"] = data.location or "",
+            }
+            if data.type == "商人" or data.type == "merchant" then
+                sec["商店编号"] = data.shop_id or ""
+            else
+                sec["任务编号"] = data.quest_id or ""
+            end
+            sections[id] = sec
+        end
+        content = IniParser.Serialize(sections)
+        SaveConfigToCloud("系统配置/npcs.ini", content, function(ok)
+            ShowMsg(ok and "NPC配置已保存到云端" or "保存失败")
+        end)
+    elseif category == "giftpacks" then
+        local sections = {}
+        for id, data in pairs(DataManager.giftpacks) do
+            sections[id] = {
+                ["名称"] = data.name or id,
+                ["描述"] = data.desc or "",
+                ["奖励物品"] = data.reward_items or "",
+                ["奖励金币"] = NumFormat.Int(data.reward_gold or 0),
+                ["奖励经验"] = NumFormat.Int(data.reward_exp or 0),
+                ["最大使用次数"] = NumFormat.Int(data.max_uses or 0),
+                ["已使用次数"] = NumFormat.Int(data.used_count or 0),
+            }
+        end
+        content = IniParser.Serialize(sections)
+        SaveConfigToCloud("系统配置/giftpacks.ini", content, function(ok)
+            ShowMsg(ok and "礼包配置已保存到云端" or "保存失败")
+        end)
+    elseif category == "game_config" then
+        local gc = DataManager.gameConfig
+        local sections = {}
+        local gameSec = gc["game"] or {}
+        sections["游戏设置"] = {
+            ["标题"] = gameSec.title or "修仙游戏",
+            ["版本"] = gameSec.version or "1.0.0",
+            ["起始地图"] = gameSec.start_map or "新手村",
+            ["起始任务"] = gameSec.start_quest or "main_001",
+        }
+        local defSec = gc["player_default"] or {}
+        sections["玩家默认属性"] = {
+            ["生命值"] = NumFormat.Int(defSec.hp or 100),
+            ["法力值"] = NumFormat.Int(defSec.mp or 50),
+            ["攻击力"] = NumFormat.Int(defSec.atk or 5),
+            ["防御力"] = NumFormat.Int(defSec.def or 3),
+            ["等级"] = NumFormat.Int(defSec.level or 1),
+            ["经验"] = NumFormat.Int(defSec.exp or 0),
+            ["金币"] = NumFormat.Int(defSec.gold or 50),
+            ["境界"] = defSec.cultivation or "练气期一层",
+        }
+        local lvlSec = gc["level_up"] or {}
+        sections["升级配置"] = {
+            ["基础经验"] = NumFormat.Int(lvlSec.base_exp or 20),
+            ["经验系数"] = tostring(lvlSec.exp_factor or 1.5),
+            ["每级生命"] = NumFormat.Int(lvlSec.hp_per_level or 20),
+            ["每级法力"] = NumFormat.Int(lvlSec.mp_per_level or 10),
+            ["每级攻击"] = NumFormat.Int(lvlSec.atk_per_level or 3),
+            ["每级防御"] = NumFormat.Int(lvlSec.def_per_level or 2),
+        }
+        local cultSec = gc["cultivation"] or {}
+        sections["境界配置"] = {}
+        for k, v in pairs(cultSec) do
+            sections["境界配置"][tostring(k)] = tostring(v)
+        end
+        content = IniParser.Serialize(sections)
+        SaveConfigToCloud("系统配置/game_config.ini", content, function(ok)
+            ShowMsg(ok and "游戏设置已保存到云端" or "保存失败")
+        end)
+    end
+end
+
+-- =============== 分类内容渲染 ===============
+
+--- 清空内容面板
+local function ClearContent()
+    if not contentPanel_ then return end
+    local children = contentPanel_:GetChildren()
+    if children then
+        for i = #children, 1, -1 do
+            contentPanel_:RemoveChild(children[i])
+        end
+    end
+end
+
+--- 创建列表项行
+---@param text string
+---@param subtext string
+---@param onEdit fun()
+---@param index number
+local function CreateListRow(text, subtext, onEdit, index, onDelete)
+    local bgColor = (index % 2 == 0) and { 25, 20, 45, 200 } or { 20, 15, 35, 200 }
+    local buttons = {
+        UI.Button {
+            text = "编辑",
+            fontSize = 11,
+            width = 50,
+            height = 26,
+            variant = "secondary",
+            onClick = onEdit,
+        },
+    }
+    if onDelete then
+        table.insert(buttons, UI.Button {
+            text = "删除",
+            fontSize = 11,
+            width = 50,
+            height = 26,
+            variant = "danger",
+            onClick = onDelete,
+        })
+    end
+    return UI.Panel {
+        width = "100%",
+        flexDirection = "row",
+        alignItems = "center",
+        paddingLeft = 12,
+        paddingRight = 12,
+        paddingTop = 6,
+        paddingBottom = 6,
+        backgroundColor = bgColor,
+        children = {
+            UI.Panel {
+                flexDirection = "column",
+                flexGrow = 1,
+                flexShrink = 1,
+                children = {
+                    UI.Label {
+                        text = text,
+                        fontSize = 13,
+                        fontColor = { 220, 220, 240, 255 },
+                    },
+                    UI.Label {
+                        text = subtext,
+                        fontSize = 11,
+                        fontColor = { 140, 140, 160, 255 },
+                    },
+                },
+            },
+            UI.Panel {
+                flexDirection = "row",
+                gap = 4,
+                children = buttons,
+            },
+        },
+    }
+end
+
+--- 通用编辑弹窗
+---@param title string
+---@param fields table[] { {label, key, value, opts} }
+---@param onSave fun(values: table)
+local function ShowEditDialog(title, fields, onSave)
+    CloseDialog()
+
+    local fieldWidgets = {}
+    local formChildren = {}
+
+    table.insert(formChildren, UI.Label {
+        text = title,
+        fontSize = 16,
+        fontColor = { 255, 200, 100, 255 },
+        textAlign = "center",
+        marginBottom = 8,
+    })
+
+    for _, f in ipairs(fields) do
+        local panel, field = CreateFormField(f.label, f.value, f.opts)
+        fieldWidgets[f.key] = field
+        table.insert(formChildren, panel)
+    end
+
+    local dialogMsg = UI.Label {
+        text = "",
+        fontSize = 11,
+        fontColor = { 100, 255, 100, 255 },
+        textAlign = "center",
+        height = 16,
+    }
+    table.insert(formChildren, dialogMsg)
+
+    table.insert(formChildren, UI.Panel {
+        flexDirection = "row",
+        gap = 12,
+        marginTop = 8,
+        justifyContent = "center",
+        children = {
+            UI.Button {
+                text = "保存",
+                variant = "primary",
+                width = 80,
+                onClick = function()
+                    local values = {}
+                    for key, widget in pairs(fieldWidgets) do
+                        values[key] = widget:GetValue() or ""
+                    end
+                    onSave(values)
+                    dialogMsg:SetText("已保存")
+                end,
+            },
+            UI.Button {
+                text = "关闭",
+                variant = "secondary",
+                width = 80,
+                onClick = function()
+                    CloseDialog()
+                end,
+            },
+        },
+    })
+
+    editDialog_ = UI.Panel {
+        width = "100%",
+        height = "100%",
+        position = "absolute",
+        justifyContent = "center",
+        alignItems = "center",
+        backgroundColor = { 0, 0, 0, 180 },
+        children = {
+            UI.ScrollView {
+                width = 380,
+                maxHeight = 500,
+                backgroundColor = { 30, 25, 55, 250 },
+                borderRadius = 12,
+                padding = 16,
+                children = {
+                    UI.Panel {
+                        width = "100%",
+                        flexDirection = "column",
+                        gap = 4,
+                        children = formChildren,
+                    },
+                },
+            },
+        },
+    }
+
+    if rootPanel_ then
+        rootPanel_:AddChild(editDialog_)
+    end
+end
+
+-- =============== 玩家管理 ===============
+
+-- 前向声明
+local RenderPlayers
+local RenderItems
+local RenderShops
+
+--- 显示玩家详细数据弹窗（查看+修改）
+---@param username string
+---@param accountInfo table {username, password, charName}
+---@param editMode boolean 是否可编辑
+local function ShowPlayerDetailDialog(username, accountInfo, editMode)
+    CloseDialog()
+    ShowMsg("正在加载 " .. username .. " 的数据...")
+
+    DataManager.LoadPlayerDataForAdmin(username, function(playerData)
+        if not playerData then
+            -- 无游戏数据，只显示账号信息
+            playerData = {
+                account = { username = username, password = accountInfo.password, char_name = accountInfo.charName },
+                status = {},
+                bag = {},
+                equip = { weapon = "", armor = "", accessory = "" },
+                quests = { active = {}, completed = {} },
+            }
+        end
+        playerData.account.username = username
+        playerData.account.password = accountInfo.password
+        playerData.account.char_name = accountInfo.charName
+
+        ShowMsg("已加载 " .. username .. " 的数据")
+
+        -- 构建表单字段
+        local fieldWidgets = {}
+        local formChildren = {}
+
+        local title = editMode and ("修改玩家 - " .. username) or ("查看玩家 - " .. username)
+        table.insert(formChildren, UI.Label {
+            text = title,
+            fontSize = 16,
+            fontColor = { 255, 200, 100, 255 },
+            textAlign = "center",
+            marginBottom = 8,
+        })
+
+        -- === 账号信息 ===
+        table.insert(formChildren, UI.Label {
+            text = "【账号信息】",
+            fontSize = 13,
+            fontColor = { 100, 200, 255, 255 },
+            marginTop = 6,
+            marginBottom = 2,
+        })
+        local accFields = {
+            { label = "账号", key = "acc_username", value = username },
+            { label = "密码", key = "acc_password", value = accountInfo.password },
+            { label = "角色名", key = "acc_charName", value = accountInfo.charName },
+        }
+        for _, f in ipairs(accFields) do
+            local panel, field = CreateFormField(f.label, f.value, { width = 180 })
+            if not editMode then
+                field:SetDisabled(true)
+            end
+            -- 账号名不可修改
+            if f.key == "acc_username" then
+                field:SetDisabled(true)
+            end
+            fieldWidgets[f.key] = field
+            table.insert(formChildren, panel)
+        end
+
+        -- === 状态数据 ===
+        table.insert(formChildren, UI.Label {
+            text = "【状态数据】",
+            fontSize = 13,
+            fontColor = { 100, 200, 255, 255 },
+            marginTop = 6,
+            marginBottom = 2,
+        })
+        local st = playerData.status or {}
+        local statusFields = {
+            { label = "姓名", key = "st_name", value = st.name or "" },
+            { label = "等级", key = "st_level", value = st.level or "1" },
+            { label = "经验", key = "st_exp", value = st.exp or "0" },
+            { label = "生命值", key = "st_hp", value = st.hp or "100" },
+            { label = "最大生命", key = "st_max_hp", value = st.max_hp or "100" },
+            { label = "法力值", key = "st_mp", value = st.mp or "50" },
+            { label = "最大法力", key = "st_max_mp", value = st.max_mp or "50" },
+            { label = "攻击力", key = "st_atk", value = st.atk or "5" },
+            { label = "防御力", key = "st_def", value = st.def or "3" },
+            { label = "金币", key = "st_gold", value = st.gold or "50" },
+            { label = "境界", key = "st_cultivation", value = st.cultivation or "练气期一层" },
+            { label = "当前地图", key = "st_current_map", value = st.current_map or "新手村" },
+        }
+        for _, f in ipairs(statusFields) do
+            local panel, field = CreateFormField(f.label, f.value, { width = 150 })
+            if not editMode then field:SetDisabled(true) end
+            fieldWidgets[f.key] = field
+            table.insert(formChildren, panel)
+        end
+
+        -- === 背包数据 ===
+        table.insert(formChildren, UI.Label {
+            text = "【背包数据】",
+            fontSize = 13,
+            fontColor = { 100, 200, 255, 255 },
+            marginTop = 6,
+            marginBottom = 2,
+        })
+        local bagStr = ""
+        for i, item in ipairs(playerData.bag or {}) do
+            if i > 1 then bagStr = bagStr .. "," end
+            bagStr = bagStr .. item.name .. ":" .. item.count
+        end
+        if bagStr == "" then bagStr = "(空)" end
+        local bagPanel, bagField = CreateFormField("物品", bagStr, { width = 250, placeholder = "物品:数量,物品:数量" })
+        if not editMode then bagField:SetDisabled(true) end
+        fieldWidgets["bag_items"] = bagField
+        table.insert(formChildren, bagPanel)
+
+        -- === 装备数据 ===
+        table.insert(formChildren, UI.Label {
+            text = "【装备数据】",
+            fontSize = 13,
+            fontColor = { 100, 200, 255, 255 },
+            marginTop = 6,
+            marginBottom = 2,
+        })
+        local eq = playerData.equip or {}
+        local equipFields = {
+            { label = "武器", key = "eq_weapon", value = eq.weapon or "" },
+            { label = "防具", key = "eq_armor", value = eq.armor or "" },
+            { label = "饰品", key = "eq_accessory", value = eq.accessory or "" },
+        }
+        for _, f in ipairs(equipFields) do
+            local panel, field = CreateFormField(f.label, f.value, { width = 150 })
+            if not editMode then field:SetDisabled(true) end
+            fieldWidgets[f.key] = field
+            table.insert(formChildren, panel)
+        end
+
+        -- === 任务数据 ===
+        table.insert(formChildren, UI.Label {
+            text = "【任务数据】",
+            fontSize = 13,
+            fontColor = { 100, 200, 255, 255 },
+            marginTop = 6,
+            marginBottom = 2,
+        })
+        local quests = playerData.quests or { active = {}, completed = {} }
+        local activeStr = ""
+        for i, q in ipairs(quests.active or {}) do
+            if i > 1 then activeStr = activeStr .. "," end
+            activeStr = activeStr .. q.id .. ":" .. q.progress
+        end
+        if activeStr == "" then activeStr = "(无)" end
+        local activePanel, activeField = CreateFormField("进行中", activeStr, { width = 250, placeholder = "任务ID:进度,..." })
+        if not editMode then activeField:SetDisabled(true) end
+        fieldWidgets["quest_active"] = activeField
+        table.insert(formChildren, activePanel)
+
+        local completedStr = table.concat(quests.completed or {}, ",")
+        if completedStr == "" then completedStr = "(无)" end
+        local completedPanel, completedField = CreateFormField("已完成", completedStr, { width = 250, placeholder = "任务ID,任务ID,..." })
+        if not editMode then completedField:SetDisabled(true) end
+        fieldWidgets["quest_completed"] = completedField
+        table.insert(formChildren, completedPanel)
+
+        -- === 礼包使用记录 ===
+        table.insert(formChildren, UI.Label {
+            text = "【礼包使用记录】",
+            fontSize = 13,
+            fontColor = { 100, 200, 255, 255 },
+            marginTop = 6,
+            marginBottom = 2,
+        })
+        local redeemedCodes = playerData.redeemed_codes or {}
+        local redeemedStr = table.concat(redeemedCodes, ",")
+        if redeemedStr == "" then redeemedStr = "(无)" end
+        local redeemedPanel, redeemedField = CreateFormField("已兑换", redeemedStr, { width = 250, placeholder = "兑换码1,兑换码2,..." })
+        if not editMode then redeemedField:SetDisabled(true) end
+        fieldWidgets["redeemed_codes"] = redeemedField
+        table.insert(formChildren, redeemedPanel)
+
+        -- 弹窗消息
+        local dialogMsg = UI.Label {
+            text = "",
+            fontSize = 11,
+            fontColor = { 100, 255, 100, 255 },
+            textAlign = "center",
+            height = 16,
+            marginTop = 4,
+        }
+        table.insert(formChildren, dialogMsg)
+
+        -- 按钮
+        local btnChildren = {}
+        if editMode then
+            table.insert(btnChildren, UI.Button {
+                text = "保存全部",
+                variant = "primary",
+                width = 90,
+                onClick = function()
+                    dialogMsg:SetText("保存中...")
+                    -- 收集数据
+                    local newAccPassword = fieldWidgets["acc_password"]:GetValue() or ""
+                    local newAccCharName = fieldWidgets["acc_charName"]:GetValue() or ""
+
+                    -- 构建新的 playerData
+                    local newPlayerData = {
+                        account = {
+                            username = username,
+                            password = newAccPassword,
+                            char_name = newAccCharName,
+                        },
+                        status = {
+                            name = fieldWidgets["st_name"]:GetValue() or "",
+                            level = fieldWidgets["st_level"]:GetValue() or "1",
+                            exp = fieldWidgets["st_exp"]:GetValue() or "0",
+                            hp = fieldWidgets["st_hp"]:GetValue() or "100",
+                            max_hp = fieldWidgets["st_max_hp"]:GetValue() or "100",
+                            mp = fieldWidgets["st_mp"]:GetValue() or "50",
+                            max_mp = fieldWidgets["st_max_mp"]:GetValue() or "50",
+                            atk = fieldWidgets["st_atk"]:GetValue() or "5",
+                            def = fieldWidgets["st_def"]:GetValue() or "3",
+                            gold = fieldWidgets["st_gold"]:GetValue() or "50",
+                            cultivation = fieldWidgets["st_cultivation"]:GetValue() or "练气期一层",
+                            current_map = fieldWidgets["st_current_map"]:GetValue() or "新手村",
+                        },
+                        bag = {},
+                        equip = {
+                            weapon = fieldWidgets["eq_weapon"]:GetValue() or "",
+                            armor = fieldWidgets["eq_armor"]:GetValue() or "",
+                            accessory = fieldWidgets["eq_accessory"]:GetValue() or "",
+                        },
+                        quests = { active = {}, completed = {} },
+                        redeemed_codes = {},
+                    }
+
+                    -- 解析礼包使用记录
+                    local redeemedVal = fieldWidgets["redeemed_codes"]:GetValue() or ""
+                    if redeemedVal ~= "(无)" and redeemedVal ~= "" then
+                        for code in redeemedVal:gmatch("[^,]+") do
+                            local trimmed = code:match("^%s*(.-)%s*$")
+                            if trimmed and trimmed ~= "" then
+                                table.insert(newPlayerData.redeemed_codes, trimmed)
+                            end
+                        end
+                    end
+
+                    -- 解析背包
+                    local bagVal = fieldWidgets["bag_items"]:GetValue() or ""
+                    if bagVal ~= "(空)" and bagVal ~= "" then
+                        for entry in bagVal:gmatch("[^,]+") do
+                            local name, cnt = entry:match("^(.+):(%d+)$")
+                            if name then
+                                table.insert(newPlayerData.bag, { name = name, count = cnt or "1" })
+                            end
+                        end
+                    end
+
+                    -- 解析进行中任务
+                    local activeVal = fieldWidgets["quest_active"]:GetValue() or ""
+                    if activeVal ~= "(无)" and activeVal ~= "" then
+                        for entry in activeVal:gmatch("[^,]+") do
+                            local id, progress = entry:match("^(.+):(%d+)$")
+                            if id then
+                                table.insert(newPlayerData.quests.active, { id = id, progress = progress or "0" })
+                            end
+                        end
+                    end
+
+                    -- 解析已完成任务
+                    local completedVal = fieldWidgets["quest_completed"]:GetValue() or ""
+                    if completedVal ~= "(无)" and completedVal ~= "" then
+                        for qid in completedVal:gmatch("[^,]+") do
+                            local trimmed = qid:match("^%s*(.-)%s*$")
+                            if trimmed and trimmed ~= "" then
+                                table.insert(newPlayerData.quests.completed, trimmed)
+                            end
+                        end
+                    end
+
+                    -- 先保存账号信息
+                    DataManager.UpdateAccountInfo(username, {
+                        password = newAccPassword,
+                        charName = newAccCharName,
+                    }, function(accOk)
+                        -- 再保存游戏数据
+                        DataManager.SavePlayerDataForAdmin(username, newPlayerData, function(dataOk)
+                            if accOk and dataOk then
+                                dialogMsg:SetText("全部保存成功!")
+                            elseif accOk then
+                                dialogMsg:SetText("账号已保存，游戏数据保存失败")
+                            elseif dataOk then
+                                dialogMsg:SetText("游戏数据已保存，账号保存失败")
+                            else
+                                dialogMsg:SetText("保存失败")
+                            end
+                        end)
+                    end)
+                end,
+            })
+        end
+        table.insert(btnChildren, UI.Button {
+            text = "关闭",
+            variant = "secondary",
+            width = 80,
+            onClick = function()
+                CloseDialog()
+                RenderPlayers()
+            end,
+        })
+
+        table.insert(formChildren, UI.Panel {
+            flexDirection = "row",
+            gap = 12,
+            marginTop = 8,
+            justifyContent = "center",
+            children = btnChildren,
+        })
+
+        -- 创建弹窗
+        editDialog_ = UI.Panel {
+            width = "100%",
+            height = "100%",
+            position = "absolute",
+            justifyContent = "center",
+            alignItems = "center",
+            backgroundColor = { 0, 0, 0, 180 },
+            children = {
+                UI.ScrollView {
+                    width = 400,
+                    maxHeight = 550,
+                    backgroundColor = { 30, 25, 55, 250 },
+                    borderRadius = 12,
+                    padding = 16,
+                    children = {
+                        UI.Panel {
+                            width = "100%",
+                            flexDirection = "column",
+                            gap = 3,
+                            children = formChildren,
+                        },
+                    },
+                },
+            },
+        }
+
+        if rootPanel_ then
+            rootPanel_:AddChild(editDialog_)
+        end
+    end)
+end
+
+--- 显示删除确认弹窗
+---@param username string
+local function ShowDeleteConfirmDialog(username)
+    CloseDialog()
+
+    local dialogMsg = UI.Label {
+        text = "",
+        fontSize = 11,
+        fontColor = { 255, 100, 100, 255 },
+        textAlign = "center",
+        height = 16,
+    }
+
+    editDialog_ = UI.Panel {
+        width = "100%",
+        height = "100%",
+        position = "absolute",
+        justifyContent = "center",
+        alignItems = "center",
+        backgroundColor = { 0, 0, 0, 180 },
+        children = {
+            UI.Panel {
+                width = 320,
+                backgroundColor = { 40, 20, 20, 250 },
+                borderRadius = 12,
+                padding = 20,
+                flexDirection = "column",
+                alignItems = "center",
+                gap = 12,
+                children = {
+                    UI.Label {
+                        text = "确认删除玩家",
+                        fontSize = 16,
+                        fontColor = { 255, 100, 100, 255 },
+                        textAlign = "center",
+                    },
+                    UI.Label {
+                        text = "即将删除玩家: " .. username,
+                        fontSize = 13,
+                        fontColor = { 220, 220, 240, 255 },
+                        textAlign = "center",
+                    },
+                    UI.Label {
+                        text = "此操作将删除该玩家的账号信息和所有游戏数据，不可恢复！",
+                        fontSize = 11,
+                        fontColor = { 255, 180, 100, 255 },
+                        textAlign = "center",
+                    },
+                    dialogMsg,
+                    UI.Panel {
+                        flexDirection = "row",
+                        gap = 16,
+                        marginTop = 8,
+                        children = {
+                            UI.Button {
+                                text = "确认删除",
+                                variant = "primary",
+                                width = 100,
+                                backgroundColor = { 180, 40, 40, 255 },
+                                onClick = function()
+                                    dialogMsg:SetText("删除中...")
+                                    DataManager.DeletePlayer(username, function(ok)
+                                        if ok then
+                                            dialogMsg:SetText("已删除!")
+                                            CloseDialog()
+                                            RenderPlayers()
+                                        else
+                                            dialogMsg:SetText("删除失败")
+                                        end
+                                    end)
+                                end,
+                            },
+                            UI.Button {
+                                text = "取消",
+                                variant = "secondary",
+                                width = 80,
+                                onClick = function()
+                                    CloseDialog()
+                                end,
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+    if rootPanel_ then
+        rootPanel_:AddChild(editDialog_)
+    end
+end
+
+RenderPlayers = function()
+    ClearContent()
+    ShowMsg("正在加载玩家列表...")
+    DataManager.GetAllPlayers(function(players)
+        if #players == 0 then
+            ShowMsg("暂无注册玩家")
+            return
+        end
+        ShowMsg("共 " .. #players .. " 个玩家")
+        for i, info in ipairs(players) do
+            local bgColor = (i % 2 == 0) and { 25, 20, 45, 200 } or { 20, 15, 35, 200 }
+            local row = UI.Panel {
+                width = "100%",
+                flexDirection = "row",
+                alignItems = "center",
+                paddingLeft = 12,
+                paddingRight = 12,
+                paddingTop = 6,
+                paddingBottom = 6,
+                backgroundColor = bgColor,
+                children = {
+                    UI.Panel {
+                        flexDirection = "column",
+                        flexGrow = 1,
+                        flexShrink = 1,
+                        children = {
+                            UI.Label {
+                                text = info.username,
+                                fontSize = 13,
+                                fontColor = { 220, 220, 240, 255 },
+                            },
+                            UI.Label {
+                                text = "密码: " .. info.password .. "  角色: " .. (info.charName or ""),
+                                fontSize = 11,
+                                fontColor = { 140, 140, 160, 255 },
+                            },
+                        },
+                    },
+                    UI.Button {
+                        text = "查看",
+                        fontSize = 10,
+                        width = 42,
+                        height = 24,
+                        variant = "secondary",
+                        onClick = function()
+                            ShowPlayerDetailDialog(info.username, info, false)
+                        end,
+                    },
+                    UI.Button {
+                        text = "修改",
+                        fontSize = 10,
+                        width = 42,
+                        height = 24,
+                        marginLeft = 4,
+                        variant = "secondary",
+                        onClick = function()
+                            ShowPlayerDetailDialog(info.username, info, true)
+                        end,
+                    },
+                    UI.Button {
+                        text = "删除",
+                        fontSize = 10,
+                        width = 42,
+                        height = 24,
+                        marginLeft = 4,
+                        variant = "secondary",
+                        onClick = function()
+                            ShowDeleteConfirmDialog(info.username)
+                        end,
+                    },
+                },
+            }
+            contentPanel_:AddChild(row)
+        end
+    end)
+end
+
+-- =============== 游戏设置管理 ===============
+
+local function RenderGameConfig()
+    ClearContent()
+    ShowMsg("游戏全局设置（含玩家初始属性、升级公式、境界表）")
+
+    local gc = DataManager.gameConfig
+    local gameSec = gc["game"] or {}
+    local defSec = gc["player_default"] or {}
+    local lvlSec = gc["level_up"] or {}
+    local cultSec = gc["cultivation"] or {}
+
+    -- 游戏设置行
+    contentPanel_:AddChild(CreateListRow("游戏设置",
+        "标题:" .. (gameSec.title or "") .. " 起始地图:" .. (gameSec.start_map or ""),
+        function()
+            ShowEditDialog("游戏设置", {
+                { label = "标题", key = "title", value = gameSec.title },
+                { label = "版本", key = "version", value = gameSec.version },
+                { label = "起始地图", key = "start_map", value = gameSec.start_map },
+                { label = "起始任务", key = "start_quest", value = gameSec.start_quest },
+            }, function(v)
+                gc["game"] = { title = v.title, version = v.version, start_map = v.start_map, start_quest = v.start_quest }
+                SaveCategoryToCloud("game_config")
+            end)
+        end, 1))
+
+    -- 玩家默认属性
+    contentPanel_:AddChild(CreateListRow("玩家初始属性",
+        "HP:" .. (defSec.hp or 100) .. " MP:" .. (defSec.mp or 50) .. " ATK:" .. (defSec.atk or 5) .. " DEF:" .. (defSec.def or 3),
+        function()
+            ShowEditDialog("玩家初始属性", {
+                { label = "生命值", key = "hp", value = defSec.hp },
+                { label = "法力值", key = "mp", value = defSec.mp },
+                { label = "攻击力", key = "atk", value = defSec.atk },
+                { label = "防御力", key = "def", value = defSec.def },
+                { label = "等级", key = "level", value = defSec.level },
+                { label = "金币", key = "gold", value = defSec.gold },
+                { label = "境界", key = "cultivation", value = defSec.cultivation },
+            }, function(v)
+                gc["player_default"] = {
+                    hp = v.hp or "100", mp = v.mp or "50",
+                    atk = v.atk or "5", def = v.def or "3",
+                    level = v.level or "1", exp = "0",
+                    gold = v.gold or "50", cultivation = v.cultivation,
+                }
+                SaveCategoryToCloud("game_config")
+            end)
+        end, 2))
+
+    -- 升级公式
+    contentPanel_:AddChild(CreateListRow("升级公式",
+        "基础经验:" .. (lvlSec.base_exp or 20) .. " 系数:" .. (lvlSec.exp_factor or 1.5),
+        function()
+            ShowEditDialog("升级公式", {
+                { label = "基础经验", key = "base_exp", value = lvlSec.base_exp },
+                { label = "经验系数", key = "exp_factor", value = lvlSec.exp_factor },
+                { label = "每级生命", key = "hp_per_level", value = lvlSec.hp_per_level },
+                { label = "每级法力", key = "mp_per_level", value = lvlSec.mp_per_level },
+                { label = "每级攻击", key = "atk_per_level", value = lvlSec.atk_per_level },
+                { label = "每级防御", key = "def_per_level", value = lvlSec.def_per_level },
+            }, function(v)
+                gc["level_up"] = {
+                    base_exp = v.base_exp or "20", exp_factor = tonumber(v.exp_factor) or 1.5,
+                    hp_per_level = v.hp_per_level or "20", mp_per_level = v.mp_per_level or "10",
+                    atk_per_level = v.atk_per_level or "3", def_per_level = v.def_per_level or "2",
+                }
+                SaveCategoryToCloud("game_config")
+            end)
+        end, 3))
+
+    -- 境界表
+    local cultText = ""
+    for k, v in pairs(cultSec) do
+        cultText = cultText .. "Lv" .. tostring(k) .. "=" .. tostring(v) .. " "
+    end
+    contentPanel_:AddChild(CreateListRow("境界表", cultText,
+        function()
+            -- 动态生成境界字段
+            local cultFields = {}
+            local sortedKeys = {}
+            for k, _ in pairs(cultSec) do
+                table.insert(sortedKeys, tonumber(k) or 0)
+            end
+            table.sort(sortedKeys)
+            for _, lvl in ipairs(sortedKeys) do
+                table.insert(cultFields, { label = "等级" .. lvl, key = tostring(lvl), value = cultSec[tostring(lvl)] or cultSec[lvl] })
+            end
+            -- 额外空槽用于添加
+            table.insert(cultFields, { label = "新等级", key = "new_level", value = "", opts = { placeholder = "数字" } })
+            table.insert(cultFields, { label = "新境界", key = "new_name", value = "", opts = { placeholder = "境界名" } })
+            ShowEditDialog("境界配置", cultFields, function(v)
+                local newCult = {}
+                for _, lvl in ipairs(sortedKeys) do
+                    local key = tostring(lvl)
+                    if v[key] and v[key] ~= "" then
+                        newCult[key] = v[key]
+                    end
+                end
+                -- 添加新境界
+                if v.new_level and v.new_level ~= "" and v.new_name and v.new_name ~= "" then
+                    newCult[v.new_level] = v.new_name
+                end
+                gc["cultivation"] = newCult
+                SaveCategoryToCloud("game_config")
+                CloseDialog()
+                RenderGameConfig()
+            end)
+        end, 4))
+end
+
+-- =============== 通用列表配置管理 ===============
+
+--- 渲染地图列表
+local function RenderMaps()
+    ClearContent()
+    local count = 0
+    local idx = 0
+    for _ in pairs(DataManager.maps) do count = count + 1 end
+    ShowMsg("共 " .. count .. " 张地图")
+
+    for id, data in pairs(DataManager.maps) do
+        idx = idx + 1
+        local row = CreateListRow(
+            data.name or id,
+            "等级需求:" .. (data.level_req or 0) .. " 怪物:" .. (data.monsters or ""),
+            function()
+                ShowEditDialog("编辑地图 - " .. id, {
+                    { label = "名称", key = "name", value = data.name },
+                    { label = "描述", key = "desc", value = data.desc, opts = { width = 220 } },
+                    { label = "怪物", key = "monsters", value = data.monsters, opts = { width = 220, placeholder = "逗号分隔" } },
+                    { label = "NPC", key = "npcs", value = data.npcs, opts = { width = 220, placeholder = "逗号分隔" } },
+                    { label = "前方", key = "front", value = data.front },
+                    { label = "后方", key = "back", value = data.back },
+                    { label = "左方", key = "left", value = data.left },
+                    { label = "右方", key = "right", value = data.right },
+                    { label = "等级要求", key = "level_req", value = data.level_req },
+                }, function(v)
+                    DataManager.maps[id] = {
+                        name = v.name, desc = v.desc, monsters = v.monsters, npcs = v.npcs,
+                        front = v.front, back = v.back, left = v.left, right = v.right,
+                        level_req = v.level_req or "0",
+                    }
+                    SaveCategoryToCloud("maps")
+                    CloseDialog()
+                    RenderMaps()
+                end)
+            end, idx, function()
+                DataManager.maps[id] = nil
+                SaveCategoryToCloud("maps")
+                RenderMaps()
+            end)
+        contentPanel_:AddChild(row)
+    end
+
+    -- 添加按钮
+    contentPanel_:AddChild(UI.Button {
+        text = "+ 添加地图",
+        variant = "primary",
+        width = 120,
+        marginTop = 8,
+        marginLeft = 12,
+        onClick = function()
+            ShowEditDialog("添加地图", {
+                { label = "ID", key = "id", value = "", opts = { placeholder = "如：新地图" } },
+                { label = "名称", key = "name", value = "" },
+                { label = "描述", key = "desc", value = "", opts = { width = 220 } },
+                { label = "怪物", key = "monsters", value = "", opts = { width = 220, placeholder = "逗号分隔" } },
+                { label = "NPC", key = "npcs", value = "", opts = { width = 220, placeholder = "逗号分隔" } },
+                { label = "前方", key = "front", value = "" },
+                { label = "后方", key = "back", value = "" },
+                { label = "左方", key = "left", value = "" },
+                { label = "右方", key = "right", value = "" },
+                { label = "等级要求", key = "level_req", value = "0" },
+            }, function(v)
+                if v.id == "" then return end
+                DataManager.maps[v.id] = {
+                    name = v.name ~= "" and v.name or v.id, desc = v.desc,
+                    monsters = v.monsters, npcs = v.npcs,
+                    front = v.front, back = v.back, left = v.left, right = v.right,
+                    level_req = v.level_req or "0",
+                }
+                SaveCategoryToCloud("maps")
+                CloseDialog()
+                RenderMaps()
+            end)
+        end,
+    })
+end
+
+--- 渲染怪物列表
+local function RenderMonsters()
+    ClearContent()
+    local count = 0
+    local idx = 0
+    for _ in pairs(DataManager.monsters) do count = count + 1 end
+    ShowMsg("共 " .. count .. " 种怪物")
+
+    for id, data in pairs(DataManager.monsters) do
+        idx = idx + 1
+        local row = CreateListRow(
+            data.name or id,
+            "HP:" .. (data.hp or 0) .. " ATK:" .. (data.atk or 0) .. " EXP:" .. (data.exp or 0),
+            function()
+                ShowEditDialog("编辑怪物 - " .. id, {
+                    { label = "名称", key = "name", value = data.name },
+                    { label = "描述", key = "desc", value = data.desc, opts = { width = 220 } },
+                    { label = "生命值", key = "hp", value = data.hp },
+                    { label = "攻击力", key = "atk", value = data.atk },
+                    { label = "防御力", key = "def", value = data.def },
+                    { label = "经验值", key = "exp", value = data.exp },
+                    { label = "金币", key = "gold", value = data.gold },
+                    { label = "掉落", key = "drops", value = data.drops, opts = { width = 220, placeholder = "物品:概率,..." } },
+                }, function(v)
+                    DataManager.monsters[id] = {
+                        name = v.name, desc = v.desc,
+                        hp = v.hp or "20", atk = v.atk or "3",
+                        def = v.def or "1", exp = v.exp or "5",
+                        gold = v.gold or "2", drops = v.drops,
+                    }
+                    SaveCategoryToCloud("monsters")
+                    CloseDialog()
+                    RenderMonsters()
+                end)
+            end, idx, function()
+                DataManager.monsters[id] = nil
+                SaveCategoryToCloud("monsters")
+                RenderMonsters()
+            end)
+        contentPanel_:AddChild(row)
+    end
+
+    contentPanel_:AddChild(UI.Button {
+        text = "+ 添加怪物",
+        variant = "primary", width = 120, marginTop = 8, marginLeft = 12,
+        onClick = function()
+            ShowEditDialog("添加怪物", {
+                { label = "ID(名称)", key = "id", value = "", opts = { placeholder = "如：火焰鸟" } },
+                { label = "描述", key = "desc", value = "", opts = { width = 220 } },
+                { label = "生命值", key = "hp", value = "50" },
+                { label = "攻击力", key = "atk", value = "10" },
+                { label = "防御力", key = "def", value = "5" },
+                { label = "经验值", key = "exp", value = "15" },
+                { label = "金币", key = "gold", value = "8" },
+                { label = "掉落", key = "drops", value = "", opts = { width = 220, placeholder = "物品:概率,..." } },
+            }, function(v)
+                if v.id == "" then return end
+                DataManager.monsters[v.id] = {
+                    name = v.id, desc = v.desc,
+                    hp = v.hp or "50", atk = v.atk or "10",
+                    def = v.def or "5", exp = v.exp or "15",
+                    gold = v.gold or "8", drops = v.drops,
+                }
+                SaveCategoryToCloud("monsters")
+                CloseDialog()
+                RenderMonsters()
+            end)
+        end,
+    })
+end
+
+--- 渲染物品列表
+-- 道具类型选项
+local ITEM_TYPES = { "攻击", "防御", "生命上限", "恢复血量", "恢复灵力", "经验倍率", "货币倍率", "材料" }
+
+--- 创建道具类型选择器
+---@param currentType string
+---@param disabled boolean
+---@return Widget panel, fun():string getSelected
+local function CreateTypeSelector(currentType, disabled)
+    -- 支持多选，currentType 可能是 "攻击|防御" 格式
+    local selectedSet = {}
+    if currentType and currentType ~= "" then
+        for t in currentType:gmatch("[^|]+") do
+            local trimmed = t:match("^%s*(.-)%s*$")
+            if trimmed ~= "" then
+                selectedSet[trimmed] = true
+            end
+        end
+    end
+    if next(selectedSet) == nil then
+        selectedSet["材料"] = true
+    end
+
+    local btnList = {}
+    local selectorPanel
+
+    local function refreshButtons()
+        for i, btn in ipairs(btnList) do
+            local typeName = ITEM_TYPES[i]
+            if selectedSet[typeName] then
+                btn:SetVariant("primary")
+            else
+                btn:SetVariant("secondary")
+            end
+        end
+    end
+
+    local btnChildren = {}
+    for i, typeName in ipairs(ITEM_TYPES) do
+        local btn = UI.Button {
+            text = typeName,
+            fontSize = 10,
+            width = 56,
+            height = 22,
+            variant = selectedSet[typeName] and "primary" or "secondary",
+            onClick = function()
+                if disabled then return end
+                if selectedSet[typeName] then
+                    -- 取消选中（但至少保留一个）
+                    local count = 0
+                    for _ in pairs(selectedSet) do count = count + 1 end
+                    if count > 1 then
+                        selectedSet[typeName] = nil
+                    end
+                else
+                    selectedSet[typeName] = true
+                end
+                refreshButtons()
+            end,
+        }
+        if disabled then btn:SetDisabled(true) end
+        btnList[i] = btn
+        table.insert(btnChildren, btn)
+    end
+
+    selectorPanel = UI.Panel {
+        flexDirection = "row",
+        flexWrap = "wrap",
+        gap = 3,
+        marginBottom = 4,
+        children = btnChildren,
+    }
+
+    local wrapper = UI.Panel {
+        flexDirection = "column",
+        gap = 2,
+        marginBottom = 4,
+        children = {
+            UI.Label {
+                text = "类型（可多选）",
+                fontSize = 12,
+                fontColor = { 180, 180, 200, 255 },
+            },
+            selectorPanel,
+        },
+    }
+
+    local function getSelected()
+        -- 按 ITEM_TYPES 顺序拼接，用 | 分隔
+        local result = {}
+        for _, typeName in ipairs(ITEM_TYPES) do
+            if selectedSet[typeName] then
+                table.insert(result, typeName)
+            end
+        end
+        return table.concat(result, "|")
+    end
+
+    return wrapper, getSelected
+end
+
+--- 显示物品编辑弹窗（含类型选择器）
+---@param title string
+---@param itemData table|nil 编辑时有数据，新增时为nil
+---@param itemId string|nil 编辑时有ID
+---@param isNew boolean
+local function ShowItemEditDialog(title, itemData, itemId, isNew)
+    CloseDialog()
+
+    local data = itemData or {}
+    local fieldWidgets = {}
+    local formChildren = {}
+
+    table.insert(formChildren, UI.Label {
+        text = title,
+        fontSize = 16,
+        fontColor = { 255, 200, 100, 255 },
+        textAlign = "center",
+        marginBottom = 8,
+    })
+
+    -- ID 字段（仅新增时可编辑）
+    if isNew then
+        local idPanel, idField = CreateFormField("物品名称", "", { width = 180, placeholder = "输入物品名称" })
+        fieldWidgets["id"] = idField
+        table.insert(formChildren, idPanel)
+    else
+        table.insert(formChildren, UI.Label {
+            text = "物品: " .. (itemId or ""),
+            fontSize = 13,
+            fontColor = { 200, 200, 220, 255 },
+            marginBottom = 4,
+        })
+    end
+
+    -- 名称
+    local namePanel, nameField = CreateFormField("显示名称", data.name or "", { width = 180 })
+    fieldWidgets["name"] = nameField
+    table.insert(formChildren, namePanel)
+
+    -- 类型选择器
+    local typePanel, getType = CreateTypeSelector(data.type or "材料", false)
+    table.insert(formChildren, typePanel)
+
+    -- 描述
+    local descPanel, descField = CreateFormField("描述", data.desc or "", { width = 220 })
+    fieldWidgets["desc"] = descField
+    table.insert(formChildren, descPanel)
+
+    -- 数值
+    local valuePanel, valueField = CreateFormField("数值", tostring(data.value or "0"), { width = 120 })
+    fieldWidgets["value"] = valueField
+    table.insert(formChildren, valuePanel)
+
+    -- 持续时间（分钟），0或空=永久
+    local durPanel, durField = CreateFormField("持续时间(分钟)", tostring(data.duration or ""), { width = 120, placeholder = "0=永久" })
+    fieldWidgets["duration"] = durField
+    table.insert(formChildren, durPanel)
+
+    -- 消息
+    local dialogMsg = UI.Label {
+        text = "",
+        fontSize = 11,
+        fontColor = { 100, 255, 100, 255 },
+        textAlign = "center",
+        height = 16,
+    }
+    table.insert(formChildren, dialogMsg)
+
+    -- 按钮
+    table.insert(formChildren, UI.Panel {
+        flexDirection = "row",
+        gap = 12,
+        marginTop = 8,
+        justifyContent = "center",
+        children = {
+            UI.Button {
+                text = "保存",
+                variant = "primary",
+                width = 80,
+                onClick = function()
+                    local selectedType = getType()
+                    local name = fieldWidgets["name"]:GetValue() or ""
+                    local id = isNew and (fieldWidgets["id"]:GetValue() or "") or itemId
+                    if isNew and id == "" then
+                        dialogMsg:SetText("请输入物品名称")
+                        return
+                    end
+                    if isNew and name == "" then
+                        name = id
+                    end
+
+                    local durStr = fieldWidgets["duration"]:GetValue() or ""
+                    local durVal = tonumber(durStr) or 0
+                    DataManager.items[id] = {
+                        name = name,
+                        type = selectedType,
+                        value = fieldWidgets["value"]:GetValue() or "0",
+                        duration = durVal > 0 and tostring(durVal) or nil,
+                        desc = fieldWidgets["desc"]:GetValue() or "",
+                    }
+                    SaveCategoryToCloud("items")
+                    dialogMsg:SetText("已保存")
+                    CloseDialog()
+                    RenderItems()
+                end,
+            },
+            UI.Button {
+                text = "关闭",
+                variant = "secondary",
+                width = 80,
+                onClick = function() CloseDialog() end,
+            },
+        },
+    })
+
+    editDialog_ = UI.Panel {
+        width = "100%",
+        height = "100%",
+        position = "absolute",
+        justifyContent = "center",
+        alignItems = "center",
+        backgroundColor = { 0, 0, 0, 180 },
+        children = {
+            UI.ScrollView {
+                width = 380,
+                maxHeight = 500,
+                backgroundColor = { 30, 25, 55, 250 },
+                borderRadius = 12,
+                padding = 16,
+                children = {
+                    UI.Panel {
+                        width = "100%",
+                        flexDirection = "column",
+                        gap = 4,
+                        children = formChildren,
+                    },
+                },
+            },
+        },
+    }
+    if rootPanel_ then
+        rootPanel_:AddChild(editDialog_)
+    end
+end
+
+RenderItems = function()
+    ClearContent()
+    local count = 0
+    local idx = 0
+    for _ in pairs(DataManager.items) do count = count + 1 end
+    ShowMsg("共 " .. count .. " 种物品")
+
+    for id, data in pairs(DataManager.items) do
+        idx = idx + 1
+        local typeStr = data.type or "材料"
+        local row = CreateListRow(
+            (data.name or id) .. "  [" .. typeStr .. "]",
+            "数值:" .. tostring(data.value or 0),
+            function()
+                ShowItemEditDialog("编辑物品 - " .. (data.name or id), data, id, false)
+            end, idx, function()
+                DataManager.items[id] = nil
+                SaveCategoryToCloud("items")
+                RenderItems()
+            end)
+        contentPanel_:AddChild(row)
+    end
+
+    contentPanel_:AddChild(UI.Button {
+        text = "+ 添加物品",
+        variant = "primary", width = 120, marginTop = 8, marginLeft = 12,
+        onClick = function()
+            ShowItemEditDialog("添加新物品", nil, nil, true)
+        end,
+    })
+end
+
+--- 装备部位选项
+local EQUIP_SLOTS = { "武器", "防具", "饰品" }
+--- 装备品质选项
+local EQUIP_QUALITIES = { "白色", "绿色", "蓝色", "紫色", "金色" }
+
+--- 创建按钮组选择器（通用）
+---@param options string[] 选项列表
+---@param currentValue string 当前选中值
+---@param label string 标签文字
+---@param disabled boolean
+---@return Widget panel, fun():string getSelected
+local function CreateButtonSelector(options, currentValue, label, disabled)
+    local selected = currentValue or options[1]
+    local btnList = {}
+
+    local function refreshButtons()
+        for i, btn in ipairs(btnList) do
+            if options[i] == selected then
+                btn:SetVariant("primary")
+            else
+                btn:SetVariant("secondary")
+            end
+        end
+    end
+
+    local btnChildren = {}
+    for i, optName in ipairs(options) do
+        local btn = UI.Button {
+            text = optName,
+            fontSize = 10,
+            width = 48,
+            height = 22,
+            variant = (optName == selected) and "primary" or "secondary",
+            onClick = function()
+                if disabled then return end
+                selected = optName
+                refreshButtons()
+            end,
+        }
+        if disabled then btn:SetDisabled(true) end
+        btnList[i] = btn
+        table.insert(btnChildren, btn)
+    end
+
+    local wrapper = UI.Panel {
+        flexDirection = "row",
+        alignItems = "center",
+        gap = 4,
+        marginBottom = 4,
+        children = {
+            UI.Label {
+                text = label,
+                fontSize = 12,
+                fontColor = { 180, 180, 200, 255 },
+                width = 80,
+            },
+            UI.Panel {
+                flexDirection = "row",
+                flexWrap = "wrap",
+                gap = 3,
+                children = btnChildren,
+            },
+        },
+    }
+
+    return wrapper, function() return selected end
+end
+
+--- 渲染装备列表
+local function RenderEquipment()
+    ClearContent()
+    local count = 0
+    local idx = 0
+    for _ in pairs(DataManager.equipment) do count = count + 1 end
+    ShowMsg("共 " .. count .. " 件装备")
+
+    for id, data in pairs(DataManager.equipment) do
+        idx = idx + 1
+        local row = CreateListRow(
+            (data.name or id) .. "  [" .. (data.slot or "武器") .. "]",
+            "品质:" .. (data.quality or "白色") .. " 攻击:" .. (data.atk or 0) .. " 防御:" .. (data.def or 0) .. " 生命:" .. (data.hp or 0),
+            function()
+                -- 使用自定义弹窗（含选择器）
+                CloseDialog()
+                local fieldWidgets = {}
+                local formChildren = {}
+
+                table.insert(formChildren, UI.Label {
+                    text = "编辑装备 - " .. (data.name or id),
+                    fontSize = 16,
+                    fontColor = { 255, 200, 100, 255 },
+                    textAlign = "center",
+                    marginBottom = 8,
+                })
+
+                -- 名称
+                local namePanel, nameField = CreateFormField("名称", data.name or id, { width = 180 })
+                fieldWidgets["name"] = nameField
+                table.insert(formChildren, namePanel)
+
+                -- 部位选择器
+                local slotPanel, getSlot = CreateButtonSelector(EQUIP_SLOTS, data.slot or "武器", "部位", false)
+                table.insert(formChildren, slotPanel)
+
+                -- 品质选择器
+                local qualityPanel, getQuality = CreateButtonSelector(EQUIP_QUALITIES, data.quality or "白色", "品质", false)
+                table.insert(formChildren, qualityPanel)
+
+                -- 其他字段
+                local descPanel, descField = CreateFormField("描述", data.desc or "", { width = 220 })
+                fieldWidgets["desc"] = descField
+                table.insert(formChildren, descPanel)
+
+                local atkPanel, atkField = CreateFormField("攻击", tostring(data.atk or 0), { width = 120 })
+                fieldWidgets["atk"] = atkField
+                table.insert(formChildren, atkPanel)
+
+                local defPanel, defField = CreateFormField("防御", tostring(data.def or 0), { width = 120 })
+                fieldWidgets["def"] = defField
+                table.insert(formChildren, defPanel)
+
+                local hpPanel, hpField = CreateFormField("生命", tostring(data.hp or 0), { width = 120 })
+                fieldWidgets["hp"] = hpField
+                table.insert(formChildren, hpPanel)
+
+                local lvlPanel, lvlField = CreateFormField("等级需求", tostring(data.level_req or 1), { width = 120 })
+                fieldWidgets["level_req"] = lvlField
+                table.insert(formChildren, lvlPanel)
+
+                local buyPanel, buyField = CreateFormField("购买价", tostring(data.price_buy or 0), { width = 120 })
+                fieldWidgets["price_buy"] = buyField
+                table.insert(formChildren, buyPanel)
+
+                local sellPanel, sellField = CreateFormField("出售价", tostring(data.price_sell or 0), { width = 120 })
+                fieldWidgets["price_sell"] = sellField
+                table.insert(formChildren, sellPanel)
+
+                local dialogMsg = UI.Label { text = "", fontSize = 11, fontColor = { 100, 255, 100, 255 }, textAlign = "center", height = 16 }
+                table.insert(formChildren, dialogMsg)
+
+                table.insert(formChildren, UI.Panel {
+                    flexDirection = "row", gap = 12, marginTop = 8, justifyContent = "center",
+                    children = {
+                        UI.Button {
+                            text = "保存", variant = "primary", width = 80,
+                            onClick = function()
+                                DataManager.equipment[id] = {
+                                    name = fieldWidgets["name"]:GetValue() or id,
+                                    slot = getSlot(),
+                                    quality = getQuality(),
+                                    desc = fieldWidgets["desc"]:GetValue() or "",
+                                    atk = fieldWidgets["atk"]:GetValue() or "0",
+                                    def = fieldWidgets["def"]:GetValue() or "0",
+                                    hp = fieldWidgets["hp"]:GetValue() or "0",
+                                    level_req = fieldWidgets["level_req"]:GetValue() or "1",
+                                    price_buy = fieldWidgets["price_buy"]:GetValue() or "0",
+                                    price_sell = fieldWidgets["price_sell"]:GetValue() or "0",
+                                }
+                                SaveCategoryToCloud("equipment")
+                                dialogMsg:SetText("已保存")
+                                CloseDialog()
+                                RenderEquipment()
+                            end,
+                        },
+                        UI.Button { text = "关闭", variant = "secondary", width = 80, onClick = function() CloseDialog() end },
+                    },
+                })
+
+                editDialog_ = UI.Panel {
+                    width = "100%", height = "100%", position = "absolute",
+                    justifyContent = "center", alignItems = "center", backgroundColor = { 0, 0, 0, 180 },
+                    children = {
+                        UI.ScrollView {
+                            width = 380, maxHeight = 500, backgroundColor = { 30, 25, 55, 250 },
+                            borderRadius = 12, padding = 16,
+                            children = { UI.Panel { width = "100%", flexDirection = "column", gap = 4, children = formChildren } },
+                        },
+                    },
+                }
+                if rootPanel_ then rootPanel_:AddChild(editDialog_) end
+            end, idx, function()
+                DataManager.equipment[id] = nil
+                SaveCategoryToCloud("equipment")
+                RenderEquipment()
+            end)
+        contentPanel_:AddChild(row)
+    end
+
+    contentPanel_:AddChild(UI.Button {
+        text = "+ 添加装备",
+        variant = "primary", width = 120, marginTop = 8, marginLeft = 12,
+        onClick = function()
+            CloseDialog()
+            local fieldWidgets = {}
+            local formChildren = {}
+
+            table.insert(formChildren, UI.Label {
+                text = "添加装备", fontSize = 16, fontColor = { 255, 200, 100, 255 }, textAlign = "center", marginBottom = 8,
+            })
+
+            local idPanel, idField = CreateFormField("装备名称", "", { width = 180, placeholder = "输入装备名称" })
+            fieldWidgets["id"] = idField
+            table.insert(formChildren, idPanel)
+
+            local slotPanel, getSlot = CreateButtonSelector(EQUIP_SLOTS, "武器", "部位", false)
+            table.insert(formChildren, slotPanel)
+
+            local qualityPanel, getQuality = CreateButtonSelector(EQUIP_QUALITIES, "白色", "品质", false)
+            table.insert(formChildren, qualityPanel)
+
+            local descPanel, descField = CreateFormField("描述", "", { width = 220 })
+            fieldWidgets["desc"] = descField
+            table.insert(formChildren, descPanel)
+
+            local atkPanel, atkField = CreateFormField("攻击", "5", { width = 120 })
+            fieldWidgets["atk"] = atkField
+            table.insert(formChildren, atkPanel)
+
+            local defPanel, defField = CreateFormField("防御", "0", { width = 120 })
+            fieldWidgets["def"] = defField
+            table.insert(formChildren, defPanel)
+
+            local hpPanel, hpField = CreateFormField("生命", "0", { width = 120 })
+            fieldWidgets["hp"] = hpField
+            table.insert(formChildren, hpPanel)
+
+            local lvlPanel, lvlField = CreateFormField("等级需求", "1", { width = 120 })
+            fieldWidgets["level_req"] = lvlField
+            table.insert(formChildren, lvlPanel)
+
+            local buyPanel, buyField = CreateFormField("购买价", "50", { width = 120 })
+            fieldWidgets["price_buy"] = buyField
+            table.insert(formChildren, buyPanel)
+
+            local sellPanel, sellField = CreateFormField("出售价", "20", { width = 120 })
+            fieldWidgets["price_sell"] = sellField
+            table.insert(formChildren, sellPanel)
+
+            local dialogMsg = UI.Label { text = "", fontSize = 11, fontColor = { 100, 255, 100, 255 }, textAlign = "center", height = 16 }
+            table.insert(formChildren, dialogMsg)
+
+            table.insert(formChildren, UI.Panel {
+                flexDirection = "row", gap = 12, marginTop = 8, justifyContent = "center",
+                children = {
+                    UI.Button {
+                        text = "保存", variant = "primary", width = 80,
+                        onClick = function()
+                            local newId = fieldWidgets["id"]:GetValue() or ""
+                            if newId == "" then
+                                dialogMsg:SetText("请输入装备名称")
+                                return
+                            end
+                            DataManager.equipment[newId] = {
+                                name = newId,
+                                slot = getSlot(),
+                                quality = getQuality(),
+                                desc = fieldWidgets["desc"]:GetValue() or "",
+                                atk = fieldWidgets["atk"]:GetValue() or "0",
+                                def = fieldWidgets["def"]:GetValue() or "0",
+                                hp = fieldWidgets["hp"]:GetValue() or "0",
+                                level_req = fieldWidgets["level_req"]:GetValue() or "1",
+                                price_buy = fieldWidgets["price_buy"]:GetValue() or "0",
+                                price_sell = fieldWidgets["price_sell"]:GetValue() or "0",
+                            }
+                            SaveCategoryToCloud("equipment")
+                            dialogMsg:SetText("已保存")
+                            CloseDialog()
+                            RenderEquipment()
+                        end,
+                    },
+                    UI.Button { text = "关闭", variant = "secondary", width = 80, onClick = function() CloseDialog() end },
+                },
+            })
+
+            editDialog_ = UI.Panel {
+                width = "100%", height = "100%", position = "absolute",
+                justifyContent = "center", alignItems = "center", backgroundColor = { 0, 0, 0, 180 },
+                children = {
+                    UI.ScrollView {
+                        width = 380, maxHeight = 500, backgroundColor = { 30, 25, 55, 250 },
+                        borderRadius = 12, padding = 16,
+                        children = { UI.Panel { width = "100%", flexDirection = "column", gap = 4, children = formChildren } },
+                    },
+                },
+            }
+            if rootPanel_ then rootPanel_:AddChild(editDialog_) end
+        end,
+    })
+end
+
+--- 任务类型选项
+local QUEST_TYPES = { "主线", "支线" }
+--- 任务目标类型选项
+local QUEST_TARGET_TYPES = { "击杀", "收集", "对话", "探索" }
+
+--- 渲染任务列表
+local function RenderQuests()
+    ClearContent()
+    local count = 0
+    local idx = 0
+    for _ in pairs(DataManager.quests) do count = count + 1 end
+    ShowMsg("共 " .. count .. " 个任务")
+
+    for id, data in pairs(DataManager.quests) do
+        idx = idx + 1
+        local row = CreateListRow(
+            "[" .. (data.type or "支线") .. "] " .. (data.name or id),
+            "目标:" .. (data.target_type or "击杀") .. " " .. (data.target_name or "") .. "x" .. (data.target_count or 1) .. " 经验:" .. (data.reward_exp or 0),
+            function()
+                ShowEditDialog("编辑任务 - " .. id, {
+                    { label = "名称", key = "name", value = data.name },
+                    { label = "类型", key = "type", value = data.type, opts = { placeholder = "主线/支线" } },
+                    { label = "描述", key = "desc", value = data.desc, opts = { width = 220 } },
+                    { label = "目标类型", key = "target_type", value = data.target_type, opts = { placeholder = "击杀/收集/对话/探索" } },
+                    { label = "目标名称", key = "target_name", value = data.target_name },
+                    { label = "目标数量", key = "target_count", value = data.target_count },
+                    { label = "奖励经验", key = "reward_exp", value = data.reward_exp },
+                    { label = "奖励金币", key = "reward_gold", value = data.reward_gold },
+                    { label = "奖励物品", key = "reward_items", value = data.reward_items, opts = { width = 220, placeholder = "物品:数量,..." } },
+                    { label = "后续任务", key = "next_quest", value = data.next_quest },
+                }, function(v)
+                    DataManager.quests[id] = {
+                        name = v.name, type = v.type, desc = v.desc,
+                        target_type = v.target_type, target_name = v.target_name,
+                        target_count = v.target_count or "1",
+                        reward_exp = v.reward_exp or "0", reward_gold = v.reward_gold or "0",
+                        reward_items = v.reward_items, next_quest = v.next_quest,
+                    }
+                    SaveCategoryToCloud("quests")
+                    CloseDialog()
+                    RenderQuests()
+                end)
+            end, idx, function()
+                DataManager.quests[id] = nil
+                SaveCategoryToCloud("quests")
+                RenderQuests()
+            end)
+        contentPanel_:AddChild(row)
+    end
+
+    contentPanel_:AddChild(UI.Button {
+        text = "+ 添加任务",
+        variant = "primary", width = 120, marginTop = 8, marginLeft = 12,
+        onClick = function()
+            ShowEditDialog("添加任务", {
+                { label = "任务ID", key = "id", value = "", opts = { placeholder = "如: 支线_007" } },
+                { label = "名称", key = "name", value = "" },
+                { label = "类型", key = "type", value = "支线", opts = { placeholder = "主线/支线" } },
+                { label = "描述", key = "desc", value = "", opts = { width = 220 } },
+                { label = "目标类型", key = "target_type", value = "击杀", opts = { placeholder = "击杀/收集/对话/探索" } },
+                { label = "目标名称", key = "target_name", value = "" },
+                { label = "目标数量", key = "target_count", value = "3" },
+                { label = "奖励经验", key = "reward_exp", value = "30" },
+                { label = "奖励金币", key = "reward_gold", value = "50" },
+                { label = "奖励物品", key = "reward_items", value = "", opts = { width = 220, placeholder = "物品:数量,..." } },
+                { label = "后续任务", key = "next_quest", value = "" },
+            }, function(v)
+                if v.id == "" then return end
+                DataManager.quests[v.id] = {
+                    name = v.name, type = v.type, desc = v.desc,
+                    target_type = v.target_type, target_name = v.target_name,
+                    target_count = v.target_count or "1",
+                    reward_exp = v.reward_exp or "0", reward_gold = v.reward_gold or "0",
+                    reward_items = v.reward_items, next_quest = v.next_quest,
+                }
+                SaveCategoryToCloud("quests")
+                CloseDialog()
+                RenderQuests()
+            end)
+        end,
+    })
+end
+
+--- 获取已有物品名称列表
+local function GetItemNameList()
+    local names = {}
+    for id, data in pairs(DataManager.items) do
+        table.insert(names, data.name or id)
+    end
+    table.sort(names)
+    return names
+end
+
+--- 显示商店编辑弹窗（支持多商品行）
+---@param title string
+---@param shopData table|nil
+---@param shopId string|nil
+---@param isNew boolean
+local function ShowShopEditDialog(title, shopData, shopId, isNew)
+    CloseDialog()
+
+    local data = shopData or { name = "", desc = "", items = {} }
+    -- 深拷贝商品列表用于编辑
+    local editItems = {}
+    for _, item in ipairs(data.items or {}) do
+        table.insert(editItems, { name = item.name or "", price = item.price or "0", desc = item.desc or "" })
+    end
+
+    local fieldWidgets = {}
+    local itemsContainer
+    local formChildren = {}
+
+    -- 标题
+    table.insert(formChildren, UI.Label {
+        text = title,
+        fontSize = 14,
+        fontColor = { 255, 220, 100, 255 },
+        textAlign = "center",
+        marginBottom = 8,
+    })
+
+    -- 商店ID（新增时）
+    if isNew then
+        local idPanel, idField = CreateFormField("商店ID", "", { placeholder = "如: shop_xxx" })
+        fieldWidgets["id"] = idField
+        table.insert(formChildren, idPanel)
+    else
+        table.insert(formChildren, UI.Label {
+            text = "商店: " .. (shopId or ""),
+            fontSize = 13,
+            fontColor = { 200, 200, 220, 255 },
+            marginBottom = 4,
+        })
+    end
+
+    -- 名称
+    local namePanel, nameField = CreateFormField("名称", data.name or "", { width = 180 })
+    fieldWidgets["name"] = nameField
+    table.insert(formChildren, namePanel)
+
+    -- 描述
+    local descPanel, descField = CreateFormField("描述", data.desc or "", { width = 220 })
+    fieldWidgets["desc"] = descField
+    table.insert(formChildren, descPanel)
+
+    -- 商品列表标题
+    table.insert(formChildren, UI.Label {
+        text = "── 商品列表 ──",
+        fontSize = 12,
+        fontColor = { 150, 200, 255, 255 },
+        textAlign = "center",
+        marginTop = 8,
+        marginBottom = 4,
+    })
+
+    -- 已有物品名称（用于提示）
+    local existingItems = GetItemNameList()
+
+    -- 商品行容器
+    itemsContainer = UI.Panel {
+        width = "100%",
+        flexDirection = "column",
+        gap = 6,
+    }
+    table.insert(formChildren, itemsContainer)
+
+    -- 渲染商品行
+    local function RebuildItemRows()
+        itemsContainer:RemoveAllChildren()
+        for i, item in ipairs(editItems) do
+            local rowNameField, rowPriceField, rowDescField
+
+            -- 物品名
+            local _, nf = CreateFormField("物品" .. i, item.name, { width = 100, placeholder = "物品名" })
+            rowNameField = nf
+
+            -- 价格
+            local _, pf = CreateFormField("价格", tostring(item.price), { width = 60, placeholder = "0" })
+            rowPriceField = pf
+
+            -- 描述
+            local _, df = CreateFormField("描述", item.desc, { width = 100, placeholder = "描述" })
+            rowDescField = df
+
+            local row = UI.Panel {
+                flexDirection = "row",
+                alignItems = "center",
+                gap = 4,
+                width = "100%",
+                children = {
+                    UI.Panel { flexDirection = "column", gap = 1, children = {
+                        UI.Label { text = "物品" .. i, fontSize = 9, fontColor = { 150, 150, 170, 255 } },
+                        rowNameField,
+                    }},
+                    UI.Panel { flexDirection = "column", gap = 1, children = {
+                        UI.Label { text = "价格", fontSize = 9, fontColor = { 150, 150, 170, 255 } },
+                        rowPriceField,
+                    }},
+                    UI.Panel { flexDirection = "column", gap = 1, children = {
+                        UI.Label { text = "描述", fontSize = 9, fontColor = { 150, 150, 170, 255 } },
+                        rowDescField,
+                    }},
+                    UI.Button {
+                        text = "×",
+                        fontSize = 12,
+                        width = 24,
+                        height = 24,
+                        variant = "secondary",
+                        onClick = function()
+                            -- 先保存当前所有行的值
+                            local rows = itemsContainer:GetChildren()
+                            for ri = 1, #editItems do
+                                if ri ~= i and rows[ri] then
+                                    -- 只更新没被删的行
+                                end
+                            end
+                            table.remove(editItems, i)
+                            RebuildItemRows()
+                        end,
+                    },
+                },
+            }
+
+            -- 保存引用以便读取值
+            item._nameField = rowNameField
+            item._priceField = rowPriceField
+            item._descField = rowDescField
+
+            itemsContainer:AddChild(row)
+        end
+    end
+
+    RebuildItemRows()
+
+    -- 添加商品按钮
+    local addItemBtn = UI.Button {
+        text = "+ 添加商品",
+        fontSize = 11,
+        width = 100,
+        height = 26,
+        variant = "secondary",
+        marginTop = 4,
+        onClick = function()
+            -- 先收集当前行的值
+            for _, item in ipairs(editItems) do
+                if item._nameField then
+                    item.name = item._nameField:GetValue() or ""
+                    item.price = item._priceField:GetValue() or "0"
+                    item.desc = item._descField:GetValue() or ""
+                end
+            end
+            table.insert(editItems, { name = "", price = "0", desc = "" })
+            RebuildItemRows()
+        end,
+    }
+    table.insert(formChildren, addItemBtn)
+
+    -- 已有物品提示
+    if #existingItems > 0 then
+        local hint = "可用物品: " .. table.concat(existingItems, ", ")
+        if #hint > 60 then hint = hint:sub(1, 60) .. "..." end
+        table.insert(formChildren, UI.Label {
+            text = hint,
+            fontSize = 9,
+            fontColor = { 120, 120, 150, 255 },
+            marginTop = 2,
+        })
+    end
+
+    -- 消息
+    local dialogMsg = UI.Label {
+        text = "",
+        fontSize = 11,
+        fontColor = { 100, 255, 100, 255 },
+        textAlign = "center",
+        height = 16,
+    }
+    table.insert(formChildren, dialogMsg)
+
+    -- 按钮
+    table.insert(formChildren, UI.Panel {
+        flexDirection = "row",
+        gap = 12,
+        marginTop = 8,
+        justifyContent = "center",
+        children = {
+            UI.Button {
+                text = "保存",
+                variant = "primary",
+                width = 80,
+                onClick = function()
+                    local id = isNew and (fieldWidgets["id"]:GetValue() or "") or shopId
+                    if isNew and id == "" then
+                        dialogMsg:SetText("请输入商店ID")
+                        return
+                    end
+                    local name = fieldWidgets["name"]:GetValue() or ""
+                    if name == "" then name = id end
+
+                    -- 收集商品行数据
+                    local finalItems = {}
+                    for _, item in ipairs(editItems) do
+                        local n = item._nameField and item._nameField:GetValue() or item.name or ""
+                        local p = item._priceField and item._priceField:GetValue() or item.price or "0"
+                        local d = item._descField and item._descField:GetValue() or item.desc or ""
+                        if n ~= "" then
+                            table.insert(finalItems, { name = n, price = p, desc = d })
+                        end
+                    end
+
+                    DataManager.shops[id] = {
+                        name = name,
+                        desc = fieldWidgets["desc"]:GetValue() or "",
+                        items = finalItems,
+                    }
+                    SaveCategoryToCloud("shops")
+                    dialogMsg:SetText("已保存")
+                    CloseDialog()
+                    RenderShops()
+                end,
+            },
+            UI.Button {
+                text = "关闭",
+                variant = "secondary",
+                width = 80,
+                onClick = function() CloseDialog() end,
+            },
+        },
+    })
+
+    editDialog_ = UI.Panel {
+        width = "100%",
+        height = "100%",
+        position = "absolute",
+        justifyContent = "center",
+        alignItems = "center",
+        backgroundColor = { 0, 0, 0, 180 },
+        children = {
+            UI.ScrollView {
+                width = 400,
+                maxHeight = 520,
+                backgroundColor = { 30, 25, 55, 250 },
+                borderRadius = 12,
+                padding = 16,
+                children = {
+                    UI.Panel {
+                        width = "100%",
+                        flexDirection = "column",
+                        gap = 4,
+                        children = formChildren,
+                    },
+                },
+            },
+        },
+    }
+    if rootPanel_ then
+        rootPanel_:AddChild(editDialog_)
+    end
+end
+
+--- 渲染商店列表
+RenderShops = function()
+    ClearContent()
+    local count = 0
+    local idx = 0
+    for _ in pairs(DataManager.shops) do count = count + 1 end
+    ShowMsg("共 " .. count .. " 家商店")
+
+    for id, data in pairs(DataManager.shops) do
+        idx = idx + 1
+        local itemCount = #(data.items or {})
+        local itemSummary = ""
+        for i, item in ipairs(data.items or {}) do
+            if i > 3 then itemSummary = itemSummary .. "..."; break end
+            if i > 1 then itemSummary = itemSummary .. ", " end
+            itemSummary = itemSummary .. item.name .. "(" .. item.price .. "金)"
+        end
+        if itemSummary == "" then itemSummary = "无商品" end
+
+        local row = CreateListRow(
+            (data.name or id) .. "  [" .. itemCount .. "种商品]",
+            itemSummary,
+            function()
+                ShowShopEditDialog("编辑商店 - " .. (data.name or id), data, id, false)
+            end, idx, function()
+                DataManager.shops[id] = nil
+                SaveCategoryToCloud("shops")
+                RenderShops()
+            end)
+        contentPanel_:AddChild(row)
+    end
+
+    contentPanel_:AddChild(UI.Button {
+        text = "+ 添加商店",
+        variant = "primary", width = 120, marginTop = 8, marginLeft = 12,
+        onClick = function()
+            ShowShopEditDialog("添加新商店", nil, nil, true)
+        end,
+    })
+end
+
+--- 渲染副本列表
+local function RenderDungeons()
+    ClearContent()
+    local count = 0
+    local idx = 0
+    for _ in pairs(DataManager.dungeons) do count = count + 1 end
+    ShowMsg("共 " .. count .. " 个副本")
+
+    for id, data in pairs(DataManager.dungeons) do
+        idx = idx + 1
+        local row = CreateListRow(
+            data.name or id,
+            "等级:" .. (data.level_req or 0) .. " 波数:" .. (data.waves or 0) .. " 首领:" .. (data.boss or "无"),
+            function()
+                local fields = {
+                    { label = "名称", key = "name", value = data.name },
+                    { label = "描述", key = "desc", value = data.desc, opts = { width = 220 } },
+                    { label = "等级需求", key = "level_req", value = data.level_req },
+                    { label = "波数", key = "waves", value = data.waves },
+                    { label = "首领", key = "boss", value = data.boss },
+                    { label = "奖励经验", key = "reward_exp", value = data.reward_exp },
+                    { label = "奖励金币", key = "reward_gold", value = data.reward_gold },
+                    { label = "奖励物品", key = "reward_items", value = data.reward_items, opts = { width = 220 } },
+                }
+                for i = 1, tonumber(data.waves) or 1 do
+                    table.insert(fields, { label = "第" .. i .. "波", key = "wave_" .. i, value = data["wave_" .. i] or "", opts = { width = 220, placeholder = "怪物,怪物,..." } })
+                end
+                ShowEditDialog("编辑副本 - " .. id, fields, function(v)
+                    local entry = {
+                        name = v.name, desc = v.desc,
+                        level_req = v.level_req or "1", waves = v.waves or "1",
+                        boss = v.boss,
+                        reward_exp = v.reward_exp or "0", reward_gold = v.reward_gold or "0",
+                        reward_items = v.reward_items,
+                    }
+                    for i = 1, tonumber(entry.waves) or 1 do  -- for-loop 需要 number
+                        entry["wave_" .. i] = v["wave_" .. i] or ""
+                    end
+                    DataManager.dungeons[id] = entry
+                    SaveCategoryToCloud("dungeons")
+                    CloseDialog()
+                    RenderDungeons()
+                end)
+            end, idx, function()
+                DataManager.dungeons[id] = nil
+                SaveCategoryToCloud("dungeons")
+                RenderDungeons()
+            end)
+        contentPanel_:AddChild(row)
+    end
+
+    contentPanel_:AddChild(UI.Button {
+        text = "+ 添加副本",
+        variant = "primary", width = 120, marginTop = 8, marginLeft = 12,
+        onClick = function()
+            ShowEditDialog("添加副本", {
+                { label = "副本ID", key = "id", value = "", opts = { placeholder = "如: dungeon_006" } },
+                { label = "名称", key = "name", value = "" },
+                { label = "描述", key = "desc", value = "", opts = { width = 220 } },
+                { label = "等级需求", key = "level_req", value = "5" },
+                { label = "波数", key = "waves", value = "3" },
+                { label = "第1波", key = "wave_1", value = "", opts = { width = 220, placeholder = "怪物,怪物" } },
+                { label = "第2波", key = "wave_2", value = "", opts = { width = 220 } },
+                { label = "第3波", key = "wave_3", value = "", opts = { width = 220 } },
+                { label = "首领", key = "boss", value = "" },
+                { label = "奖励经验", key = "reward_exp", value = "50" },
+                { label = "奖励金币", key = "reward_gold", value = "80" },
+                { label = "奖励物品", key = "reward_items", value = "", opts = { width = 220 } },
+            }, function(v)
+                if v.id == "" then return end
+                local entry = {
+                    name = v.name, desc = v.desc,
+                    level_req = v.level_req or "1", waves = v.waves or "3",
+                    boss = v.boss,
+                    reward_exp = v.reward_exp or "0", reward_gold = v.reward_gold or "0",
+                    reward_items = v.reward_items,
+                }
+                for i = 1, tonumber(entry.waves) or 3 do  -- for-loop 需要 number
+                    entry["wave_" .. i] = v["wave_" .. i] or ""
+                end
+                DataManager.dungeons[v.id] = entry
+                SaveCategoryToCloud("dungeons")
+                CloseDialog()
+                RenderDungeons()
+            end)
+        end,
+    })
+end
+
+--- 渲染NPC列表
+local function RenderNPCs()
+    ClearContent()
+    local count = 0
+    local idx = 0
+    for _ in pairs(DataManager.npcs) do count = count + 1 end
+    ShowMsg("共 " .. count .. " 个NPC")
+
+    for id, data in pairs(DataManager.npcs) do
+        idx = idx + 1
+        local row = CreateListRow(
+            data.name or id,
+            "类型:" .. (data.type or "任务") .. " 地点:" .. (data.location or ""),
+            function()
+                local fields = {
+                    { label = "名称", key = "name", value = data.name },
+                    { label = "类型", key = "type", value = data.type, opts = { placeholder = "任务/商人/师傅" } },
+                    { label = "对话", key = "dialog", value = data.dialog, opts = { width = 250 } },
+                    { label = "所在地", key = "location", value = data.location },
+                }
+                if data.type == "商人" or data.type == "merchant" then
+                    table.insert(fields, { label = "商店编号", key = "shop_id", value = data.shop_id or "" })
+                else
+                    table.insert(fields, { label = "任务编号", key = "quest_id", value = data.quest_id or "" })
+                end
+                ShowEditDialog("编辑NPC - " .. id, fields, function(v)
+                    local entry = {
+                        name = v.name, type = v.type, dialog = v.dialog, location = v.location,
+                    }
+                    if v.type == "商人" or v.type == "merchant" then
+                        entry.shop_id = v.shop_id or ""
+                    else
+                        entry.quest_id = v.quest_id or ""
+                    end
+                    DataManager.npcs[id] = entry
+                    SaveCategoryToCloud("npcs")
+                    CloseDialog()
+                    RenderNPCs()
+                end)
+            end, idx, function()
+                DataManager.npcs[id] = nil
+                SaveCategoryToCloud("npcs")
+                RenderNPCs()
+            end)
+        contentPanel_:AddChild(row)
+    end
+
+    contentPanel_:AddChild(UI.Button {
+        text = "+ 添加NPC",
+        variant = "primary", width = 120, marginTop = 8, marginLeft = 12,
+        onClick = function()
+            ShowEditDialog("添加NPC", {
+                { label = "NPC名称", key = "id", value = "" },
+                { label = "类型", key = "type", value = "任务", opts = { placeholder = "任务/商人/师傅" } },
+                { label = "对话", key = "dialog", value = "", opts = { width = 250 } },
+                { label = "所在地", key = "location", value = "" },
+                { label = "任务编号", key = "quest_id", value = "", opts = { placeholder = "如: 支线_001" } },
+                { label = "商店编号", key = "shop_id", value = "", opts = { placeholder = "如: 杂货铺" } },
+            }, function(v)
+                if v.id == "" then return end
+                local entry = {
+                    name = v.id, type = v.type, dialog = v.dialog, location = v.location,
+                }
+                if v.type == "商人" or v.type == "merchant" then
+                    entry.shop_id = v.shop_id or ""
+                else
+                    entry.quest_id = v.quest_id or ""
+                end
+                DataManager.npcs[v.id] = entry
+                SaveCategoryToCloud("npcs")
+                CloseDialog()
+                RenderNPCs()
+            end)
+        end,
+    })
+end
+
+-- =============== 礼包管理 ===============
+
+local function RenderGiftPacks()
+    ClearContent()
+    local count = 0
+    local idx = 0
+    for _ in pairs(DataManager.giftpacks) do count = count + 1 end
+    ShowMsg("共 " .. count .. " 个礼包（兑换码即为礼包ID）")
+
+    for id, data in pairs(DataManager.giftpacks) do
+        idx = idx + 1
+        local usesText = BigNum.gt(data.max_uses or "0", "0")
+            and ("已用" .. (data.used_count or "0") .. "/" .. data.max_uses)
+            or ("已用" .. (data.used_count or "0") .. "/无限")
+        local row = CreateListRow(
+            data.name or id,
+            "兑换码:" .. id .. " " .. usesText,
+            function()
+                ShowEditDialog("编辑礼包 - " .. id, {
+                    { label = "名称", key = "name", value = data.name },
+                    { label = "描述", key = "desc", value = data.desc, opts = { width = 220 } },
+                    { label = "奖励物品", key = "reward_items", value = data.reward_items, opts = { width = 220, placeholder = "物品名:数量,物品名:数量" } },
+                    { label = "奖励金币", key = "reward_gold", value = data.reward_gold },
+                    { label = "奖励经验", key = "reward_exp", value = data.reward_exp },
+                    { label = "最大使用次数", key = "max_uses", value = data.max_uses, opts = { placeholder = "0=无限" } },
+                    { label = "已使用次数", key = "used_count", value = data.used_count },
+                }, function(v)
+                    DataManager.giftpacks[id] = {
+                        name = v.name, desc = v.desc,
+                        reward_items = v.reward_items,
+                        reward_gold = v.reward_gold or "0",
+                        reward_exp = v.reward_exp or "0",
+                        max_uses = v.max_uses or "0",
+                        used_count = v.used_count or "0",
+                    }
+                    SaveCategoryToCloud("giftpacks")
+                    CloseDialog()
+                    RenderGiftPacks()
+                end)
+            end, idx, function()
+                DataManager.giftpacks[id] = nil
+                SaveCategoryToCloud("giftpacks")
+                RenderGiftPacks()
+            end)
+        contentPanel_:AddChild(row)
+    end
+
+    contentPanel_:AddChild(UI.Button {
+        text = "+ 添加礼包",
+        variant = "primary", width = 120, marginTop = 8, marginLeft = 12,
+        onClick = function()
+            ShowEditDialog("添加礼包", {
+                { label = "兑换码", key = "id", value = "", opts = { placeholder = "玩家输入此码兑换" } },
+                { label = "名称", key = "name", value = "" },
+                { label = "描述", key = "desc", value = "", opts = { width = 220 } },
+                { label = "奖励物品", key = "reward_items", value = "", opts = { width = 220, placeholder = "物品名:数量,物品名:数量" } },
+                { label = "奖励金币", key = "reward_gold", value = "100" },
+                { label = "奖励经验", key = "reward_exp", value = "50" },
+                { label = "最大使用次数", key = "max_uses", value = "0", opts = { placeholder = "0=无限" } },
+            }, function(v)
+                if v.id == "" then return end
+                DataManager.giftpacks[v.id] = {
+                    name = v.name ~= "" and v.name or v.id,
+                    desc = v.desc,
+                    reward_items = v.reward_items,
+                    reward_gold = v.reward_gold or "0",
+                    reward_exp = v.reward_exp or "0",
+                    max_uses = v.max_uses or "0",
+                    used_count = "0",
+                }
+                SaveCategoryToCloud("giftpacks")
+                CloseDialog()
+                RenderGiftPacks()
+            end)
+        end,
+    })
+end
+
+
+
+-- =============== 分类切换 ===============
+
+--- 根据分类渲染内容
+local function RenderCategory(catId)
+    currentCategory_ = catId
+    if catId == "players" then RenderPlayers()
+    elseif catId == "game_config" then RenderGameConfig()
+    elseif catId == "maps" then RenderMaps()
+    elseif catId == "monsters" then RenderMonsters()
+    elseif catId == "items" then RenderItems()
+    elseif catId == "equipment" then RenderEquipment()
+    elseif catId == "quests" then RenderQuests()
+    elseif catId == "shops" then RenderShops()
+    elseif catId == "dungeons" then RenderDungeons()
+    elseif catId == "npcs" then RenderNPCs()
+    elseif catId == "giftpacks" then RenderGiftPacks()
+    end
+end
+
+-- =============== 主界面 ===============
+
+--- 创建管理员登录界面
+---@return Widget
+function AdminUI.CreateLogin()
+    adminLoggedIn_ = false
+
+    local usernameField = UI.TextField {
+        placeholder = "管理员账号",
+        maxLength = 20, width = 250, height = 40,
+    }
+    local passwordField = UI.TextField {
+        placeholder = "管理员密码",
+        maxLength = 20, width = 250, height = 40,
+    }
+    local loginMsg = UI.Label {
+        text = "", fontSize = 13, fontColor = { 255, 100, 100, 255 },
+        textAlign = "center", height = 20,
+    }
+
+    local root = UI.Panel {
+        width = "100%", height = "100%",
+        flexDirection = "column", justifyContent = "center", alignItems = "center",
+        backgroundColor = { 10, 10, 20, 255 },
+        children = {
+            UI.Label {
+                text = "管理员登录", fontSize = 28,
+                fontColor = { 255, 180, 80, 255 }, textAlign = "center", marginBottom = 30,
+            },
+            UI.Panel {
+                width = 320, flexDirection = "column", alignItems = "center",
+                backgroundColor = { 25, 20, 45, 220 }, borderRadius = 12, padding = 24, gap = 12,
+                children = {
+                    usernameField, passwordField, loginMsg,
+                    UI.Panel {
+                        flexDirection = "row", gap = 16, marginTop = 8,
+                        children = {
+                            UI.Button {
+                                text = "登 录", variant = "primary", width = 100,
+                                onClick = function()
+                                    local u = usernameField:GetValue()
+                                    local p = passwordField:GetValue()
+                                    if u == ADMIN_USERNAME and p == ADMIN_PASSWORD then
+                                        adminLoggedIn_ = true
+                                        loginMsg:SetText("")
+                                        AdminUI.ShowDashboard()
+                                    else
+                                        loginMsg:SetText("账号或密码错误")
+                                    end
+                                end,
+                            },
+                            UI.Button {
+                                text = "返 回", variant = "secondary", width = 100,
+                                onClick = function() SwitchState("login") end,
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    }
+    return root
+end
+
+--- 显示管理员后台主界面
+function AdminUI.ShowDashboard()
+    msgLabel_ = UI.Label {
+        text = "选择左侧分类进行管理",
+        fontSize = 12, fontColor = { 180, 180, 200, 255 },
+        textAlign = "center", height = 18,
+    }
+
+    contentPanel_ = UI.Panel {
+        width = "100%",
+        flexDirection = "column",
+        gap = 2,
+    }
+
+    -- 创建侧边导航按钮
+    local navButtons = {}
+    for _, cat in ipairs(CATEGORIES) do
+        table.insert(navButtons, UI.Button {
+            text = cat.name,
+            fontSize = 11,
+            width = "100%",
+            height = 30,
+            variant = "secondary",
+            onClick = function()
+                RenderCategory(cat.id)
+            end,
+        })
+    end
+
+    rootPanel_ = UI.Panel {
+        width = "100%", height = "100%",
+        flexDirection = "column",
+        backgroundColor = { 10, 10, 20, 255 },
+        children = {
+            -- 顶部栏
+            UI.Panel {
+                width = "100%", flexDirection = "row",
+                justifyContent = "space-between", alignItems = "center",
+                padding = 8, backgroundColor = { 20, 15, 40, 255 },
+                children = {
+                    UI.Label {
+                        text = "管理员后台",
+                        fontSize = 18, fontColor = { 255, 180, 80, 255 },
+                    },
+                    UI.Button {
+                        text = "退出", variant = "secondary", fontSize = 11,
+                        onClick = function()
+                            adminLoggedIn_ = false
+                            SwitchState("login")
+                        end,
+                    },
+                },
+            },
+            -- 消息栏
+            msgLabel_,
+            -- 主体：左导航 + 右内容
+            UI.Panel {
+                width = "100%", flexGrow = 1, flexShrink = 1,
+                flexDirection = "row",
+                children = {
+                    -- 左侧导航
+                    UI.ScrollView {
+                        width = 80,
+                        height = "100%",
+                        backgroundColor = { 18, 14, 35, 255 },
+                        children = {
+                            UI.Panel {
+                                width = "100%",
+                                flexDirection = "column",
+                                gap = 2,
+                                padding = 4,
+                                children = navButtons,
+                            },
+                        },
+                    },
+                    -- 右侧内容
+                    UI.ScrollView {
+                        flexGrow = 1, flexShrink = 1,
+                        height = "100%",
+                        children = { contentPanel_ },
+                    },
+                },
+            },
+        },
+    }
+
+    UI.SetRoot(rootPanel_)
+
+    -- 默认显示玩家管理
+    RenderCategory("players")
+end
+
+return AdminUI

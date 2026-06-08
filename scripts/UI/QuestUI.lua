@@ -35,9 +35,9 @@ function QuestUI.Render(parent)
         for _, quest in ipairs(player.quests.active) do
             local qData = DataManager.GetQuest(quest.id)
             if qData then
-                local targetCount = tonumber(qData.target_count) or 1
-                local progress = quest.progress or 0
-                local progressText = progress .. "/" .. targetCount
+                local targetCount = qData.target_count or "1"
+                local progress = quest.progress or "0"
+                local progressText = tostring(progress) .. "/" .. tostring(targetCount)
 
                 local typeLabel = qData.type == "main" and "[主线]" or "[支线]"
                 local typeColor = qData.type == "main" and { 255, 200, 50, 255 } or { 150, 200, 255, 255 }

@@ -3,11 +3,30 @@
 -- 负责加载系统配置和管理玩家数据
 ---------------------------------------------------
 local IniParser = require("Utils.IniParser")
+local ConfigData = require("Config.ConfigData")
+local NumFormat = require("Utils.NumFormat")
+local BigNum = require("Utils.BigNum")
 
 local DataManager = {}
 
--- 注意：IniParser 仅用于玩家数据的云端序列化/反序列化
--- 系统配置使用 require 加载 Lua 数据模块（确保构建系统正确打包）
+-- 云存储提供者（默认 clientCloud，联网模式下替换为 CloudProxy）
+local cloud_ = clientCloud
+
+--- 设置云存储提供者（由 main.lua 在联网模式下调用）
+---@param provider table 提供 Get/Set/BatchGet/BatchSet 接口的对象
+function DataManager.SetCloudProvider(provider)
+    cloud_ = provider
+    print("[DataManager] 云存储提供者已切换")
+end
+
+--- 获取当前云存储提供者（供其他模块如 AdminUI 使用）
+---@return table
+function DataManager.GetCloudProvider()
+    return cloud_
+end
+
+-- 所有系统配置均使用 INI 文件存储（中文键名）
+-- IniParser 用于解析系统配置和玩家数据
 
 -- 系统数据（只读）
 DataManager.maps = {}
@@ -18,6 +37,10 @@ DataManager.equipment = {}
 DataManager.quests = {}
 DataManager.shops = {}
 DataManager.dungeons = {}
+DataManager.giftpacks = {}
+DataManager.leaderboards = {}
+DataManager.rankingData = {}  -- 所有玩家的排行数据 { [玩家名] = { 名称=xx, 等级=xx, ... } }
+DataManager.chatMessages = {} -- 聊天记录列表 { {sender=xx, content=xx, time=xx}, ... }
 DataManager.gameConfig = {}
 
 -- 当前玩家数据
@@ -25,20 +48,330 @@ DataManager.playerData = nil
 DataManager.currentAccount = nil
 DataManager.currentPassword = nil
 
---- 加载所有系统配置
-function DataManager.LoadSystemData()
-    print("[DataManager] 加载系统配置...")
+--- 读取本地 INI 配置文件内容
+---@param path string 资源路径（相对于资源根目录）
+---@return string|nil content
+local function ReadConfigFile(path)
+    local file = cache:GetFile(path)
+    if not file then
+        print("[DataManager] 无法读取配置: " .. path)
+        return nil
+    end
+    local lines = {}
+    while not file.eof do
+        lines[#lines + 1] = file:ReadLine()
+    end
+    file:Close()
+    return table.concat(lines, "\n")
+end
 
-    DataManager.gameConfig = require("Config.game_config")
-    DataManager.maps = require("Config.maps")
-    DataManager.monsters = require("Config.monsters")
-    DataManager.npcs = require("Config.npcs")
-    DataManager.items = require("Config.items")
-    DataManager.equipment = require("Config.equipment")
-    DataManager.quests = require("Config.quests")
-    DataManager.shops = require("Config.shops")
-    DataManager.dungeons = require("Config.dungeons")
+--- 解析 game_config.ini → gameConfig 表
+local function ParseGameConfig(sections)
+    local config = {}
+    -- 游戏设置
+    local gameSec = sections["游戏设置"]
+    if gameSec then
+        config["game"] = {
+            title = gameSec["标题"] or "修仙游戏",
+            version = gameSec["版本"] or "1.0.0",
+            start_map = gameSec["起始地图"] or "新手村",
+            start_quest = gameSec["起始任务"] or "main_001",
+        }
+    end
+    -- 玩家默认属性
+    local defSec = sections["玩家默认属性"]
+    if defSec then
+        config["player_default"] = {
+            hp = defSec["生命值"] or "100",
+            mp = defSec["法力值"] or "50",
+            atk = defSec["攻击力"] or "5",
+            def = defSec["防御力"] or "3",
+            level = defSec["等级"] or "1",
+            exp = defSec["经验"] or "0",
+            gold = defSec["金币"] or "50",
+            cultivation = defSec["境界"] or "练气期一层",
+        }
+    end
+    -- 升级配置
+    local lvlSec = sections["升级配置"]
+    if lvlSec then
+        config["level_up"] = {
+            base_exp = lvlSec["基础经验"] or "20",
+            exp_factor = tonumber(lvlSec["经验系数"]) or 1.5,
+            hp_per_level = lvlSec["每级生命"] or "20",
+            mp_per_level = lvlSec["每级法力"] or "10",
+            atk_per_level = lvlSec["每级攻击"] or "3",
+            def_per_level = lvlSec["每级防御"] or "2",
+        }
+    end
+    -- 境界配置
+    local cultSec = sections["境界配置"]
+    if cultSec then
+        config["cultivation"] = {}
+        for k, v in pairs(cultSec) do
+            config["cultivation"][k] = v
+        end
+    end
+    return config
+end
 
+--- 解析 maps.ini → maps 表
+local function ParseMaps(sections)
+    local maps = {}
+    for sectionName, data in pairs(sections) do
+        local mapEntry = {
+            name = data["名称"] or sectionName,
+            desc = data["描述"] or "",
+            monsters = data["怪物"] or "",
+            npcs = data["NPC"] or "",
+            front = data["前方"] or "",
+            back = data["后方"] or "",
+            left = data["左方"] or "",
+            right = data["右方"] or "",
+            level_req = tonumber(data["等级要求"]) or 0,
+        }
+        maps[sectionName] = mapEntry
+    end
+    return maps
+end
+
+--- 解析 monsters.ini → monsters 表
+local function ParseMonsters(sections)
+    local monsters = {}
+    for sectionName, data in pairs(sections) do
+        local entry = {
+            name = data["名称"] or sectionName,
+            desc = data["描述"] or "",
+            hp = data["生命值"] or "20",
+            atk = data["攻击力"] or "3",
+            def = data["防御力"] or "1",
+            exp = data["经验值"] or "5",
+            gold = data["金币"] or "2",
+            drops = data["掉落"] or "",
+        }
+        monsters[sectionName] = entry
+    end
+    return monsters
+end
+
+--- 解析 items.ini → items 表
+local function ParseItems(sections)
+    local items = {}
+    for sectionName, data in pairs(sections) do
+        local durVal = tonumber(data["持续时间"]) or 0
+        local entry = {
+            name = data["名称"] or sectionName,
+            type = data["类型"] or "材料",
+            value = data["数值"] or "0",
+            duration = durVal > 0 and tostring(durVal) or nil,
+            desc = data["描述"] or "",
+        }
+        items[sectionName] = entry
+    end
+    return items
+end
+
+--- 解析 equipment.ini → equipment 表
+local function ParseEquipment(sections)
+    local equipment = {}
+    for sectionName, data in pairs(sections) do
+        local entry = {
+            name = data["名称"] or sectionName,
+            slot = data["部位"] or "武器",
+            quality = data["品质"] or "白色",
+            desc = data["描述"] or "",
+            atk = data["攻击"] or "0",
+            def = data["防御"] or "0",
+            hp = data["生命"] or "0",
+            level_req = data["等级需求"] or "1",
+            price_buy = data["购买价"] or "0",
+            price_sell = data["出售价"] or "0",
+        }
+        equipment[sectionName] = entry
+    end
+    return equipment
+end
+
+--- 解析 quests.ini → quests 表
+local function ParseQuests(sections)
+    local quests = {}
+    for sectionName, data in pairs(sections) do
+        local entry = {
+            name = data["名称"] or sectionName,
+            type = data["类型"] or "主线",
+            desc = data["描述"] or "",
+            target_type = data["目标类型"] or "击杀",
+            target_name = data["目标名称"] or "",
+            target_count = data["目标数量"] or "1",
+            reward_exp = data["奖励经验"] or "0",
+            reward_gold = data["奖励金币"] or "0",
+            reward_items = data["奖励物品"] or "",
+            next_quest = data["后续任务"] or "",
+        }
+        quests[sectionName] = entry
+    end
+    return quests
+end
+
+--- 解析 shops.ini → shops 表
+--- 商品格式: 商品_N = 物品名:购买价格:描述
+local function ParseShops(sections)
+    local shops = {}
+    for sectionName, data in pairs(sections) do
+        local entry = {
+            name = data["名称"] or sectionName,
+            desc = data["描述"] or "",
+            items = {},
+        }
+        local count = tonumber(data["商品数量"]) or 0
+        for i = 1, count do
+            local raw = data["商品_" .. i]
+            if raw then
+                local itemName, price, itemDesc = raw:match("^(.+):(%d+):(.*)$")
+                if not itemName then
+                    -- 兼容旧格式 "物品名:价格"
+                    itemName, price = raw:match("^(.+):(%d+)$")
+                end
+                if itemName then
+                    table.insert(entry.items, {
+                        name = itemName,
+                        price = price or "0",
+                        desc = itemDesc or "",
+                    })
+                end
+            end
+        end
+        -- 兼容旧 "商品列表" 字段（逗号分隔格式）
+        if #entry.items == 0 and data["商品列表"] and data["商品列表"] ~= "" then
+            for part in data["商品列表"]:gmatch("[^,]+") do
+                local n, p = part:match("^(.+):(%d+)$")
+                if n then
+                    table.insert(entry.items, { name = n, price = p or "0", desc = "" })
+                else
+                    table.insert(entry.items, { name = part, price = "0", desc = "" })
+                end
+            end
+        end
+        shops[sectionName] = entry
+    end
+    return shops
+end
+
+--- 解析 dungeons.ini → dungeons 表
+local function ParseDungeons(sections)
+    local dungeons = {}
+    for sectionName, data in pairs(sections) do
+        local entry = {
+            name = data["名称"] or sectionName,
+            desc = data["描述"] or "",
+            level_req = data["等级需求"] or "1",
+            waves = data["波数"] or "1",
+            boss = data["首领"] or "",
+            reward_exp = data["奖励经验"] or "0",
+            reward_gold = data["奖励金币"] or "0",
+            reward_items = data["奖励物品"] or "",
+        }
+        -- 解析各波次
+        local wavesNum = tonumber(entry.waves) or 1
+        for i = 1, wavesNum do
+            entry["wave_" .. i] = data["第" .. i .. "波"] or ""
+        end
+        dungeons[sectionName] = entry
+    end
+    return dungeons
+end
+
+--- 解析 giftpacks.ini → giftpacks 表
+local function ParseGiftPacks(sections)
+    local packs = {}
+    for sectionName, data in pairs(sections) do
+        local entry = {
+            name = data["名称"] or sectionName,
+            desc = data["描述"] or "",
+            reward_items = data["奖励物品"] or "",
+            reward_gold = data["奖励金币"] or "0",
+            reward_exp = data["奖励经验"] or "0",
+            max_uses = data["最大使用次数"] or "0",
+            used_count = data["已使用次数"] or "0",
+        }
+        packs[sectionName] = entry
+    end
+    return packs
+end
+
+--- 解析 leaderboards.ini → leaderboards 表
+local function ParseLeaderboards(sections)
+    local boards = {}
+    for sectionName, data in pairs(sections) do
+        local entry = {
+            name = data["名称"] or sectionName,
+            key = data["云端键名"] or ("rank_" .. sectionName),
+            source = data["数据来源"] or "level",
+            order = data["排序"] or "desc",
+            top_count = tonumber(data["显示人数"]) or 10,
+        }
+        boards[sectionName] = entry
+    end
+    return boards
+end
+
+--- 解析 npcs.ini → npcs 表
+local function ParseNPCs(sections)
+    local npcs = {}
+    for sectionName, data in pairs(sections) do
+        local entry = {
+            name = data["名称"] or sectionName,
+            type = data["类型"] or "任务",
+            dialog = data["对话"] or "",
+            location = data["所在地"] or "",
+        }
+        -- 根据类型设置关联 ID
+        if entry.type == "商人" or entry.type == "merchant" then
+            entry.shop_id = data["商店编号"] or ""
+        else
+            entry.quest_id = data["任务编号"] or ""
+        end
+        npcs[sectionName] = entry
+    end
+    return npcs
+end
+
+--- 从本地 ConfigData 加载默认系统配置
+local function LoadLocalDefaults()
+    if ConfigData.game_config then
+        DataManager.gameConfig = ParseGameConfig(IniParser.Parse(ConfigData.game_config))
+    end
+    if ConfigData.maps then
+        DataManager.maps = ParseMaps(IniParser.Parse(ConfigData.maps))
+    end
+    if ConfigData.monsters then
+        DataManager.monsters = ParseMonsters(IniParser.Parse(ConfigData.monsters))
+    end
+    if ConfigData.items then
+        DataManager.items = ParseItems(IniParser.Parse(ConfigData.items))
+    end
+    if ConfigData.equipment then
+        DataManager.equipment = ParseEquipment(IniParser.Parse(ConfigData.equipment))
+    end
+    if ConfigData.quests then
+        DataManager.quests = ParseQuests(IniParser.Parse(ConfigData.quests))
+    end
+    if ConfigData.shops then
+        DataManager.shops = ParseShops(IniParser.Parse(ConfigData.shops))
+    end
+    if ConfigData.dungeons then
+        DataManager.dungeons = ParseDungeons(IniParser.Parse(ConfigData.dungeons))
+    end
+    if ConfigData.npcs then
+        DataManager.npcs = ParseNPCs(IniParser.Parse(ConfigData.npcs))
+    end
+    if ConfigData.giftpacks then
+        DataManager.giftpacks = ParseGiftPacks(IniParser.Parse(ConfigData.giftpacks))
+    end
+end
+
+--- 打印当前系统数据统计
+local function PrintSystemStats()
     print("[DataManager] 地图数量: " .. DataManager.CountTable(DataManager.maps))
     print("[DataManager] 怪物数量: " .. DataManager.CountTable(DataManager.monsters))
     print("[DataManager] NPC数量: " .. DataManager.CountTable(DataManager.npcs))
@@ -47,7 +380,145 @@ function DataManager.LoadSystemData()
     print("[DataManager] 任务数量: " .. DataManager.CountTable(DataManager.quests))
     print("[DataManager] 商店数量: " .. DataManager.CountTable(DataManager.shops))
     print("[DataManager] 副本数量: " .. DataManager.CountTable(DataManager.dungeons))
-    print("[DataManager] 系统配置加载完成!")
+    print("[DataManager] 礼包数量: " .. DataManager.CountTable(DataManager.giftpacks))
+end
+
+--- 云端系统配置键名映射
+local SYSTEM_CLOUD_KEYS = {
+    "系统配置/game_config.ini",
+    "系统配置/maps.ini",
+    "系统配置/monsters.ini",
+    "系统配置/items.ini",
+    "系统配置/equipment.ini",
+    "系统配置/quests.ini",
+    "系统配置/shops.ini",
+    "系统配置/dungeons.ini",
+    "系统配置/npcs.ini",
+    "系统配置/giftpacks.ini",
+    "系统配置/leaderboards.ini",
+    "系统配置/ranking_data.ini",
+    "系统配置/chat_messages.ini",
+}
+
+--- 加载所有系统配置（优先云端，回退本地 ConfigData）
+---@param callback fun()|nil 加载完成回调
+function DataManager.LoadSystemData(callback)
+    print("[DataManager] 加载系统配置...")
+
+    -- 先加载本地默认值
+    LoadLocalDefaults()
+
+    -- 尝试从云端加载覆盖
+    if not cloud_ then
+        print("[DataManager] 云存储不可用，使用本地默认配置")
+        PrintSystemStats()
+        print("[DataManager] 系统配置加载完成!")
+        if callback then callback() end
+        return
+    end
+
+    local batch = cloud_:BatchGet()
+    for _, key in ipairs(SYSTEM_CLOUD_KEYS) do
+        batch:Key(key)
+    end
+    batch:Fetch({
+        ok = function(values, iscores)
+            local hasCloud = false
+            -- game_config
+            local v = values["系统配置/game_config.ini"]
+            if v and v ~= "" then
+                DataManager.gameConfig = ParseGameConfig(IniParser.Parse(v))
+                hasCloud = true
+            end
+            -- maps
+            v = values["系统配置/maps.ini"]
+            if v and v ~= "" then
+                DataManager.maps = ParseMaps(IniParser.Parse(v))
+                hasCloud = true
+            end
+            -- monsters
+            v = values["系统配置/monsters.ini"]
+            if v and v ~= "" then
+                DataManager.monsters = ParseMonsters(IniParser.Parse(v))
+                hasCloud = true
+            end
+            -- items
+            v = values["系统配置/items.ini"]
+            if v and v ~= "" then
+                DataManager.items = ParseItems(IniParser.Parse(v))
+                hasCloud = true
+            end
+            -- equipment
+            v = values["系统配置/equipment.ini"]
+            if v and v ~= "" then
+                DataManager.equipment = ParseEquipment(IniParser.Parse(v))
+                hasCloud = true
+            end
+            -- quests
+            v = values["系统配置/quests.ini"]
+            if v and v ~= "" then
+                DataManager.quests = ParseQuests(IniParser.Parse(v))
+                hasCloud = true
+            end
+            -- shops
+            v = values["系统配置/shops.ini"]
+            if v and v ~= "" then
+                DataManager.shops = ParseShops(IniParser.Parse(v))
+                hasCloud = true
+            end
+            -- dungeons
+            v = values["系统配置/dungeons.ini"]
+            if v and v ~= "" then
+                DataManager.dungeons = ParseDungeons(IniParser.Parse(v))
+                hasCloud = true
+            end
+            -- npcs
+            v = values["系统配置/npcs.ini"]
+            if v and v ~= "" then
+                DataManager.npcs = ParseNPCs(IniParser.Parse(v))
+                hasCloud = true
+            end
+            -- giftpacks
+            v = values["系统配置/giftpacks.ini"]
+            if v and v ~= "" then
+                DataManager.giftpacks = ParseGiftPacks(IniParser.Parse(v))
+                hasCloud = true
+            end
+            -- leaderboards
+            v = values["系统配置/leaderboards.ini"]
+            if v and v ~= "" then
+                DataManager.leaderboards = ParseLeaderboards(IniParser.Parse(v))
+                hasCloud = true
+            end
+            -- ranking_data（所有玩家排行数据）
+            v = values["系统配置/ranking_data.ini"]
+            if v and v ~= "" then
+                DataManager.rankingData = IniParser.Parse(v)
+                hasCloud = true
+            end
+            -- chat_messages（聊天记录）
+            v = values["系统配置/chat_messages.ini"]
+            if v and v ~= "" then
+                DataManager.chatMessages = DataManager.ParseChatMessages(IniParser.Parse(v))
+                hasCloud = true
+            end
+
+            if hasCloud then
+                print("[DataManager] 已从云端加载系统配置")
+            else
+                print("[DataManager] 云端无配置，使用本地默认")
+            end
+            PrintSystemStats()
+            print("[DataManager] 系统配置加载完成!")
+            if callback then callback() end
+        end,
+        error = function(code, reason)
+            print("[DataManager] 云端加载失败(" .. tostring(reason) .. ")，使用本地默认")
+            PrintSystemStats()
+            print("[DataManager] 系统配置加载完成!")
+            if callback then callback() end
+        end,
+    })
 end
 
 --- 计算 table 中的键数量
@@ -74,15 +545,15 @@ function DataManager.CreateNewPlayer(username, charName)
         },
         status = {
             name = charName,
-            level = defaults.level or 1,
-            exp = defaults.exp or 0,
-            hp = defaults.hp or 100,
-            max_hp = defaults.hp or 100,
-            mp = defaults.mp or 50,
-            max_mp = defaults.mp or 50,
-            atk = defaults.atk or 5,
-            def = defaults.def or 3,
-            gold = defaults.gold or 50,
+            level = defaults.level or "1",
+            exp = defaults.exp or "0",
+            hp = defaults.hp or "100",
+            max_hp = defaults.hp or "100",
+            mp = defaults.mp or "50",
+            max_mp = defaults.mp or "50",
+            atk = defaults.atk or "5",
+            def = defaults.def or "3",
+            gold = defaults.gold or "50",
             cultivation = defaults.cultivation or "练气期一层",
             current_map = startMap,
         },
@@ -96,6 +567,7 @@ function DataManager.CreateNewPlayer(username, charName)
             active = {},     -- { {id="quest_id", progress=0}, ... }
             completed = {},  -- { "quest_id", ... }
         },
+        redeemed_codes = {},  -- { "code1", "code2", ... }
     }
 
     return playerData
@@ -115,20 +587,7 @@ end
 function DataManager.PlayerDataToFiles(playerData)
     local files = {}
 
-    -- 账号配置.ini
-    local accountSections = {}
-    accountSections["账号配置"] = {}
-    local accountMap = {
-        username = "用户名",
-        password = "密码",
-        char_name = "角色名",
-        created_time = "创建时间",
-    }
-    for k, v in pairs(playerData.account) do
-        local zhKey = accountMap[k] or k
-        accountSections["账号配置"][zhKey] = tostring(v)
-    end
-    files["账号配置.ini"] = IniParser.Serialize(accountSections)
+    -- 账号配置已集中存储，不再写入玩家目录
 
     -- 状态数据.ini
     local statusSections = {}
@@ -149,7 +608,12 @@ function DataManager.PlayerDataToFiles(playerData)
     }
     for k, v in pairs(playerData.status) do
         local zhKey = statusMap[k] or k
-        statusSections["角色属性"][zhKey] = tostring(v)
+        -- 数值字段用 NumFormat.Int 避免科学计数法
+        if type(v) == "number" then
+            statusSections["角色属性"][zhKey] = NumFormat.Int(v)
+        else
+            statusSections["角色属性"][zhKey] = tostring(v)
+        end
     end
     files["状态数据.ini"] = IniParser.Serialize(statusSections)
 
@@ -183,6 +647,27 @@ function DataManager.PlayerDataToFiles(playerData)
         questSections["已完成任务"]["任务_" .. i] = qid
     end
     files["任务数据.ini"] = IniParser.Serialize(questSections)
+
+    -- Buff数据.ini
+    local buffSections = {}
+    buffSections["增益效果"] = {}
+    local buffs = playerData.buffs or {}
+    buffSections["增益效果"]["数量"] = tostring(#buffs)
+    for i, b in ipairs(buffs) do
+        -- 格式: 类型:数值:到期时间戳
+        buffSections["增益效果"]["Buff_" .. i] = (b.type or "") .. ":" .. (b.value or 0) .. ":" .. (b.expires or 0)
+    end
+    files["Buff数据.ini"] = IniParser.Serialize(buffSections)
+
+    -- 礼包兑换记录.ini
+    local giftSections = {}
+    giftSections["已兑换礼包"] = {}
+    local codes = playerData.redeemed_codes or {}
+    giftSections["已兑换礼包"]["数量"] = tostring(#codes)
+    for i, code in ipairs(codes) do
+        giftSections["已兑换礼包"]["礼包_" .. i] = code
+    end
+    files["礼包兑换记录.ini"] = IniParser.Serialize(giftSections)
 
     return files
 end
@@ -221,17 +706,9 @@ function DataManager.FilesToPlayerData(fileMap)
         ["当前地图"] = "current_map",
     }
 
-    -- 解析 账号配置.ini
-    if fileMap["账号配置.ini"] then
-        local sections = IniParser.Parse(fileMap["账号配置.ini"])
-        local accSection = sections["账号配置"] or sections["account"]
-        if accSection then
-            for k, v in pairs(accSection) do
-                local internalKey = accountReverseMap[k] or k
-                playerData.account[internalKey] = v
-            end
-        end
-    end
+    -- 账号配置已集中存储，从 currentAccount/currentPassword 获取
+    playerData.account.username = DataManager.currentAccount or ""
+    playerData.account.password = DataManager.currentPassword or ""
 
     -- 解析 状态数据.ini
     if fileMap["状态数据.ini"] then
@@ -256,7 +733,7 @@ function DataManager.FilesToPlayerData(fileMap)
                 if raw then
                     local name, cnt = raw:match("^(.+):(%d+)$")
                     if name then
-                        table.insert(playerData.bag, { name = name, count = tonumber(cnt) or 1 })
+                        table.insert(playerData.bag, { name = name, count = cnt or "1" })
                     end
                 end
             end
@@ -285,7 +762,7 @@ function DataManager.FilesToPlayerData(fileMap)
                 if raw then
                     local id, progress = raw:match("^(.+):(%d+)$")
                     if id then
-                        table.insert(playerData.quests.active, { id = id, progress = tonumber(progress) or 0 })
+                        table.insert(playerData.quests.active, { id = id, progress = progress or "0" })
                     end
                 end
             end
@@ -303,22 +780,459 @@ function DataManager.FilesToPlayerData(fileMap)
         end
     end
 
+    -- 解析 Buff数据.ini
+    playerData.buffs = {}
+    if fileMap["Buff数据.ini"] then
+        local sections = IniParser.Parse(fileMap["Buff数据.ini"])
+        local buffSection = sections["增益效果"]
+        if buffSection then
+            local count = tonumber(buffSection["数量"]) or 0
+            local now = os.time()
+            for i = 1, count do
+                local raw = buffSection["Buff_" .. i]
+                if raw then
+                    -- 格式: 类型:数值:到期时间戳
+                    local bType, bValue, bExpires = raw:match("^(.+):([^:]+):(%d+)$")
+                    if bType then
+                        local expires = tonumber(bExpires) or 0
+                        -- 只恢复未过期的 buff
+                        if expires > now then
+                            table.insert(playerData.buffs, {
+                                type = bType,
+                                value = tonumber(bValue) or bValue,
+                                expires = expires,
+                            })
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- 解析 礼包兑换记录.ini
+    playerData.redeemed_codes = {}
+    if fileMap["礼包兑换记录.ini"] then
+        local sections = IniParser.Parse(fileMap["礼包兑换记录.ini"])
+        local giftSection = sections["已兑换礼包"]
+        if giftSection then
+            local count = tonumber(giftSection["数量"]) or 0
+            for i = 1, count do
+                local code = giftSection["礼包_" .. i]
+                if code and code ~= "" then
+                    table.insert(playerData.redeemed_codes, code)
+                end
+            end
+        end
+    end
+
     return playerData
 end
 
 --- 云端文件名列表
-DataManager.CLOUD_FILES = { "账号配置.ini", "状态数据.ini", "背包数据.ini", "装备数据.ini", "任务数据.ini" }
+--- 玩家游戏数据文件列表（不含账号配置，账号集中存储）
+DataManager.CLOUD_FILES = { "状态数据.ini", "背包数据.ini", "装备数据.ini", "任务数据.ini", "Buff数据.ini", "礼包兑换记录.ini" }
 
---- 保存玩家数据到云端（拆分为多个文件）
---- 存储结构: player/账号名/账号配置.ini, player/账号名/状态数据.ini, ...
----@param playerData table
----@param callback function|nil 完成回调
-function DataManager.SaveToCloud(playerData, callback)
-    if not clientCloud then
-        print("[DataManager] clientCloud 不可用，跳过云端保存")
+--- 集中式账号配置云端键（所有玩家账号密码存在这一个文件里）
+DataManager.ACCOUNT_REGISTRY_KEY = "账号配置.ini"
+
+--- 从云端值中提取字符串（clientCloud:Get 可能返回 table）
+---@param value any
+---@return string
+local function extractString(value)
+    if type(value) == "string" then
+        return value
+    elseif type(value) == "table" then
+        return value.value or value[1] or ""
+    end
+    return ""
+end
+
+--- 读取集中式账号配置
+---@param callback fun(sections: table|nil)
+function DataManager.LoadAccountRegistry(callback)
+    if not cloud_ then
+        callback(nil)
+        return
+    end
+    cloud_:Get(DataManager.ACCOUNT_REGISTRY_KEY, {
+        ok = function(values, iscores)
+            local raw = values[DataManager.ACCOUNT_REGISTRY_KEY]
+            local content = extractString(raw)
+            if content == "" then
+                callback({})
+                return
+            end
+            local sections = IniParser.Parse(content)
+            callback(sections)
+        end,
+        error = function(code, reason)
+            print("[DataManager] 读取账号配置失败: " .. tostring(reason))
+            callback(nil)
+        end,
+    })
+end
+
+local isRegistrySaving_ = false
+local registryQueue_ = nil  -- { sections, callback } 排队中的最新数据
+
+--- 保存集中式账号配置
+---@param sections table
+---@param callback fun(success: boolean)|nil
+function DataManager.SaveAccountRegistry(sections, callback)
+    if not cloud_ then
         if callback then callback(false) end
         return
     end
+
+    -- 如果正在保存中，排队最新数据
+    if isRegistrySaving_ then
+        registryQueue_ = { sections = sections, callback = callback }
+        return
+    end
+
+    isRegistrySaving_ = true
+    registryQueue_ = nil
+
+    local content = IniParser.Serialize(sections)
+    cloud_:Set(DataManager.ACCOUNT_REGISTRY_KEY, content, {
+        ok = function()
+            isRegistrySaving_ = false
+            print("[DataManager] 账号配置已保存")
+            if callback then callback(true) end
+            if registryQueue_ then
+                local q = registryQueue_
+                registryQueue_ = nil
+                DataManager.SaveAccountRegistry(q.sections, q.callback)
+            end
+        end,
+        error = function(code, reason)
+            isRegistrySaving_ = false
+            print("[DataManager] 保存账号配置失败: " .. tostring(reason))
+            if callback then callback(false) end
+            if registryQueue_ then
+                local q = registryQueue_
+                registryQueue_ = nil
+                DataManager.SaveAccountRegistry(q.sections, q.callback)
+            end
+        end,
+    })
+end
+
+--- 注册新账号到集中配置
+---@param username string
+---@param password string
+---@param charName string
+---@param callback fun(success: boolean)|nil
+function DataManager.RegisterAccount(username, password, charName, callback)
+    DataManager.LoadAccountRegistry(function(sections)
+        if not sections then
+            sections = {}
+        end
+        -- 检查是否已存在
+        if sections[username] then
+            print("[DataManager] 账号已存在: " .. username)
+            if callback then callback(false) end
+            return
+        end
+        -- 添加新账号
+        sections[username] = {
+            ["密码"] = password,
+            ["角色名"] = charName,
+            ["创建时间"] = tostring(os.time and os.time() or 0),
+        }
+        DataManager.SaveAccountRegistry(sections, callback)
+    end)
+end
+
+--- 验证登录（从集中配置读取）
+---@param username string
+---@param password string
+---@param callback fun(success: boolean, charName: string|nil, errorMsg: string|nil)
+function DataManager.VerifyLogin(username, password, callback)
+    DataManager.LoadAccountRegistry(function(sections)
+        if not sections or not sections[username] then
+            callback(false, nil, "账号不存在，请先注册")
+            return
+        end
+        local accData = sections[username]
+        local savedPwd = tostring(accData["密码"] or accData["password"] or "")
+        if savedPwd ~= "" and savedPwd ~= tostring(password) then
+            callback(false, nil, "密码错误")
+            return
+        end
+        local charName = accData["角色名"] or accData["char_name"] or username
+        callback(true, charName, nil)
+    end)
+end
+
+--- 检查账号是否存在
+---@param username string
+---@param callback fun(exists: boolean)
+function DataManager.CheckAccountExists(username, callback)
+    DataManager.LoadAccountRegistry(function(sections)
+        if sections and sections[username] then
+            callback(true)
+        else
+            callback(false)
+        end
+    end)
+end
+
+--- 获取所有玩家账号信息（供管理员后台使用）
+---@param callback fun(players: table[])
+function DataManager.GetAllPlayers(callback)
+    DataManager.LoadAccountRegistry(function(sections)
+        if not sections then
+            callback({})
+            return
+        end
+        -- 自动清理 default 等无效条目（从云端彻底删除）
+        local needSave = false
+        if sections["default"] then
+            sections["default"] = nil
+            needSave = true
+        end
+        if sections[""] then
+            sections[""] = nil
+            needSave = true
+        end
+        -- 同时清理排行榜中的 default
+        local rankNeedSave = false
+        if DataManager.rankingData["default"] then
+            DataManager.rankingData["default"] = nil
+            rankNeedSave = true
+        end
+        if DataManager.rankingData[""] then
+            DataManager.rankingData[""] = nil
+            rankNeedSave = true
+        end
+
+        -- 保存清理后的数据到云端
+        if needSave then
+            DataManager.SaveAccountRegistry(sections, function()
+                print("[DataManager] 已从云端删除 default 账号条目")
+            end)
+        end
+        if rankNeedSave and cloud_ then
+            local content = IniParser.Serialize(DataManager.rankingData)
+            cloud_:Set("系统配置/ranking_data.ini", content, {
+                ok = function()
+                    print("[DataManager] 已从排行榜删除 default 条目")
+                end,
+                error = function() end,
+            })
+        end
+
+        local players = {}
+        for username, data in pairs(sections) do
+            table.insert(players, {
+                username = username,
+                password = tostring(data["密码"] or data["password"] or "未设置"),
+                charName = data["角色名"] or data["char_name"] or "",
+            })
+        end
+        print("[DataManager] 获取玩家列表: " .. #players .. " 个账号")
+        callback(players)
+    end)
+end
+
+--- 修改玩家密码（集中式）
+---@param username string
+---@param newPassword string
+---@param callback fun(success: boolean)
+function DataManager.ChangePlayerPassword(username, newPassword, callback)
+    DataManager.LoadAccountRegistry(function(sections)
+        if not sections or not sections[username] then
+            print("[DataManager] 未找到账号: " .. username)
+            if callback then callback(false) end
+            return
+        end
+        sections[username]["密码"] = newPassword
+        DataManager.SaveAccountRegistry(sections, callback)
+    end)
+end
+
+--- 修改玩家账号信息（密码、角色名）
+---@param username string
+---@param newData table {password, charName}
+---@param callback fun(success: boolean)
+function DataManager.UpdateAccountInfo(username, newData, callback)
+    DataManager.LoadAccountRegistry(function(sections)
+        if not sections or not sections[username] then
+            print("[DataManager] 未找到账号: " .. username)
+            if callback then callback(false) end
+            return
+        end
+        if newData.password then
+            sections[username]["密码"] = newData.password
+        end
+        if newData.charName then
+            sections[username]["角色名"] = newData.charName
+        end
+        DataManager.SaveAccountRegistry(sections, callback)
+    end)
+end
+
+--- 加载指定玩家的所有游戏数据（供管理员后台使用）
+---@param username string
+---@param callback fun(playerData: table|nil)
+function DataManager.LoadPlayerDataForAdmin(username, callback)
+    if not cloud_ then
+        print("[DataManager] 云存储不可用")
+        callback(nil)
+        return
+    end
+
+    local path = DataManager.GetCloudPath(username)
+    print("[DataManager] 管理员加载玩家数据: " .. path)
+
+    local batch = cloud_:BatchGet()
+    for _, fileName in ipairs(DataManager.CLOUD_FILES) do
+        batch:Key(path .. fileName)
+    end
+    batch:Fetch({
+        ok = function(values, iscores)
+            local firstKey = path .. "状态数据.ini"
+            local firstContent = values[firstKey]
+            if not firstContent or firstContent == "" then
+                print("[DataManager] 玩家无游戏数据: " .. username)
+                callback(nil)
+                return
+            end
+
+            local fileMap = {}
+            for _, fileName in ipairs(DataManager.CLOUD_FILES) do
+                local key = path .. fileName
+                local val = values[key]
+                if val and val ~= "" then
+                    fileMap[fileName] = extractString(val)
+                end
+            end
+
+            local playerData = DataManager.FilesToPlayerData(fileMap)
+            playerData.account.username = username
+            print("[DataManager] 管理员加载成功: " .. username)
+            callback(playerData)
+        end,
+        error = function(code, reason)
+            print("[DataManager] 管理员加载失败: " .. tostring(reason))
+            callback(nil)
+        end,
+    })
+end
+
+--- 保存指定玩家的游戏数据（供管理员修改后保存）
+---@param username string
+---@param playerData table
+---@param callback fun(success: boolean)
+function DataManager.SavePlayerDataForAdmin(username, playerData, callback)
+    if not cloud_ then
+        print("[DataManager] 云存储不可用")
+        if callback then callback(false) end
+        return
+    end
+
+    local path = DataManager.GetCloudPath(username)
+    local files = DataManager.PlayerDataToFiles(playerData)
+
+    print("[DataManager] 管理员保存玩家数据: " .. path)
+
+    local batch = cloud_:BatchSet()
+    for fileName, content in pairs(files) do
+        batch:Set(path .. fileName, content)
+    end
+    batch:Save("管理员修改玩家数据", {
+        ok = function()
+            print("[DataManager] 管理员保存成功: " .. username)
+            if callback then callback(true) end
+        end,
+        error = function(code, reason)
+            print("[DataManager] 管理员保存失败: " .. tostring(reason))
+            if callback then callback(false) end
+        end,
+    })
+end
+
+--- 删除玩家（从账号注册表移除 + 删除云端游戏数据）
+---@param username string
+---@param callback fun(success: boolean)
+function DataManager.DeletePlayer(username, callback)
+    -- 第一步：从账号注册表删除
+    DataManager.LoadAccountRegistry(function(sections)
+        if not sections then
+            print("[DataManager] 无法加载账号配置")
+            if callback then callback(false) end
+            return
+        end
+        -- 保存角色名用于排行榜移除
+        local charName = sections[username] and (sections[username]["角色名"] or sections[username]["char_name"] or "")
+        sections[username] = nil
+        DataManager.SaveAccountRegistry(sections, function(ok)
+            if not ok then
+                if callback then callback(false) end
+                return
+            end
+            -- 第二步：清空云端游戏数据（设为空字符串）
+            if not cloud_ then
+                if callback then callback(true) end
+                return
+            end
+            local path = DataManager.GetCloudPath(username)
+            local batch = cloud_:BatchSet()
+            for _, fileName in ipairs(DataManager.CLOUD_FILES) do
+                batch:Set(path .. fileName, "")
+            end
+            batch:Save("删除玩家数据", {
+                ok = function()
+                    print("[DataManager] 玩家已删除: " .. username)
+                    -- 同步删除排行榜中该玩家的数据
+                    DataManager.RemovePlayerFromRanking(username, charName)
+                    if callback then callback(true) end
+                end,
+                error = function(code, reason)
+                    print("[DataManager] 删除玩家数据失败: " .. tostring(reason))
+                    -- 账号已移除，游戏数据清理失败但不影响主流程
+                    if callback then callback(true) end
+                end,
+            })
+        end)
+    end)
+end
+
+--- 兼容旧代码：AddToPlayerIndex（现在为空操作）
+---@param username string
+---@param callback function|nil
+function DataManager.AddToPlayerIndex(username, callback)
+    -- 集中式账号配置已在注册时自动处理，此函数保留兼容性
+    if callback then callback(true) end
+end
+
+local isSaving_ = false      -- 是否有保存请求正在飞行中
+local isDirty_ = false       -- 保存期间是否有新变更
+local saveRetries_ = 0       -- 当前连续重试次数
+local SAVE_MAX_RETRIES = 2   -- 最大重试次数
+
+--- 保存玩家数据到云端（拆分为多个文件）
+--- 使用队列机制：同一时间只允许一个保存请求 in-flight，
+--- 保存期间如有新变更，完成后自动再保存一次最新数据。
+--- 保存失败时自动重试（最多2次）。
+---@param playerData table
+---@param callback function|nil 完成回调
+function DataManager.SaveToCloud(playerData, callback)
+    if not cloud_ then
+        print("[DataManager] 云存储不可用，跳过云端保存")
+        if callback then callback(false) end
+        return
+    end
+
+    -- 如果正在保存中，标记 dirty 等当前保存完成后再存最新数据
+    if isSaving_ then
+        isDirty_ = true
+        return
+    end
+
+    isSaving_ = true
+    isDirty_ = false
 
     local username = playerData.account.username or "unknown"
     local path = DataManager.GetCloudPath(username)
@@ -326,18 +1240,38 @@ function DataManager.SaveToCloud(playerData, callback)
 
     print("[DataManager] 保存到云端: " .. path)
 
-    local batch = clientCloud:BatchSet()
+    local batch = cloud_:BatchSet()
     for fileName, content in pairs(files) do
         batch:Set(path .. fileName, content)
     end
     batch:Save("保存玩家数据", {
         ok = function()
+            isSaving_ = false
+            saveRetries_ = 0
             print("[DataManager] 云端保存成功 (" .. path .. ")")
+            -- 同步排行榜分数
+            DataManager.SyncLeaderboardScores()
             if callback then callback(true) end
+            -- 保存期间有新变更，立即再存一次最新快照
+            if isDirty_ and DataManager.playerData then
+                DataManager.SaveToCloud(DataManager.playerData)
+            end
         end,
         error = function(code, reason)
+            isSaving_ = false
             print("[DataManager] 云端保存失败: " .. tostring(reason))
-            if callback then callback(false) end
+            -- 自动重试
+            if saveRetries_ < SAVE_MAX_RETRIES then
+                saveRetries_ = saveRetries_ + 1
+                print("[DataManager] 自动重试保存 (" .. saveRetries_ .. "/" .. SAVE_MAX_RETRIES .. ")")
+                DataManager.SaveToCloud(playerData, callback)
+            else
+                saveRetries_ = 0
+                print("[DataManager] 保存重试耗尽，等待下次操作触发")
+                if callback then callback(false) end
+                -- 保留 dirty 状态，下次操作触发时会再次尝试
+                isDirty_ = true
+            end
         end,
     })
 end
@@ -346,8 +1280,8 @@ end
 ---@param callback function(playerData|nil)
 ---@param username string|nil 指定账号名（可选，默认用 currentAccount）
 function DataManager.LoadFromCloud(callback, username)
-    if not clientCloud then
-        print("[DataManager] clientCloud 不可用")
+    if not cloud_ then
+        print("[DataManager] 云存储不可用")
         callback(nil)
         return
     end
@@ -356,7 +1290,7 @@ function DataManager.LoadFromCloud(callback, username)
     if not name or name == "" then
         -- 没有指定账号，尝试用通配方式检查是否有存档
         -- 先尝试读取旧格式（兼容）
-        clientCloud:Get("player_save", {
+        cloud_:Get("player_save", {
             ok = function(values, iscores)
                 local iniContent = values.player_save
                 if iniContent and type(iniContent) == "string" and iniContent ~= "" then
@@ -394,18 +1328,18 @@ function DataManager.LoadFromCloud(callback, username)
     local path = DataManager.GetCloudPath(name)
     print("[DataManager] 从云端加载: " .. path)
 
-    local batch = clientCloud:BatchGet()
+    local batch = cloud_:BatchGet()
     for _, fileName in ipairs(DataManager.CLOUD_FILES) do
         batch:Key(path .. fileName)
     end
     batch:Fetch({
         ok = function(values, iscores)
-            -- 检查是否有数据
-            local firstKey = path .. "账号配置.ini"
-            local accountContent = values[firstKey]
-            if not accountContent or accountContent == "" then
+            -- 检查是否有数据（用状态数据.ini判断）
+            local firstKey = path .. "状态数据.ini"
+            local firstContent = values[firstKey]
+            if not firstContent or firstContent == "" then
                 -- 新格式无数据，尝试旧格式兼容
-                clientCloud:Get("player_save", {
+                cloud_:Get("player_save", {
                     ok = function(oldValues, _)
                         local iniContent = oldValues.player_save
                         if iniContent and type(iniContent) == "string" and iniContent ~= "" then
@@ -477,16 +1411,29 @@ function DataManager.GetNPC(npcName)
     return DataManager.npcs[npcName]
 end
 
---- 获取物品信息
+--- 获取物品信息（先按 ID/key 查找，再按显示名称回退查找）
 ---@param itemName string
 ---@return table|nil
 function DataManager.GetItem(itemName)
-    -- 先从物品表找，再从装备表找
+    -- 先从物品表按 key 找
     if DataManager.items[itemName] then
         return DataManager.items[itemName]
     end
+    -- 再从装备表按 key 找
     if DataManager.equipment[itemName] then
         return DataManager.equipment[itemName]
+    end
+    -- 按显示名称(name字段)回退查找物品表
+    for _, data in pairs(DataManager.items) do
+        if data.name == itemName then
+            return data
+        end
+    end
+    -- 按显示名称回退查找装备表
+    for _, data in pairs(DataManager.equipment) do
+        if data.name == itemName then
+            return data
+        end
     end
     return nil
 end
@@ -519,29 +1466,377 @@ function DataManager.GetDungeon(dungeonId)
     return DataManager.dungeons[dungeonId]
 end
 
---- 获取升级所需经验
----@param level number
----@return number
+--- 获取升级所需经验（返回大数字符串）
+---@param level number|string
+---@return string
 function DataManager.GetExpForLevel(level)
     local config = DataManager.gameConfig["level_up"] or {}
-    local baseExp = config.base_exp or 20
+    local baseExp = tostring(config.base_exp or "20")
     local factor = config.exp_factor or 1.5
-    return math.floor(baseExp * (level ^ factor))
+    local lvl = tonumber(level) or 1
+    -- 用浮点算出倍率，再用 BigNum 乘以 base_exp
+    local multiplier = math.floor(lvl ^ factor)
+    if multiplier < 1 then multiplier = 1 end
+    return BigNum.mul(baseExp, tostring(multiplier))
 end
 
 --- 获取境界名称
----@param level number
+---@param level string|number
 ---@return string
 function DataManager.GetCultivation(level)
     local cultConfig = DataManager.gameConfig["cultivation"] or {}
     local result = "练气期一层"
+    local bestLvl = "0"
+    local levelStr = tostring(level)
     for lvlStr, name in pairs(cultConfig) do
-        local lvl = tonumber(lvlStr)
-        if lvl and level >= lvl then
-            result = name
+        if BigNum.gte(levelStr, lvlStr) and BigNum.gt(lvlStr, bestLvl) then
+            bestLvl = lvlStr
+            result = tostring(name)
         end
     end
     return result
+end
+
+--- 从排行榜中移除某玩家（删除时调用）
+---@param username string 玩家用户名
+---@param charName string|nil 角色名（排行榜中用角色名作为key）
+function DataManager.RemovePlayerFromRanking(username, charName)
+    if not cloud_ then return end
+    -- 先从云端读取最新排行数据，再删除指定玩家
+    cloud_:Get("系统配置/ranking_data.ini", {
+        ok = function(values)
+            local raw = values["系统配置/ranking_data.ini"]
+            if raw and raw ~= "" then
+                DataManager.rankingData = IniParser.Parse(raw)
+            end
+
+            local removed = false
+            -- 按角色名删除（排行榜中存的是角色名）
+            if charName and charName ~= "" and DataManager.rankingData[charName] then
+                DataManager.rankingData[charName] = nil
+                removed = true
+            end
+            -- 也按用户名尝试删除（兼容）
+            if DataManager.rankingData[username] then
+                DataManager.rankingData[username] = nil
+                removed = true
+            end
+            -- 清理无效条目
+            if DataManager.rankingData["default"] then
+                DataManager.rankingData["default"] = nil
+            end
+            if DataManager.rankingData[""] then
+                DataManager.rankingData[""] = nil
+            end
+
+            if removed then
+                local content = IniParser.Serialize(DataManager.rankingData)
+                cloud_:Set("系统配置/ranking_data.ini", content, {
+                    ok = function()
+                        print("[DataManager] 排行榜已移除玩家: " .. (charName or username))
+                    end,
+                    error = function(_, r)
+                        print("[DataManager] 排行榜移除失败: " .. tostring(r))
+                    end,
+                })
+            end
+        end,
+        error = function(_, r)
+            print("[DataManager] 排行榜读取失败，无法移除玩家: " .. tostring(r))
+        end,
+    })
+end
+
+local isRankSyncing_ = false   -- 排行榜是否正在同步中
+local rankSyncQueued_ = false  -- 同步期间是否有新请求排队
+
+function DataManager.SyncLeaderboardScores(callback)
+    if not cloud_ then
+        if callback then callback(false) end
+        return
+    end
+    local pd = DataManager.playerData
+    if not pd or not pd.status then
+        if callback then callback(false) end
+        return
+    end
+
+    -- 如果正在同步中，标记排队，完成后自动再同步一次
+    if isRankSyncing_ then
+        rankSyncQueued_ = true
+        return
+    end
+
+    isRankSyncing_ = true
+    rankSyncQueued_ = false
+
+    -- 用角色名作为 section key
+    local charName = (pd.status and pd.status.name) or
+                     (pd.account and pd.account.username) or "未知玩家"
+
+    local function finishSync(success)
+        isRankSyncing_ = false
+        if callback then callback(success) end
+        -- 同步期间有新请求，再同步一次最新数据
+        if rankSyncQueued_ then
+            rankSyncQueued_ = false
+            DataManager.SyncLeaderboardScores()
+        end
+    end
+
+    -- 先从云端读取最新排行数据，再合并写入（避免覆盖其他玩家数据）
+    cloud_:Get("系统配置/ranking_data.ini", {
+        ok = function(values)
+            local raw = values["系统配置/ranking_data.ini"]
+            if raw and raw ~= "" then
+                DataManager.rankingData = IniParser.Parse(raw)
+            end
+
+            -- 合并当前玩家数据
+            DataManager.rankingData[charName] = {
+                ["等级"] = NumFormat.Int(pd.status.level or 1),
+                ["金币"] = NumFormat.Int(pd.status.gold or 0),
+                ["攻击力"] = NumFormat.Int(pd.status.atk or 0),
+                ["防御力"] = NumFormat.Int(pd.status.def or 0),
+                ["生命上限"] = NumFormat.Int(pd.status.max_hp or 100),
+            }
+
+            -- 清理无效条目
+            if DataManager.rankingData["default"] then
+                DataManager.rankingData["default"] = nil
+            end
+            if DataManager.rankingData[""] then
+                DataManager.rankingData[""] = nil
+            end
+
+            -- 序列化并保存到云端
+            local content = IniParser.Serialize(DataManager.rankingData)
+            cloud_:Set("系统配置/ranking_data.ini", content, {
+                ok = function()
+                    print("[DataManager] 排行榜数据已同步")
+                    finishSync(true)
+                end,
+                error = function(_, r)
+                    print("[DataManager] 排行榜同步失败: " .. tostring(r))
+                    finishSync(false)
+                end,
+            })
+        end,
+        error = function(_, r)
+            print("[DataManager] 排行榜读取失败，尝试直接写入: " .. tostring(r))
+            -- 读取失败时仍尝试写入本地数据
+            DataManager.rankingData[charName] = {
+                ["等级"] = NumFormat.Int(pd.status.level or 1),
+                ["金币"] = NumFormat.Int(pd.status.gold or 0),
+                ["攻击力"] = NumFormat.Int(pd.status.atk or 0),
+                ["防御力"] = NumFormat.Int(pd.status.def or 0),
+                ["生命上限"] = NumFormat.Int(pd.status.max_hp or 100),
+            }
+            local content = IniParser.Serialize(DataManager.rankingData)
+            cloud_:Set("系统配置/ranking_data.ini", content, {
+                ok = function()
+                    finishSync(true)
+                end,
+                error = function(_, r2)
+                    finishSync(false)
+                end,
+            })
+        end,
+    })
+end
+
+--- 获取排行榜排序结果
+---@param source string 数据来源字段（等级/金币/经验/攻击力）
+---@param topCount number 显示前几名
+---@return table 排序后的列表 { {name=xx, value=xx}, ... }
+function DataManager.GetRankedList(source, topCount)
+    local list = {}
+    for name, data in pairs(DataManager.rankingData) do
+        -- 过滤无效条目
+        if name ~= "default" and name ~= "" then
+            local val = BigNum.new(data[source])
+            table.insert(list, { name = name, value = val })
+        end
+    end
+    -- 降序排序（分数高的在前，使用大数比较）
+    table.sort(list, function(a, b) return BigNum.gt(a.value, b.value) end)
+    -- 截取前N名
+    local result = {}
+    for i = 1, math.min(topCount, #list) do
+        result[i] = list[i]
+    end
+    return result
+end
+
+-- =============== 聊天系统 ===============
+
+local CHAT_CLOUD_KEY = "系统配置/chat_messages.ini"
+local MAX_CHAT_MESSAGES = 50
+
+--- 解析聊天记录INI为列表
+---@param sections table INI解析结果
+---@return table 聊天记录列表
+function DataManager.ParseChatMessages(sections)
+    local list = {}
+    for sectionName, data in pairs(sections) do
+        if sectionName ~= "default" and sectionName ~= "" then
+            table.insert(list, {
+                id = sectionName,
+                sender = data["发送者"] or "未知",
+                content = data["内容"] or "",
+                time = data["时间"] or "",
+            })
+        end
+    end
+    table.sort(list, function(a, b) return a.id < b.id end)
+    return list
+end
+
+local isChatSending_ = false   -- 聊天是否正在发送中
+local chatSendQueue_ = {}      -- 排队中的聊天消息 { {content, callback}, ... }
+
+--- 发送聊天消息
+---@param content string 消息内容
+---@param callback fun(boolean)|nil
+function DataManager.SendChatMessage(content, callback)
+    if not cloud_ then
+        if callback then callback(false) end
+        return
+    end
+    if not content or content == "" then
+        if callback then callback(false) end
+        return
+    end
+
+    -- 如果正在发送中，排队等待
+    if isChatSending_ then
+        table.insert(chatSendQueue_, { content = content, callback = callback })
+        return
+    end
+
+    isChatSending_ = true
+
+    local pd = DataManager.playerData
+    local sender = (pd and pd.status and pd.status.name) or
+                   (pd and pd.account and pd.account.username) or "未知玩家"
+
+    local msgId = "msg_" .. tostring(os.time()) .. "_" .. tostring(math.random(1000, 9999))
+
+    -- 先从云端读取最新聊天记录，再合并新消息写入（避免覆盖其他玩家的消息）
+    cloud_:Get(CHAT_CLOUD_KEY, {
+        ok = function(values)
+            local raw = values[CHAT_CLOUD_KEY]
+            if raw and raw ~= "" then
+                DataManager.chatMessages = DataManager.ParseChatMessages(IniParser.Parse(raw))
+            end
+
+            -- 添加新消息
+            table.insert(DataManager.chatMessages, {
+                id = msgId,
+                sender = sender,
+                content = content,
+                time = os.date("%m-%d %H:%M"),
+            })
+
+            -- 限制消息数量
+            while #DataManager.chatMessages > MAX_CHAT_MESSAGES do
+                table.remove(DataManager.chatMessages, 1)
+            end
+
+            -- 序列化并写入
+            local sections = {}
+            for _, msg in ipairs(DataManager.chatMessages) do
+                sections[msg.id] = {
+                    ["发送者"] = msg.sender,
+                    ["内容"] = msg.content,
+                    ["时间"] = msg.time,
+                }
+            end
+            local iniContent = IniParser.Serialize(sections)
+            cloud_:Set(CHAT_CLOUD_KEY, iniContent, {
+                ok = function()
+                    print("[DataManager] 聊天消息已发送")
+                    isChatSending_ = false
+                    if callback then callback(true) end
+                    -- 处理排队的消息
+                    if #chatSendQueue_ > 0 then
+                        local next = table.remove(chatSendQueue_, 1)
+                        DataManager.SendChatMessage(next.content, next.callback)
+                    end
+                end,
+                error = function(_, r)
+                    print("[DataManager] 聊天消息发送失败: " .. tostring(r))
+                    isChatSending_ = false
+                    if callback then callback(false) end
+                    if #chatSendQueue_ > 0 then
+                        local next = table.remove(chatSendQueue_, 1)
+                        DataManager.SendChatMessage(next.content, next.callback)
+                    end
+                end,
+            })
+        end,
+        error = function(_, r)
+            print("[DataManager] 聊天记录读取失败，尝试直接写入: " .. tostring(r))
+            -- 读取失败时仍尝试写入
+            table.insert(DataManager.chatMessages, {
+                id = msgId,
+                sender = sender,
+                content = content,
+                time = os.date("%m-%d %H:%M"),
+            })
+            while #DataManager.chatMessages > MAX_CHAT_MESSAGES do
+                table.remove(DataManager.chatMessages, 1)
+            end
+            local sections = {}
+            for _, msg in ipairs(DataManager.chatMessages) do
+                sections[msg.id] = {
+                    ["发送者"] = msg.sender,
+                    ["内容"] = msg.content,
+                    ["时间"] = msg.time,
+                }
+            end
+            local iniContent = IniParser.Serialize(sections)
+            cloud_:Set(CHAT_CLOUD_KEY, iniContent, {
+                ok = function()
+                    isChatSending_ = false
+                    if callback then callback(true) end
+                    if #chatSendQueue_ > 0 then
+                        local next = table.remove(chatSendQueue_, 1)
+                        DataManager.SendChatMessage(next.content, next.callback)
+                    end
+                end,
+                error = function(_, r2)
+                    isChatSending_ = false
+                    if callback then callback(false) end
+                    if #chatSendQueue_ > 0 then
+                        local next = table.remove(chatSendQueue_, 1)
+                        DataManager.SendChatMessage(next.content, next.callback)
+                    end
+                end,
+            })
+        end,
+    })
+end
+
+--- 刷新聊天记录（从云端重新加载）
+---@param callback fun()|nil
+function DataManager.RefreshChatMessages(callback)
+    if not cloud_ then
+        if callback then callback() end
+        return
+    end
+    cloud_:Get(CHAT_CLOUD_KEY, {
+        ok = function(values)
+            local raw = values[CHAT_CLOUD_KEY]
+            if raw and raw ~= "" then
+                DataManager.chatMessages = DataManager.ParseChatMessages(IniParser.Parse(raw))
+            end
+            if callback then callback() end
+        end,
+        error = function()
+            if callback then callback() end
+        end,
+    })
 end
 
 return DataManager

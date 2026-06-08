@@ -4,6 +4,8 @@
 local UI = require("urhox-libs/UI")
 local DataManager = require("Systems.DataManager")
 local IniParser = require("Utils.IniParser")
+local NumFormat = require("Utils.NumFormat")
+local BigNum = require("Utils.BigNum")
 
 local CombatUI = {}
 
@@ -13,10 +15,10 @@ local combatLog_ = nil
 
 -- 战斗状态
 local monsterName_ = ""
-local monsterHp_ = 0
-local monsterMaxHp_ = 0
-local monsterAtk_ = 0
-local monsterDef_ = 0
+local monsterHp_ = "0"
+local monsterMaxHp_ = "0"
+local monsterAtk_ = "0"
+local monsterDef_ = "0"
 local inCombat_ = false
 
 --- 开始战斗
@@ -35,10 +37,10 @@ function CombatUI.Start(monsterName, parent, onFinish)
         return
     end
 
-    monsterMaxHp_ = tonumber(mData.hp) or 50
+    monsterMaxHp_ = BigNum.new(mData.hp or "50")
     monsterHp_ = monsterMaxHp_
-    monsterAtk_ = tonumber(mData.atk) or 5
-    monsterDef_ = tonumber(mData.def) or 3
+    monsterAtk_ = BigNum.new(mData.atk or "5")
+    monsterDef_ = BigNum.new(mData.def or "3")
 
     CombatUI.Render()
 end
@@ -51,13 +53,17 @@ function CombatUI.Render()
     local player = DataManager.playerData
     if not player then return end
 
-    -- 计算玩家总属性（含装备加成）
+    -- 计算玩家总属性（含装备加成 + buff加成）
     local StatusUI = require("UI.StatusUI")
+    local BagUI = require("UI.BagUI")
     local eAtk, eDef, eHp = StatusUI.GetEquipBonus()
-    local playerAtk = (tonumber(player.status.atk) or 5) + eAtk
-    local playerDef = (tonumber(player.status.def) or 3) + eDef
-    local playerHp = tonumber(player.status.hp) or 100
-    local playerMaxHp = (tonumber(player.status.max_hp) or 100) + eHp
+    local buffAtk = BagUI.GetBuffValue(player, "攻击")
+    local buffDef = BagUI.GetBuffValue(player, "防御")
+    local buffHp = BagUI.GetBuffValue(player, "生命上限")
+    local playerAtk = BigNum.add(BigNum.add(player.status.atk or "5", tostring(eAtk)), tostring(buffAtk))
+    local playerDef = BigNum.add(BigNum.add(player.status.def or "3", tostring(eDef)), tostring(buffDef))
+    local playerHp = BigNum.new(player.status.hp or "100")
+    local playerMaxHp = BigNum.add(BigNum.add(player.status.max_hp or "100", tostring(eHp)), tostring(buffHp))
 
     -- 战斗日志
     combatLog_ = UI.Panel {
@@ -90,12 +96,12 @@ function CombatUI.Render()
                 children = {
                     UI.Label { text = "【" .. monsterName_ .. "】", fontSize = 16, fontColor = { 255, 150, 150, 255 } },
                     UI.Label {
-                        text = "HP: " .. monsterHp_ .. " / " .. monsterMaxHp_,
+                        text = "HP: " .. NumFormat.Short(monsterHp_) .. " / " .. NumFormat.Short(monsterMaxHp_),
                         fontSize = 13,
                         fontColor = { 255, 100, 100, 255 },
                     },
                     UI.Label {
-                        text = "攻:" .. monsterAtk_ .. "  防:" .. monsterDef_,
+                        text = "攻:" .. NumFormat.Short(monsterAtk_) .. "  防:" .. NumFormat.Short(monsterDef_),
                         fontSize = 12,
                         fontColor = { 200, 150, 150, 255 },
                     },
@@ -115,12 +121,12 @@ function CombatUI.Render()
                 children = {
                     UI.Label { text = "【" .. (player.status.name or "玩家") .. "】", fontSize = 16, fontColor = { 100, 200, 255, 255 } },
                     UI.Label {
-                        text = "HP: " .. playerHp .. " / " .. playerMaxHp,
+                        text = "HP: " .. NumFormat.Short(playerHp) .. " / " .. NumFormat.Short(playerMaxHp),
                         fontSize = 13,
                         fontColor = { 100, 200, 100, 255 },
                     },
                     UI.Label {
-                        text = "攻:" .. playerAtk .. "  防:" .. playerDef,
+                        text = "攻:" .. NumFormat.Short(playerAtk) .. "  防:" .. NumFormat.Short(playerDef),
                         fontSize = 12,
                         fontColor = { 150, 150, 200, 255 },
                     },
@@ -154,30 +160,33 @@ function CombatUI.DoAttack()
     if not player then return end
 
     local StatusUI = require("UI.StatusUI")
+    local BagUI = require("UI.BagUI")
     local eAtk, eDef, _ = StatusUI.GetEquipBonus()
-    local playerAtk = (tonumber(player.status.atk) or 5) + eAtk
-    local playerDef = (tonumber(player.status.def) or 3) + eDef
+    local buffAtk = BagUI.GetBuffValue(player, "攻击")
+    local buffDef = BagUI.GetBuffValue(player, "防御")
+    local playerAtk = BigNum.add(BigNum.add(player.status.atk or "5", tostring(eAtk)), tostring(buffAtk))
+    local playerDef = BigNum.add(BigNum.add(player.status.def or "3", tostring(eDef)), tostring(buffDef))
 
     -- 玩家攻击怪物
-    local dmgToMonster = math.max(1, playerAtk - monsterDef_ + math.random(-2, 3))
-    monsterHp_ = monsterHp_ - dmgToMonster
-    CombatUI.AddCombatLog("你对" .. monsterName_ .. "造成了 " .. dmgToMonster .. " 点伤害")
+    local dmgToMonster = BigNum.max("1", BigNum.add(BigNum.sub(playerAtk, monsterDef_), tostring(math.random(-2, 3))))
+    monsterHp_ = BigNum.sub(monsterHp_, dmgToMonster)
+    CombatUI.AddCombatLog("你对" .. monsterName_ .. "造成了 " .. NumFormat.Short(dmgToMonster) .. " 点伤害")
 
     -- 检查怪物是否死亡
-    if monsterHp_ <= 0 then
-        monsterHp_ = 0
+    if BigNum.lte(monsterHp_, "0") then
+        monsterHp_ = "0"
         CombatUI.Victory()
         return
     end
 
     -- 怪物攻击玩家
-    local dmgToPlayer = math.max(1, monsterAtk_ - playerDef + math.random(-2, 3))
-    player.status.hp = (tonumber(player.status.hp) or 100) - dmgToPlayer
-    CombatUI.AddCombatLog(monsterName_ .. "对你造成了 " .. dmgToPlayer .. " 点伤害")
+    local dmgToPlayer = BigNum.max("1", BigNum.add(BigNum.sub(monsterAtk_, playerDef), tostring(math.random(-2, 3))))
+    player.status.hp = BigNum.sub(BigNum.new(player.status.hp or "100"), dmgToPlayer)
+    CombatUI.AddCombatLog(monsterName_ .. "对你造成了 " .. NumFormat.Short(dmgToPlayer) .. " 点伤害")
 
     -- 检查玩家是否死亡
-    if tonumber(player.status.hp) <= 0 then
-        player.status.hp = 0
+    if BigNum.lte(player.status.hp, "0") then
+        player.status.hp = "0"
         CombatUI.Defeat()
         return
     end
@@ -195,27 +204,29 @@ function CombatUI.UsePotion()
     for i, item in ipairs(player.bag) do
         local itemData = DataManager.GetItem(item.name)
         if itemData and itemData.effect == "heal" then
-            local healValue = tonumber(itemData.value) or 0
-            local maxHp = tonumber(player.status.max_hp) or 100
-            player.status.hp = math.min((tonumber(player.status.hp) or 0) + healValue, maxHp)
+            local healValue = BigNum.new(itemData.value or "0")
+            local maxHp = BigNum.new(player.status.max_hp or "100")
+            player.status.hp = BigNum.min(BigNum.add(player.status.hp or "0", healValue), maxHp)
 
-            item.count = item.count - 1
-            if item.count <= 0 then
+            item.count = BigNum.sub(item.count or "1", "1")
+            if BigNum.lte(item.count, "0") then
                 table.remove(player.bag, i)
             end
 
-            CombatUI.AddCombatLog("使用了" .. item.name .. "，恢复" .. healValue .. "生命")
+            CombatUI.AddCombatLog("使用了" .. item.name .. "，恢复" .. NumFormat.Short(healValue) .. "生命")
 
             -- 怪物趁机攻击
             local StatusUI = require("UI.StatusUI")
+            local BagUI = require("UI.BagUI")
             local _, eDef, _ = StatusUI.GetEquipBonus()
-            local playerDef = (tonumber(player.status.def) or 3) + eDef
-            local dmg = math.max(1, monsterAtk_ - playerDef + math.random(-1, 2))
-            player.status.hp = (tonumber(player.status.hp) or 100) - dmg
-            CombatUI.AddCombatLog(monsterName_ .. "趁机攻击，造成 " .. dmg .. " 伤害")
+            local buffDef = BagUI.GetBuffValue(player, "防御")
+            local playerDef = BigNum.add(BigNum.add(player.status.def or "3", tostring(eDef)), tostring(buffDef))
+            local dmg = BigNum.max("1", BigNum.add(BigNum.sub(monsterAtk_, playerDef), tostring(math.random(-1, 2))))
+            player.status.hp = BigNum.sub(BigNum.new(player.status.hp or "100"), dmg)
+            CombatUI.AddCombatLog(monsterName_ .. "趁机攻击，造成 " .. NumFormat.Short(dmg) .. " 伤害")
 
-            if tonumber(player.status.hp) <= 0 then
-                player.status.hp = 0
+            if BigNum.lte(player.status.hp, "0") then
+                player.status.hp = "0"
                 CombatUI.Defeat()
                 return
             end
@@ -254,12 +265,29 @@ function CombatUI.Victory()
     if not player then return end
 
     local mData = DataManager.GetMonster(monsterName_)
-    local expGain = mData and (tonumber(mData.exp) or 10) or 10
-    local goldGain = mData and (tonumber(mData.gold) or 5) or 5
+    local baseExp = mData and (mData.exp or "5") or "5"
+    local baseGold = mData and (mData.gold or "2") or "2"
+
+    -- 清理旧版残留字段（已迁移到 buff 系统）
+    player.status.exp_rate = nil
+    player.status.gold_rate = nil
+
+    -- 从 buff 系统获取倍率加成
+    local BagUI = require("UI.BagUI")
+    local expRate = BagUI.GetBuffValue(player, "经验倍率")
+    local goldRate = BagUI.GetBuffValue(player, "货币倍率")
+    -- 使用缩放法处理小数倍率：乘以100再除以100
+    local expRateScaled = math.floor(expRate * 100 + 0.5)
+    local goldRateScaled = math.floor(goldRate * 100 + 0.5)
+    local expGain = BigNum.div(BigNum.mul(BigNum.new(baseExp), tostring(expRateScaled)), "100")
+    local goldGain = BigNum.div(BigNum.mul(BigNum.new(baseGold), tostring(goldRateScaled)), "100")
+
+    print("[Combat] 经验计算: " .. baseExp .. " * " .. expRate .. " = " .. expGain)
+    print("[Combat] 金币计算: " .. baseGold .. " * " .. goldRate .. " = " .. goldGain)
 
     -- 发放奖励
-    player.status.exp = (tonumber(player.status.exp) or 0) + expGain
-    player.status.gold = (tonumber(player.status.gold) or 0) + goldGain
+    player.status.exp = BigNum.add(player.status.exp or "0", expGain)
+    player.status.gold = BigNum.add(player.status.gold or "0", goldGain)
 
     -- 掉落物品
     local drops = {}
@@ -274,13 +302,13 @@ function CombatUI.Victory()
                     local found = false
                     for _, bagItem in ipairs(player.bag) do
                         if bagItem.name == itemName then
-                            bagItem.count = bagItem.count + 1
+                            bagItem.count = BigNum.add(bagItem.count or "0", "1")
                             found = true
                             break
                         end
                     end
                     if not found then
-                        table.insert(player.bag, { name = itemName, count = 1 })
+                        table.insert(player.bag, { name = itemName, count = "1" })
                     end
                 end
             end
@@ -295,6 +323,25 @@ function CombatUI.Victory()
     local GameUI = require("UI.GameUI")
     GameUI.CheckLevelUp()
 
+    -- 写入游戏日志栏：击杀信息
+    GameUI.AddLog("击败了【" .. monsterName_ .. "】")
+    -- 经验日志（含buff倍率标注）
+    local expLogStr = "获得经验 +" .. NumFormat.Short(expGain)
+    if expRate > 1 then
+        expLogStr = expLogStr .. " (经验倍率×" .. expRate .. ")"
+    end
+    GameUI.AddLog(expLogStr)
+    -- 金币日志（含buff倍率标注）
+    local goldLogStr = "获得金币 +" .. NumFormat.Short(goldGain)
+    if goldRate > 1 then
+        goldLogStr = goldLogStr .. " (货币倍率×" .. goldRate .. ")"
+    end
+    GameUI.AddLog(goldLogStr)
+    -- 掉落物品日志
+    if #drops > 0 then
+        GameUI.AddLog("掉落物品：" .. table.concat(drops, "、"))
+    end
+
     -- 显示胜利界面
     if parentRef_ then
         parentRef_:ClearChildren()
@@ -307,8 +354,8 @@ function CombatUI.Victory()
             children = {
                 UI.Label { text = "战斗胜利！", fontSize = 18, fontColor = { 255, 215, 0, 255 }, textAlign = "center" },
                 UI.Label { text = "击败了【" .. monsterName_ .. "】", fontSize = 14, fontColor = { 200, 200, 220, 255 } },
-                UI.Label { text = "获得经验：" .. expGain, fontSize = 13, fontColor = { 100, 255, 100, 255 } },
-                UI.Label { text = "获得金币：" .. goldGain, fontSize = 13, fontColor = { 255, 215, 0, 255 } },
+                UI.Label { text = "获得经验：" .. NumFormat.Short(expGain), fontSize = 13, fontColor = { 100, 255, 100, 255 } },
+                UI.Label { text = "获得金币：" .. NumFormat.Short(goldGain), fontSize = 13, fontColor = { 255, 215, 0, 255 } },
                 #drops > 0 and UI.Label {
                     text = "掉落物品：" .. table.concat(drops, "、"),
                     fontSize = 13,
@@ -329,9 +376,9 @@ function CombatUI.Defeat()
     local player = DataManager.playerData
     if not player then return end
 
-    -- 死亡惩罚：恢复到满血，扣少量金币
-    local goldLoss = math.floor((tonumber(player.status.gold) or 0) * 0.1)
-    player.status.gold = (tonumber(player.status.gold) or 0) - goldLoss
+    -- 死亡惩罚：恢复到满血，扣少量金币（10%）
+    local goldLoss = BigNum.div(BigNum.new(player.status.gold or "0"), "10")
+    player.status.gold = BigNum.sub(BigNum.new(player.status.gold or "0"), goldLoss)
     player.status.hp = player.status.max_hp
 
     if parentRef_ then
@@ -345,7 +392,7 @@ function CombatUI.Defeat()
             children = {
                 UI.Label { text = "战斗失败...", fontSize = 18, fontColor = { 255, 80, 80, 255 }, textAlign = "center" },
                 UI.Label { text = "你被【" .. monsterName_ .. "】击败了", fontSize = 14, fontColor = { 200, 150, 150, 255 } },
-                UI.Label { text = "损失金币：" .. goldLoss, fontSize = 13, fontColor = { 255, 150, 50, 255 } },
+                UI.Label { text = "损失金币：" .. NumFormat.Short(goldLoss), fontSize = 13, fontColor = { 255, 150, 50, 255 } },
                 UI.Label { text = "你的伤口已恢复", fontSize = 12, fontColor = { 150, 200, 150, 255 } },
             },
         })
@@ -355,7 +402,7 @@ function CombatUI.Defeat()
     if callback_ then callback_("defeat") end
 end
 
---- 添加战斗日志
+--- 添加战斗日志（同时写入底部游戏日志栏）
 ---@param msg string
 function CombatUI.AddCombatLog(msg)
     if combatLog_ then
@@ -365,6 +412,8 @@ function CombatUI.AddCombatLog(msg)
             fontColor = { 180, 180, 200, 255 },
         })
     end
+    local GameUI = require("UI.GameUI")
+    if GameUI.AddLog then GameUI.AddLog(msg) end
     print("[Combat] " .. msg)
 end
 
@@ -377,14 +426,14 @@ function CombatUI.CheckKillQuest(monsterName)
     for _, quest in ipairs(player.quests.active) do
         local qData = DataManager.GetQuest(quest.id)
         if qData and qData.target_type == "kill" and qData.target_name == monsterName then
-            quest.progress = (quest.progress or 0) + 1
-            local targetCount = tonumber(qData.target_count) or 1
+            quest.progress = BigNum.add(tostring(quest.progress or "0"), "1")
+            local targetCount = qData.target_count or "1"
             print("[CombatUI] 任务进度: " .. quest.id .. " " .. quest.progress .. "/" .. targetCount)
 
             local GameUI = require("UI.GameUI")
             GameUI.AddLog("任务进度：" .. (qData.name or quest.id) .. " (" .. quest.progress .. "/" .. targetCount .. ")")
 
-            if quest.progress >= targetCount then
+            if BigNum.gte(quest.progress, targetCount) then
                 GameUI.CompleteQuest(quest)
             end
         end
@@ -401,16 +450,16 @@ function CombatUI.CheckCollectQuest(droppedItems)
         local qData = DataManager.GetQuest(quest.id)
         if qData and qData.target_type == "collect" then
             -- 统计背包中目标物品数量
-            local count = 0
+            local count = "0"
             for _, bagItem in ipairs(player.bag) do
                 if bagItem.name == qData.target_name then
-                    count = count + bagItem.count
+                    count = BigNum.add(count, tostring(bagItem.count or "0"))
                     break
                 end
             end
             quest.progress = count
-            local targetCount = tonumber(qData.target_count) or 1
-            if count >= targetCount then
+            local targetCount = qData.target_count or "1"
+            if BigNum.gte(count, targetCount) then
                 local GameUI = require("UI.GameUI")
                 GameUI.CompleteQuest(quest)
             end

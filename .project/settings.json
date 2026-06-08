@@ -22,7 +22,10 @@
   },
   "@runtime": {
     "multiplayer": {
-      "enabled": false
+      "enabled": true,
+      "persistent_world": {
+        "enabled": true
+      }
     }
   }
 }
