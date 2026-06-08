@@ -9,6 +9,21 @@ local EquipUI = {}
 
 local parentRef_ = nil
 
+--- 中文部位→英文key映射（兼容玩家数据结构）
+local SLOT_CN_TO_KEY = {
+    ["武器"] = "weapon", ["头盔"] = "helmet", ["铠甲"] = "armor", ["护腕"] = "bracer",
+    ["腰带"] = "belt", ["战靴"] = "boots", ["披风"] = "cloak", ["项链"] = "necklace",
+    ["戒指"] = "ring", ["法宝"] = "artifact", ["坐骑"] = "mount", ["灵翼"] = "wings",
+    ["护盾"] = "shield", ["防具"] = "armor", ["饰品"] = "accessory",
+}
+--- 英文key→中文显示名
+local SLOT_KEY_TO_LABEL = {
+    weapon = "武器", helmet = "头盔", armor = "铠甲", bracer = "护腕",
+    belt = "腰带", boots = "战靴", cloak = "披风", necklace = "项链",
+    ring = "戒指", artifact = "法宝", mount = "坐骑", wings = "灵翼",
+    shield = "护盾", accessory = "饰品",
+}
+
 --- 渲染装备面板
 ---@param parent Widget
 function EquipUI.Render(parent)
@@ -33,11 +48,21 @@ function EquipUI.Refresh()
         marginBottom = 8,
     })
 
-    -- 装备槽
+    -- 装备槽（13个部位）
     local slots = {
         { key = "weapon", label = "武器" },
-        { key = "armor", label = "防具" },
-        { key = "accessory", label = "饰品" },
+        { key = "helmet", label = "头盔" },
+        { key = "armor", label = "铠甲" },
+        { key = "bracer", label = "护腕" },
+        { key = "belt", label = "腰带" },
+        { key = "boots", label = "战靴" },
+        { key = "cloak", label = "披风" },
+        { key = "necklace", label = "项链" },
+        { key = "ring", label = "戒指" },
+        { key = "artifact", label = "法宝" },
+        { key = "mount", label = "坐骑" },
+        { key = "wings", label = "灵翼" },
+        { key = "shield", label = "护盾" },
     }
 
     for _, slot in ipairs(slots) do
@@ -207,7 +232,8 @@ function EquipUI.EquipFromBag(bagIndex)
         return
     end
 
-    local slot = itemData.slot
+    -- 将中文部位名转换为英文key（兼容旧数据）
+    local slot = SLOT_CN_TO_KEY[itemData.slot] or itemData.slot
 
     -- 卸下旧装备
     local oldEquip = player.equip[slot]
@@ -242,13 +268,32 @@ end
 ---@return table color {r,g,b,a}
 function EquipUI.GetQualityColor(quality)
     local colors = {
+        -- 英文兼容（旧数据）
         white = { 200, 200, 200, 255 },
         green = { 100, 220, 100, 255 },
         blue = { 100, 150, 255, 255 },
         purple = { 200, 100, 255, 255 },
         gold = { 255, 200, 50, 255 },
+        orange = { 255, 165, 0, 255 },
+        red = { 255, 80, 80, 255 },
+        -- 中文品质（新数据）
+        ["白色"] = { 200, 200, 200, 255 },
+        ["绿色"] = { 100, 220, 100, 255 },
+        ["橙色"] = { 255, 165, 0, 255 },
+        ["红色"] = { 255, 80, 80, 255 },
+        ["彩色"] = { 255, 100, 200, 255 },
+        ["地级"] = { 180, 130, 255, 255 },
+        ["天级"] = { 100, 200, 255, 255 },
+        ["帝级"] = { 255, 215, 0, 255 },
+        ["仙级"] = { 200, 255, 100, 255 },
+        ["神级"] = { 255, 100, 100, 255 },
+        ["创世级"] = { 255, 50, 200, 255 },
+        -- 旧中文兼容
+        ["蓝色"] = { 100, 150, 255, 255 },
+        ["紫色"] = { 200, 100, 255, 255 },
+        ["金色"] = { 255, 200, 50, 255 },
     }
-    return colors[quality] or colors.white
+    return colors[quality] or colors["白色"]
 end
 
 return EquipUI

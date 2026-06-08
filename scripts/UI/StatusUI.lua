@@ -159,7 +159,7 @@ function StatusUI.GetEquipBonus()
     if not player then return "0", "0", "0" end
 
     local totalAtk, totalDef, totalHp = "0", "0", "0"
-    for _, slot in ipairs({ "weapon", "armor", "accessory" }) do
+    for _, slot in ipairs({ "weapon", "helmet", "armor", "bracer", "belt", "boots", "cloak", "necklace", "ring", "artifact", "mount", "wings", "shield" }) do
         local equipName = player.equip[slot]
         if equipName and equipName ~= "" then
             local eData = DataManager.GetEquipment(equipName)

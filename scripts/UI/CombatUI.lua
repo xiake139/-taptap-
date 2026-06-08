@@ -96,7 +96,7 @@ function CombatUI.Render()
                 children = {
                     UI.Label { text = "【" .. monsterName_ .. "】", fontSize = 16, fontColor = { 255, 150, 150, 255 } },
                     UI.Label {
-                        text = "HP: " .. NumFormat.Short(monsterHp_) .. " / " .. NumFormat.Short(monsterMaxHp_),
+                        text = "生命: " .. NumFormat.Short(monsterHp_) .. " / " .. NumFormat.Short(monsterMaxHp_),
                         fontSize = 13,
                         fontColor = { 255, 100, 100, 255 },
                     },
@@ -121,7 +121,7 @@ function CombatUI.Render()
                 children = {
                     UI.Label { text = "【" .. (player.status.name or "玩家") .. "】", fontSize = 16, fontColor = { 100, 200, 255, 255 } },
                     UI.Label {
-                        text = "HP: " .. NumFormat.Short(playerHp) .. " / " .. NumFormat.Short(playerMaxHp),
+                        text = "生命: " .. NumFormat.Short(playerHp) .. " / " .. NumFormat.Short(playerMaxHp),
                         fontSize = 13,
                         fontColor = { 100, 200, 100, 255 },
                     },
@@ -425,7 +425,7 @@ function CombatUI.CheckKillQuest(monsterName)
 
     for _, quest in ipairs(player.quests.active) do
         local qData = DataManager.GetQuest(quest.id)
-        if qData and qData.target_type == "kill" and qData.target_name == monsterName then
+        if qData and (qData.target_type == "kill" or qData.target_type == "击杀") and qData.target_name == monsterName then
             quest.progress = BigNum.add(tostring(quest.progress or "0"), "1")
             local targetCount = qData.target_count or "1"
             print("[CombatUI] 任务进度: " .. quest.id .. " " .. quest.progress .. "/" .. targetCount)
@@ -448,7 +448,7 @@ function CombatUI.CheckCollectQuest(droppedItems)
 
     for _, quest in ipairs(player.quests.active) do
         local qData = DataManager.GetQuest(quest.id)
-        if qData and qData.target_type == "collect" then
+        if qData and (qData.target_type == "collect" or qData.target_type == "收集") then
             -- 统计背包中目标物品数量
             local count = "0"
             for _, bagItem in ipairs(player.bag) do

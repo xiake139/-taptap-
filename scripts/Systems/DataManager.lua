@@ -560,10 +560,20 @@ function DataManager.CreateNewPlayer(username, charName)
             current_map = startMap,
         },
         bag = {},       -- { {name="物品名", count=数量}, ... }
-        equip = {       -- 装备槽
+        equip = {       -- 装备槽（13部位）
             weapon = "",
+            helmet = "",
             armor = "",
-            accessory = "",
+            bracer = "",
+            belt = "",
+            boots = "",
+            cloak = "",
+            necklace = "",
+            ring = "",
+            artifact = "",
+            mount = "",
+            wings = "",
+            shield = "",
         },
         quests = {
             active = {},     -- { {id="quest_id", progress=0}, ... }
@@ -632,8 +642,18 @@ function DataManager.PlayerDataToFiles(playerData)
     local equipSections = {}
     equipSections["装备栏"] = {}
     equipSections["装备栏"]["武器"] = playerData.equip.weapon or ""
-    equipSections["装备栏"]["防具"] = playerData.equip.armor or ""
-    equipSections["装备栏"]["饰品"] = playerData.equip.accessory or ""
+    equipSections["装备栏"]["头盔"] = playerData.equip.helmet or ""
+    equipSections["装备栏"]["铠甲"] = playerData.equip.armor or ""
+    equipSections["装备栏"]["护腕"] = playerData.equip.bracer or ""
+    equipSections["装备栏"]["腰带"] = playerData.equip.belt or ""
+    equipSections["装备栏"]["战靴"] = playerData.equip.boots or ""
+    equipSections["装备栏"]["披风"] = playerData.equip.cloak or ""
+    equipSections["装备栏"]["项链"] = playerData.equip.necklace or ""
+    equipSections["装备栏"]["戒指"] = playerData.equip.ring or ""
+    equipSections["装备栏"]["法宝"] = playerData.equip.artifact or ""
+    equipSections["装备栏"]["坐骑"] = playerData.equip.mount or ""
+    equipSections["装备栏"]["灵翼"] = playerData.equip.wings or ""
+    equipSections["装备栏"]["护盾"] = playerData.equip.shield or ""
     files["装备数据.ini"] = IniParser.Serialize(equipSections)
 
     -- 任务数据.ini
@@ -748,8 +768,18 @@ function DataManager.FilesToPlayerData(fileMap)
         local equipSection = sections["装备栏"] or sections["equip"]
         if equipSection then
             playerData.equip.weapon = equipSection["武器"] or equipSection["weapon"] or ""
-            playerData.equip.armor = equipSection["防具"] or equipSection["armor"] or ""
-            playerData.equip.accessory = equipSection["饰品"] or equipSection["accessory"] or ""
+            playerData.equip.helmet = equipSection["头盔"] or equipSection["helmet"] or ""
+            playerData.equip.armor = equipSection["铠甲"] or equipSection["防具"] or equipSection["armor"] or ""
+            playerData.equip.bracer = equipSection["护腕"] or equipSection["bracer"] or ""
+            playerData.equip.belt = equipSection["腰带"] or equipSection["belt"] or ""
+            playerData.equip.boots = equipSection["战靴"] or equipSection["boots"] or ""
+            playerData.equip.cloak = equipSection["披风"] or equipSection["cloak"] or ""
+            playerData.equip.necklace = equipSection["项链"] or equipSection["necklace"] or ""
+            playerData.equip.ring = equipSection["戒指"] or equipSection["ring"] or ""
+            playerData.equip.artifact = equipSection["法宝"] or equipSection["artifact"] or ""
+            playerData.equip.mount = equipSection["坐骑"] or equipSection["mount"] or ""
+            playerData.equip.wings = equipSection["灵翼"] or equipSection["wings"] or ""
+            playerData.equip.shield = equipSection["护盾"] or equipSection["shield"] or ""
         end
     end
 

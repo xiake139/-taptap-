@@ -843,7 +843,7 @@ function GameUI.CheckExploreQuest(mapName)
 
     for _, quest in ipairs(player.quests.active) do
         local qData = DataManager.GetQuest(quest.id)
-        if qData and qData.target_type == "explore" and qData.target_name == mapName then
+        if qData and (qData.target_type == "explore" or qData.target_type == "探索") and qData.target_name == mapName then
             quest.progress = "1"
             GameUI.AddLog("任务进度更新：" .. (qData.name or quest.id))
             GameUI.CheckQuestComplete(quest)

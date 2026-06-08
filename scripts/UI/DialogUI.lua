@@ -65,7 +65,7 @@ function DialogUI.Show(npcName, parent)
     -- 根据NPC类型显示选项
     local npcType = npcData.type or "normal"
 
-    if npcType == "merchant" then
+    if npcType == "merchant" or npcType == "商人" then
         -- 商人：显示商店入口
         parent:AddChild(UI.Button {
             text = "查看商品",
@@ -79,7 +79,7 @@ function DialogUI.Show(npcName, parent)
         })
     end
 
-    if npcType == "quest" or npcType == "teacher" then
+    if npcType == "quest" or npcType == "任务" or npcType == "teacher" or npcType == "师傅" then
         -- 有支线任务的NPC
         local questId = npcData.quest_id
         if questId and questId ~= "" then

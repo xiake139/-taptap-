@@ -778,8 +778,18 @@ local function ShowPlayerDetailDialog(username, accountInfo, editMode)
         local eq = playerData.equip or {}
         local equipFields = {
             { label = "武器", key = "eq_weapon", value = eq.weapon or "" },
-            { label = "防具", key = "eq_armor", value = eq.armor or "" },
-            { label = "饰品", key = "eq_accessory", value = eq.accessory or "" },
+            { label = "头盔", key = "eq_helmet", value = eq.helmet or "" },
+            { label = "铠甲", key = "eq_armor", value = eq.armor or "" },
+            { label = "护腕", key = "eq_bracer", value = eq.bracer or "" },
+            { label = "腰带", key = "eq_belt", value = eq.belt or "" },
+            { label = "战靴", key = "eq_boots", value = eq.boots or "" },
+            { label = "披风", key = "eq_cloak", value = eq.cloak or "" },
+            { label = "项链", key = "eq_necklace", value = eq.necklace or "" },
+            { label = "戒指", key = "eq_ring", value = eq.ring or "" },
+            { label = "法宝", key = "eq_artifact", value = eq.artifact or "" },
+            { label = "坐骑", key = "eq_mount", value = eq.mount or "" },
+            { label = "灵翼", key = "eq_wings", value = eq.wings or "" },
+            { label = "护盾", key = "eq_shield", value = eq.shield or "" },
         }
         for _, f in ipairs(equipFields) do
             local panel, field = CreateFormField(f.label, f.value, { width = 150 })
@@ -879,8 +889,18 @@ local function ShowPlayerDetailDialog(username, accountInfo, editMode)
                         bag = {},
                         equip = {
                             weapon = fieldWidgets["eq_weapon"]:GetValue() or "",
+                            helmet = fieldWidgets["eq_helmet"]:GetValue() or "",
                             armor = fieldWidgets["eq_armor"]:GetValue() or "",
-                            accessory = fieldWidgets["eq_accessory"]:GetValue() or "",
+                            bracer = fieldWidgets["eq_bracer"]:GetValue() or "",
+                            belt = fieldWidgets["eq_belt"]:GetValue() or "",
+                            boots = fieldWidgets["eq_boots"]:GetValue() or "",
+                            cloak = fieldWidgets["eq_cloak"]:GetValue() or "",
+                            necklace = fieldWidgets["eq_necklace"]:GetValue() or "",
+                            ring = fieldWidgets["eq_ring"]:GetValue() or "",
+                            artifact = fieldWidgets["eq_artifact"]:GetValue() or "",
+                            mount = fieldWidgets["eq_mount"]:GetValue() or "",
+                            wings = fieldWidgets["eq_wings"]:GetValue() or "",
+                            shield = fieldWidgets["eq_shield"]:GetValue() or "",
                         },
                         quests = { active = {}, completed = {} },
                         redeemed_codes = {},
@@ -1239,7 +1259,7 @@ local function RenderGameConfig()
 
     -- 玩家默认属性
     contentPanel_:AddChild(CreateListRow("玩家初始属性",
-        "HP:" .. (defSec.hp or 100) .. " MP:" .. (defSec.mp or 50) .. " ATK:" .. (defSec.atk or 5) .. " DEF:" .. (defSec.def or 3),
+        "生命:" .. (defSec.hp or 100) .. " 法力:" .. (defSec.mp or 50) .. " 攻击:" .. (defSec.atk or 5) .. " 防御:" .. (defSec.def or 3),
         function()
             ShowEditDialog("玩家初始属性", {
                 { label = "生命值", key = "hp", value = defSec.hp },
@@ -1418,7 +1438,7 @@ local function RenderMonsters()
         local typeTag = data.type and ("[" .. data.type .. "] ") or ""
         local row = CreateListRow(
             typeTag .. (data.name or id),
-            "HP:" .. (data.hp or 0) .. " ATK:" .. (data.atk or 0) .. " EXP:" .. (data.exp or 0),
+            "血量:" .. (data.hp or 0) .. " 攻击:" .. (data.atk or 0) .. " 经验:" .. (data.exp or 0),
             function()
                 ShowEditDialog("编辑怪物 - " .. id, {
                     { label = "名称", key = "name", value = data.name },
@@ -1766,6 +1786,56 @@ local EQUIP_SLOTS = { "武器", "头盔", "铠甲", "护腕", "腰带", "战靴"
 --- 装备品质选项
 local EQUIP_QUALITIES = { "白色", "绿色", "橙色", "红色", "彩色", "地级", "天级", "帝级", "仙级", "神级", "创世级" }
 
+--- 英文→中文翻译映射（兼容旧数据）
+local SLOT_EN_TO_CN = {
+    weapon = "武器", armor = "铠甲", accessory = "饰品",
+    helmet = "头盔", bracer = "护腕", belt = "腰带",
+    boots = "战靴", cloak = "披风", necklace = "项链",
+    ring = "戒指", artifact = "法宝", mount = "坐骑",
+    wings = "灵翼", shield = "护盾",
+}
+local QUALITY_EN_TO_CN = {
+    white = "白色", green = "绿色", blue = "蓝色", purple = "紫色",
+    orange = "橙色", gold = "金色", red = "红色",
+}
+
+--- NPC类型英文→中文
+local NPC_TYPE_EN_TO_CN = {
+    quest = "任务", merchant = "商人", master = "师傅",
+    teacher = "师傅", blacksmith = "铁匠", elder = "长老",
+}
+--- 任务目标类型英文→中文
+local TARGET_TYPE_EN_TO_CN = {
+    kill = "击杀", collect = "收集", explore = "探索",
+    talk = "对话", level = "等级", escort = "护送",
+}
+--- 任务类型英文→中文
+local QUEST_TYPE_EN_TO_CN = {
+    main = "主线", side = "支线", daily = "日常",
+}
+
+--- 将可能的英文部位/品质转换为中文显示
+local function SlotToCN(slot)
+    if not slot or slot == "" then return "武器" end
+    return SLOT_EN_TO_CN[slot] or slot
+end
+local function QualityToCN(quality)
+    if not quality or quality == "" then return "白色" end
+    return QUALITY_EN_TO_CN[quality] or quality
+end
+local function NpcTypeToCN(t)
+    if not t or t == "" then return "任务" end
+    return NPC_TYPE_EN_TO_CN[t] or t
+end
+local function TargetTypeToCN(t)
+    if not t or t == "" then return "击杀" end
+    return TARGET_TYPE_EN_TO_CN[t] or t
+end
+local function QuestTypeToCN(t)
+    if not t or t == "" then return "支线" end
+    return QUEST_TYPE_EN_TO_CN[t] or t
+end
+
 --- 创建按钮组选择器（通用）
 ---@param options string[] 选项列表
 ---@param currentValue string 当前选中值
@@ -1842,8 +1912,8 @@ local function RenderEquipment()
         if not MatchSearch(data.name or id) then goto continue_equip end
         idx = idx + 1
         local row = CreateListRow(
-            (data.name or id) .. "  [" .. (data.slot or "武器") .. "]",
-            "品质:" .. (data.quality or "白色") .. " 攻击:" .. (data.atk or 0) .. " 防御:" .. (data.def or 0) .. " 生命:" .. (data.hp or 0),
+            (data.name or id) .. "  [" .. SlotToCN(data.slot or "武器") .. "]",
+            "品质:" .. QualityToCN(data.quality or "白色") .. " 攻击:" .. (data.atk or 0) .. " 防御:" .. (data.def or 0) .. " 生命:" .. (data.hp or 0),
             function()
                 -- 使用自定义弹窗（含选择器）
                 CloseDialog()
@@ -1864,11 +1934,11 @@ local function RenderEquipment()
                 table.insert(formChildren, namePanel)
 
                 -- 部位选择器
-                local slotPanel, getSlot = CreateButtonSelector(EQUIP_SLOTS, data.slot or "武器", "部位", false)
+                local slotPanel, getSlot = CreateButtonSelector(EQUIP_SLOTS, SlotToCN(data.slot or "武器"), "部位", false)
                 table.insert(formChildren, slotPanel)
 
                 -- 品质选择器
-                local qualityPanel, getQuality = CreateButtonSelector(EQUIP_QUALITIES, data.quality or "白色", "品质", false)
+                local qualityPanel, getQuality = CreateButtonSelector(EQUIP_QUALITIES, QualityToCN(data.quality or "白色"), "品质", false)
                 table.insert(formChildren, qualityPanel)
 
                 -- 其他字段
@@ -2072,8 +2142,8 @@ local function RenderQuests()
         if not MatchSearch(data.name or id) then goto continue_quests end
         idx = idx + 1
         local row = CreateListRow(
-            "[" .. (data.type or "支线") .. "] " .. (data.name or id),
-            "目标:" .. (data.target_type or "击杀") .. " " .. (data.target_name or "") .. "x" .. (data.target_count or 1) .. " 经验:" .. (data.reward_exp or 0),
+            "[" .. QuestTypeToCN(data.type or "支线") .. "] " .. (data.name or id),
+            "目标:" .. TargetTypeToCN(data.target_type or "击杀") .. " " .. (data.target_name or "") .. "x" .. (data.target_count or 1) .. " 经验:" .. (data.reward_exp or 0),
             function()
                 ShowEditDialog("编辑任务 - " .. id, {
                     { label = "名称", key = "name", value = data.name },
@@ -2567,7 +2637,7 @@ local function RenderNPCs()
         idx = idx + 1
         local row = CreateListRow(
             data.name or id,
-            "类型:" .. (data.type or "任务") .. " 地点:" .. (data.location or ""),
+            "类型:" .. NpcTypeToCN(data.type or "任务") .. " 地点:" .. (data.location or ""),
             function()
                 local fields = {
                     { label = "名称", key = "name", value = data.name },
@@ -3151,7 +3221,7 @@ end
 --- 生成NPC数据
 ---@param count number
 local function GenerateNPCs(count)
-    local npcTypes = { "quest", "merchant" }
+    local npcTypes = { "任务", "商人" }
     local surnames = { "李", "王", "张", "陈", "赵", "刘", "杨", "孙", "周", "吴", "林", "徐", "黄", "马", "高" }
     local titles = { "长老", "掌柜", "师傅", "道人", "仙子", "前辈", "散人", "居士", "真人", "隐士" }
     local dialogs_quest = {
@@ -3176,7 +3246,7 @@ local function GenerateNPCs(count)
             name = name .. tostring(i)
         end
         local dialog
-        if nType == "quest" then
+        if nType == "任务" then
             dialog = dialogs_quest[math.random(1, #dialogs_quest)]
         else
             dialog = dialogs_merchant[math.random(1, #dialogs_merchant)]
@@ -3198,8 +3268,8 @@ end
 --- 生成任务数据
 ---@param count number
 local function GenerateQuests(count)
-    local questTypes = { "main", "side", "side", "side" } -- side 更多
-    local targetTypes = { "kill", "collect", "explore" }
+    local questTypes = { "主线", "支线", "支线", "支线" } -- 支线更多
+    local targetTypes = { "击杀", "收集", "探索" }
     local verbs_kill = { "消灭", "击败", "讨伐", "清除", "歼灭" }
     local verbs_collect = { "收集", "采集", "寻找", "获取", "搜寻" }
     local verbs_explore = { "前往", "探索", "到达", "寻访", "探查" }
@@ -3221,18 +3291,18 @@ local function GenerateQuests(count)
         local desc = ""
         local targetCount = math.random(1, 5)
 
-        if tType == "kill" and #monsterNames > 0 then
+        if tType == "击杀" and #monsterNames > 0 then
             targetName = monsterNames[math.random(1, #monsterNames)]
             desc = RandPick(verbs_kill) .. targetCount .. "只" .. targetName
-        elseif tType == "collect" and #itemNames > 0 then
+        elseif tType == "收集" and #itemNames > 0 then
             targetName = itemNames[math.random(1, #itemNames)]
             desc = RandPick(verbs_collect) .. targetCount .. "个" .. targetName
-        elseif tType == "explore" and #mapNames > 0 then
+        elseif tType == "探索" and #mapNames > 0 then
             targetName = mapNames[math.random(1, #mapNames)]
             targetCount = 1
             desc = RandPick(verbs_explore) .. targetName
         else
-            tType = "kill"
+            tType = "击杀"
             targetName = "未知妖兽"
             desc = "消灭" .. targetCount .. "只未知妖兽"
         end
@@ -3305,11 +3375,11 @@ local function DeployAll()
     if not hasMainQuest then
         -- 生成一组适合新手的主线任务
         local mainQuests = {
-            { id = "main_01", name = "初入仙途", desc = "与村长对话，了解修仙世界的基本知识。", target_type = "talk", target_name = "村长", target_count = "1", reward_exp = "50", reward_gold = "100", next_quest = "main_02" },
-            { id = "main_02", name = "初试身手", desc = "击败新手村附近的野兽，证明你的实力。", target_type = "kill", target_name = "", target_count = "3", reward_exp = "100", reward_gold = "150", next_quest = "main_03" },
-            { id = "main_03", name = "采集灵草", desc = "为村中药师采集灵草，学习基础炼丹知识。", target_type = "collect", target_name = "灵草", target_count = "5", reward_exp = "150", reward_gold = "200", next_quest = "main_04" },
-            { id = "main_04", name = "修炼入门", desc = "通过冥想提升修为，突破练气期一层。", target_type = "level", target_name = "", target_count = "2", reward_exp = "200", reward_gold = "300", next_quest = "main_05" },
-            { id = "main_05", name = "踏上征途", desc = "告别新手村，前往更广阔的修仙世界探索。", target_type = "explore", target_name = "", target_count = "1", reward_exp = "300", reward_gold = "500", next_quest = "" },
+            { id = "main_01", name = "初入仙途", desc = "与村长对话，了解修仙世界的基本知识。", target_type = "对话", target_name = "村长", target_count = "1", reward_exp = "50", reward_gold = "100", next_quest = "main_02" },
+            { id = "main_02", name = "初试身手", desc = "击败新手村附近的野兽，证明你的实力。", target_type = "击杀", target_name = "", target_count = "3", reward_exp = "100", reward_gold = "150", next_quest = "main_03" },
+            { id = "main_03", name = "采集灵草", desc = "为村中药师采集灵草，学习基础炼丹知识。", target_type = "收集", target_name = "灵草", target_count = "5", reward_exp = "150", reward_gold = "200", next_quest = "main_04" },
+            { id = "main_04", name = "修炼入门", desc = "通过冥想提升修为，突破练气期一层。", target_type = "等级", target_name = "", target_count = "2", reward_exp = "200", reward_gold = "300", next_quest = "main_05" },
+            { id = "main_05", name = "踏上征途", desc = "告别新手村，前往更广阔的修仙世界探索。", target_type = "探索", target_name = "", target_count = "1", reward_exp = "300", reward_gold = "500", next_quest = "" },
         }
         -- 如果有怪物数据，给第二个任务设置具体击杀目标
         for id in pairs(DataManager.monsters) do
@@ -3472,7 +3542,7 @@ local function DeployAll()
     end
     if #questIds > 0 then
         for id, data in pairs(DataManager.npcs) do
-            if data.type == "quest" and (not data.quest_id or data.quest_id == "") then
+            if (data.type == "quest" or data.type == "任务") and (not data.quest_id or data.quest_id == "") then
                 -- 尝试分配一个未使用的任务
                 for _, qId in ipairs(questIds) do
                     if not usedQuests[qId] then
@@ -3494,7 +3564,7 @@ local function DeployAll()
     -- 9. 给商人NPC分配商店（如果没有绑定）
     if #shopIds > 0 then
         for id, data in pairs(DataManager.npcs) do
-            if data.type == "merchant" and (not data.shop_id or data.shop_id == "") then
+            if (data.type == "merchant" or data.type == "商人") and (not data.shop_id or data.shop_id == "") then
                 data.shop_id = shopIds[math.random(1, #shopIds)]
                 changes = changes + 1
             end
