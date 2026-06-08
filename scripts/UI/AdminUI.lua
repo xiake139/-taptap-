@@ -20,6 +20,7 @@ local rootPanel_ = nil
 local contentPanel_ = nil
 local msgLabel_ = nil
 local currentCategory_ = "players"  -- 当前选中分类
+local searchKeyword_ = ""  -- 当前搜索关键词
 local editDialog_ = nil
 
 -- 分类定义
@@ -377,6 +378,53 @@ local function ClearContent()
             contentPanel_:RemoveChild(children[i])
         end
     end
+end
+
+--- 创建搜索栏并添加到内容面板
+---@param placeholder string 搜索框提示文字
+---@param onSearch fun() 搜索触发时回调（重新渲染当前分类）
+---@return Widget searchBar
+local function CreateSearchBar(placeholder, onSearch)
+    local searchField = UI.TextField {
+        value = searchKeyword_,
+        placeholder = placeholder or "搜索...",
+        width = 200, height = 28, fontSize = 12,
+    }
+    local bar = UI.Panel {
+        width = "100%",
+        flexDirection = "row",
+        alignItems = "center",
+        paddingLeft = 12, paddingRight = 12, paddingTop = 6, paddingBottom = 6,
+        gap = 8,
+        children = {
+            UI.Label { text = "搜索:", fontSize = 12, fontColor = { 180, 180, 200, 255 } },
+            searchField,
+            UI.Button {
+                text = "查找", variant = "secondary", width = 50, height = 28, fontSize = 11,
+                onClick = function()
+                    searchKeyword_ = searchField:GetValue() or ""
+                    onSearch()
+                end,
+            },
+            UI.Button {
+                text = "清除", variant = "secondary", width = 50, height = 28, fontSize = 11,
+                onClick = function()
+                    searchKeyword_ = ""
+                    onSearch()
+                end,
+            },
+        },
+    }
+    return bar
+end
+
+--- 检查名称是否匹配搜索关键词
+---@param name string
+---@return boolean
+local function MatchSearch(name)
+    if searchKeyword_ == "" then return true end
+    if not name then return false end
+    return string.find(string.lower(name), string.lower(searchKeyword_), 1, true) ~= nil
 end
 
 --- 创建列表项行
@@ -985,14 +1033,21 @@ end
 
 RenderPlayers = function()
     ClearContent()
+    contentPanel_:AddChild(CreateSearchBar("搜索玩家名...", function() RenderPlayers() end))
     ShowMsg("正在加载玩家列表...")
     DataManager.GetAllPlayers(function(players)
         if #players == 0 then
             ShowMsg("暂无注册玩家")
             return
         end
-        ShowMsg("共 " .. #players .. " 个玩家")
-        for i, info in ipairs(players) do
+        local filtered = {}
+        for _, info in ipairs(players) do
+            if MatchSearch(info.username) or MatchSearch(info.charName) then
+                table.insert(filtered, info)
+            end
+        end
+        ShowMsg("共 " .. #players .. " 个玩家" .. (searchKeyword_ ~= "" and ("，匹配 " .. #filtered .. " 个") or ""))
+        for i, info in ipairs(filtered) do
             local bgColor = (i % 2 == 0) and { 25, 20, 45, 200 } or { 20, 15, 35, 200 }
             local row = UI.Panel {
                 width = "100%",
@@ -1176,12 +1231,14 @@ end
 --- 渲染地图列表
 local function RenderMaps()
     ClearContent()
+    contentPanel_:AddChild(CreateSearchBar("搜索地图名...", function() RenderMaps() end))
     local count = 0
     local idx = 0
     for _ in pairs(DataManager.maps) do count = count + 1 end
     ShowMsg("共 " .. count .. " 张地图")
 
     for id, data in pairs(DataManager.maps) do
+        if not MatchSearch(data.name or id) then goto continue_maps end
         idx = idx + 1
         local row = CreateListRow(
             data.name or id,
@@ -1213,6 +1270,7 @@ local function RenderMaps()
                 RenderMaps()
             end)
         contentPanel_:AddChild(row)
+        ::continue_maps::
     end
 
     -- 添加按钮
@@ -1253,12 +1311,14 @@ end
 --- 渲染怪物列表
 local function RenderMonsters()
     ClearContent()
+    contentPanel_:AddChild(CreateSearchBar("搜索怪物名...", function() RenderMonsters() end))
     local count = 0
     local idx = 0
     for _ in pairs(DataManager.monsters) do count = count + 1 end
     ShowMsg("共 " .. count .. " 种怪物")
 
     for id, data in pairs(DataManager.monsters) do
+        if not MatchSearch(data.name or id) then goto continue_monsters end
         idx = idx + 1
         local row = CreateListRow(
             data.name or id,
@@ -1290,6 +1350,7 @@ local function RenderMonsters()
                 RenderMonsters()
             end)
         contentPanel_:AddChild(row)
+        ::continue_monsters::
     end
 
     contentPanel_:AddChild(UI.Button {
@@ -1569,12 +1630,14 @@ end
 
 RenderItems = function()
     ClearContent()
+    contentPanel_:AddChild(CreateSearchBar("搜索物品名/类型...", function() RenderItems() end))
     local count = 0
     local idx = 0
     for _ in pairs(DataManager.items) do count = count + 1 end
     ShowMsg("共 " .. count .. " 种物品")
 
     for id, data in pairs(DataManager.items) do
+        if not MatchSearch(data.name or id) and not MatchSearch(data.type) then goto continue_items end
         idx = idx + 1
         local typeStr = data.type or "材料"
         local row = CreateListRow(
@@ -1588,6 +1651,7 @@ RenderItems = function()
                 RenderItems()
             end)
         contentPanel_:AddChild(row)
+        ::continue_items::
     end
 
     contentPanel_:AddChild(UI.Button {
@@ -1670,12 +1734,14 @@ end
 --- 渲染装备列表
 local function RenderEquipment()
     ClearContent()
+    contentPanel_:AddChild(CreateSearchBar("搜索装备名...", function() RenderEquipment() end))
     local count = 0
     local idx = 0
     for _ in pairs(DataManager.equipment) do count = count + 1 end
     ShowMsg("共 " .. count .. " 件装备")
 
     for id, data in pairs(DataManager.equipment) do
+        if not MatchSearch(data.name or id) then goto continue_equip end
         idx = idx + 1
         local row = CreateListRow(
             (data.name or id) .. "  [" .. (data.slot or "武器") .. "]",
@@ -1785,6 +1851,7 @@ local function RenderEquipment()
                 RenderEquipment()
             end)
         contentPanel_:AddChild(row)
+        ::continue_equip::
     end
 
     contentPanel_:AddChild(UI.Button {
@@ -1897,12 +1964,14 @@ local QUEST_TARGET_TYPES = { "击杀", "收集", "对话", "探索" }
 --- 渲染任务列表
 local function RenderQuests()
     ClearContent()
+    contentPanel_:AddChild(CreateSearchBar("搜索任务名...", function() RenderQuests() end))
     local count = 0
     local idx = 0
     for _ in pairs(DataManager.quests) do count = count + 1 end
     ShowMsg("共 " .. count .. " 个任务")
 
     for id, data in pairs(DataManager.quests) do
+        if not MatchSearch(data.name or id) then goto continue_quests end
         idx = idx + 1
         local row = CreateListRow(
             "[" .. (data.type or "支线") .. "] " .. (data.name or id),
@@ -1937,6 +2006,7 @@ local function RenderQuests()
                 RenderQuests()
             end)
         contentPanel_:AddChild(row)
+        ::continue_quests::
     end
 
     contentPanel_:AddChild(UI.Button {
@@ -2252,12 +2322,14 @@ end
 --- 渲染商店列表
 RenderShops = function()
     ClearContent()
+    contentPanel_:AddChild(CreateSearchBar("搜索商店名...", function() RenderShops() end))
     local count = 0
     local idx = 0
     for _ in pairs(DataManager.shops) do count = count + 1 end
     ShowMsg("共 " .. count .. " 家商店")
 
     for id, data in pairs(DataManager.shops) do
+        if not MatchSearch(data.name or id) then goto continue_shops end
         idx = idx + 1
         local itemCount = #(data.items or {})
         local itemSummary = ""
@@ -2279,6 +2351,7 @@ RenderShops = function()
                 RenderShops()
             end)
         contentPanel_:AddChild(row)
+        ::continue_shops::
     end
 
     contentPanel_:AddChild(UI.Button {
@@ -2293,12 +2366,14 @@ end
 --- 渲染副本列表
 local function RenderDungeons()
     ClearContent()
+    contentPanel_:AddChild(CreateSearchBar("搜索副本名...", function() RenderDungeons() end))
     local count = 0
     local idx = 0
     for _ in pairs(DataManager.dungeons) do count = count + 1 end
     ShowMsg("共 " .. count .. " 个副本")
 
     for id, data in pairs(DataManager.dungeons) do
+        if not MatchSearch(data.name or id) then goto continue_dungeons end
         idx = idx + 1
         local row = CreateListRow(
             data.name or id,
@@ -2339,6 +2414,7 @@ local function RenderDungeons()
                 RenderDungeons()
             end)
         contentPanel_:AddChild(row)
+        ::continue_dungeons::
     end
 
     contentPanel_:AddChild(UI.Button {
@@ -2382,12 +2458,14 @@ end
 --- 渲染NPC列表
 local function RenderNPCs()
     ClearContent()
+    contentPanel_:AddChild(CreateSearchBar("搜索NPC名...", function() RenderNPCs() end))
     local count = 0
     local idx = 0
     for _ in pairs(DataManager.npcs) do count = count + 1 end
     ShowMsg("共 " .. count .. " 个NPC")
 
     for id, data in pairs(DataManager.npcs) do
+        if not MatchSearch(data.name or id) then goto continue_npcs end
         idx = idx + 1
         local row = CreateListRow(
             data.name or id,
@@ -2424,6 +2502,7 @@ local function RenderNPCs()
                 RenderNPCs()
             end)
         contentPanel_:AddChild(row)
+        ::continue_npcs::
     end
 
     contentPanel_:AddChild(UI.Button {
@@ -2460,12 +2539,14 @@ end
 
 local function RenderGiftPacks()
     ClearContent()
+    contentPanel_:AddChild(CreateSearchBar("搜索礼包名/兑换码...", function() RenderGiftPacks() end))
     local count = 0
     local idx = 0
     for _ in pairs(DataManager.giftpacks) do count = count + 1 end
     ShowMsg("共 " .. count .. " 个礼包（兑换码即为礼包ID）")
 
     for id, data in pairs(DataManager.giftpacks) do
+        if not MatchSearch(data.name or id) and not MatchSearch(id) then goto continue_giftpacks end
         idx = idx + 1
         local usesText = BigNum.gt(data.max_uses or "0", "0")
             and ("已用" .. (data.used_count or "0") .. "/" .. data.max_uses)
@@ -2501,6 +2582,7 @@ local function RenderGiftPacks()
                 RenderGiftPacks()
             end)
         contentPanel_:AddChild(row)
+        ::continue_giftpacks::
     end
 
     contentPanel_:AddChild(UI.Button {
@@ -3761,6 +3843,9 @@ end
 
 --- 根据分类渲染内容
 local function RenderCategory(catId)
+    if currentCategory_ ~= catId then
+        searchKeyword_ = ""
+    end
     currentCategory_ = catId
     if catId == "players" then RenderPlayers()
     elseif catId == "game_config" then RenderGameConfig()
