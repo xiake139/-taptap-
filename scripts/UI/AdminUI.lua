@@ -3601,7 +3601,7 @@ local function RenderGenerator()
 
     -- 一键生成境界
     local ALL_REALMS = { "练气期", "筑基期", "金丹期", "元婴期", "化神期", "渡劫期", "大乘期", "仙人境", "真仙境", "金仙境" }
-    local cultCountInput = UI.Input { width = 60, height = 32, fontSize = 13, text = "7", placeholder = "数量" }
+    local cultCountInput = UI.TextField { width = 60, height = 30, fontSize = 13, value = "7", placeholder = "数量" }
     local cultResult = UI.Label { text = "", fontSize = 12, fontColor = { 100, 255, 180, 255 }, marginTop = 6 }
     local cultSection = UI.Panel {
         width = "100%",
