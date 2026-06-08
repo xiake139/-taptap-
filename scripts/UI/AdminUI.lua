@@ -3344,7 +3344,7 @@ local function RenderGenerator()
     end
 
     -- 限时输入框（选中限时类相关类型时可用）
-    local itemDurationField = UI.TextField { value = "0", placeholder = "秒(0=永久)", width = 80, height = 28, fontSize = 12 }
+    local itemDurationField = UI.TextField { value = "0", placeholder = "分(0=永久)", width = 80, height = 28, fontSize = 12 }
 
     local itemSection = UI.Panel {
         width = "100%", flexDirection = "column",
@@ -3358,7 +3358,7 @@ local function RenderGenerator()
             UI.Panel { flexDirection = "row", alignItems = "center", gap = 6, marginBottom = 6, children = {
                 UI.Label { text = "限时", fontSize = 12, fontColor = { 180, 180, 200, 255 } },
                 itemDurationField,
-                UI.Label { text = "秒 (0=永久)", fontSize = 10, fontColor = { 140, 140, 160, 255 } },
+                UI.Label { text = "分钟 (0=永久)", fontSize = 10, fontColor = { 140, 140, 160, 255 } },
             }},
             UI.Panel { flexDirection = "row", alignItems = "center", gap = 8, children = {
                 UI.Label { text = "一键生成", fontSize = 12, fontColor = { 200, 200, 220, 255 } },
