@@ -3600,6 +3600,8 @@ local function RenderGenerator()
     }
 
     -- 一键生成境界
+    local ALL_REALMS = { "练气期", "筑基期", "金丹期", "元婴期", "化神期", "渡劫期", "大乘期", "仙人境", "真仙境", "金仙境" }
+    local cultCountInput = UI.Input { width = 60, height = 32, fontSize = 13, text = "7", placeholder = "数量" }
     local cultResult = UI.Label { text = "", fontSize = 12, fontColor = { 100, 255, 180, 255 }, marginTop = 6 }
     local cultSection = UI.Panel {
         width = "100%",
@@ -3623,6 +3625,16 @@ local function RenderGenerator()
                 fontColor = { 160, 160, 180, 255 },
                 marginBottom = 10,
             },
+            UI.Panel {
+                flexDirection = "row",
+                alignItems = "center",
+                marginBottom = 10,
+                children = {
+                    UI.Label { text = "生成大境界数量:", fontSize = 12, fontColor = { 180, 180, 200, 255 }, marginRight = 8 },
+                    cultCountInput,
+                    UI.Label { text = " (最多" .. #ALL_REALMS .. "个)", fontSize = 11, fontColor = { 140, 140, 160, 255 }, marginLeft = 6 },
+                },
+            },
             UI.Button {
                 text = "生成境界",
                 variant = "primary",
@@ -3630,14 +3642,15 @@ local function RenderGenerator()
                 height = 36,
                 fontSize = 14,
                 onClick = function()
-                    -- 修仙境界体系：每个大境界9层
-                    local realms = { "练气期", "筑基期", "金丹期", "元婴期", "化神期", "渡劫期", "大乘期" }
+                    local realmCount = tonumber(cultCountInput:GetValue()) or 7
+                    if realmCount < 1 then realmCount = 1 end
+                    if realmCount > #ALL_REALMS then realmCount = #ALL_REALMS end
                     local layers = { "一层", "二层", "三层", "四层", "五层", "六层", "七层", "八层", "九层" }
                     local newCult = {}
                     local lvl = 1
-                    for _, realm in ipairs(realms) do
+                    for i = 1, realmCount do
                         for _, layer in ipairs(layers) do
-                            newCult[tostring(lvl)] = realm .. layer
+                            newCult[tostring(lvl)] = ALL_REALMS[i] .. layer
                             lvl = lvl + 1
                         end
                     end
@@ -3646,8 +3659,8 @@ local function RenderGenerator()
                     gc["cultivation"] = newCult
                     DataManager.gameConfig = gc
                     SaveCategoryToCloud("game_config")
-                    cultResult:SetText("已生成 " .. (lvl - 1) .. " 个境界等级（" .. #realms .. " 大境界 × 9 层）")
-                    ShowMsg("境界生成完成: " .. #realms .. " 大境界 × 9 层 = " .. (lvl - 1) .. " 级")
+                    cultResult:SetText("已生成 " .. (lvl - 1) .. " 个境界等级（" .. realmCount .. " 大境界 × 9 层）")
+                    ShowMsg("境界生成完成: " .. realmCount .. " 大境界 × 9 层 = " .. (lvl - 1) .. " 级")
                 end,
             },
             cultResult,
