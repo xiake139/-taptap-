@@ -2723,20 +2723,29 @@ local function GenerateItems(count, selectedTypes, duration)
     for i = 1, count do
         local typeName = typeList[math.random(1, #typeList)]
         local info = ITEM_TYPE_EFFECTS[typeName] or ITEM_TYPE_EFFECTS["材料"]
-        local prefix = RandPick(GEN_NAMES.item_prefix)
-        local suffix
-        if typeName == "材料" then
-            suffix = RandPick(GEN_NAMES.item_material)
+        local name
+        local value = "0"
+        if typeName == "经验倍率" then
+            value = tostring(math.random(2, 10))
+            name = value .. "倍经验卡"
+        elseif typeName == "货币倍率" then
+            value = tostring(math.random(2, 10))
+            name = value .. "倍货币卡"
         else
-            suffix = RandPick(GEN_NAMES.item_consumable)
+            local prefix = RandPick(GEN_NAMES.item_prefix)
+            local suffix
+            if typeName == "材料" then
+                suffix = RandPick(GEN_NAMES.item_material)
+            else
+                suffix = RandPick(GEN_NAMES.item_consumable)
+            end
+            name = prefix .. suffix
+            if typeName ~= "材料" then
+                value = tostring(math.random(10, 200))
+            end
         end
-        local name = prefix .. suffix
         if DataManager.items[name] then
             name = name .. tostring(i)
-        end
-        local value = "0"
-        if typeName ~= "材料" then
-            value = tostring(math.random(10, 200))
         end
         local desc = (typeName == "材料") and info.descFmt or string.format(info.descFmt, tonumber(value) or 0)
         local itemData = {
