@@ -71,7 +71,7 @@ function EquipUI.Refresh()
         local statsText = ""
 
         if equipName ~= "" then
-            eData = DataManager.GetEquipment(equipName)
+            eData = DataManager.GetItem(equipName)
             if eData then
                 local parts = {}
                 if BigNum.gt(eData.atk or "0", "0") then table.insert(parts, "攻+" .. BigNum.toShort(eData.atk)) end
@@ -135,7 +135,7 @@ function EquipUI.Refresh()
 
     local hasEquippable = false
     for i, item in ipairs(player.bag) do
-        local itemData = DataManager.GetEquipment(item.name)
+        local itemData = DataManager.GetItem(item.name)
         if itemData and itemData.slot then
             hasEquippable = true
             local qualityColor = EquipUI.GetQualityColor(itemData.quality or "white")
@@ -226,7 +226,7 @@ function EquipUI.EquipFromBag(bagIndex)
     local item = player.bag[bagIndex]
     if not item then return end
 
-    local itemData = DataManager.GetEquipment(item.name)
+    local itemData = DataManager.GetItem(item.name)
     if not itemData or not itemData.slot then return end
 
     -- 检查等级需求
