@@ -144,6 +144,10 @@ function EquipUI.Refresh()
             if BigNum.gt(itemData.def or "0", "0") then table.insert(parts, "防+" .. BigNum.toShort(itemData.def)) end
             if BigNum.gt(itemData.hp or "0", "0") then table.insert(parts, "血+" .. BigNum.toShort(itemData.hp)) end
 
+            -- 部位显示（中文）
+            local slotKey = SLOT_CN_TO_KEY[itemData.slot] or itemData.slot
+            local slotLabel = SLOT_KEY_TO_LABEL[slotKey] or itemData.slot or "未知"
+
             parentRef_:AddChild(UI.Panel {
                 flexDirection = "row",
                 alignItems = "center",
@@ -154,6 +158,7 @@ function EquipUI.Refresh()
                 marginBottom = 3,
                 gap = 6,
                 children = {
+                    UI.Label { text = "[" .. slotLabel .. "]", fontSize = 12, fontColor = { 120, 120, 150, 255 }, width = 46 },
                     UI.Panel {
                         flexGrow = 1,
                         flexShrink = 1,
