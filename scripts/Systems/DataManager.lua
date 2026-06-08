@@ -38,6 +38,7 @@ DataManager.quests = {}
 DataManager.shops = {}
 DataManager.dungeons = {}
 DataManager.giftpacks = {}
+DataManager.admins = {}  -- 管理员列表 { [username] = true }
 DataManager.leaderboards = {}
 DataManager.rankingData = {}  -- 所有玩家的排行数据 { [玩家名] = { 名称=xx, 等级=xx, ... } }
 DataManager.chatMessages = {} -- 聊天记录列表 { {sender=xx, content=xx, time=xx}, ... }
@@ -141,6 +142,7 @@ local function ParseMonsters(sections)
     for sectionName, data in pairs(sections) do
         local entry = {
             name = data["名称"] or sectionName,
+            type = data["类型"] or "普通怪",
             desc = data["描述"] or "",
             hp = data["生命值"] or "20",
             atk = data["攻击力"] or "3",
@@ -1049,6 +1051,21 @@ function DataManager.ChangePlayerPassword(username, newPassword, callback)
         end
         sections[username]["密码"] = newPassword
         DataManager.SaveAccountRegistry(sections, callback)
+    end)
+end
+
+--- 验证玩家密码
+---@param username string
+---@param password string
+---@param callback fun(ok: boolean)
+function DataManager.VerifyPlayerPassword(username, password, callback)
+    DataManager.LoadAccountRegistry(function(sections)
+        if not sections or not sections[username] then
+            if callback then callback(false) end
+            return
+        end
+        local storedPwd = tostring(sections[username]["密码"] or sections[username]["password"] or "")
+        if callback then callback(storedPwd == password) end
     end)
 end
 

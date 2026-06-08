@@ -11,11 +11,12 @@ local BigNum = require("Utils.BigNum")
 local AdminUI = {}
 
 -- 管理员凭据
-local ADMIN_USERNAME = "xiake139"
+local SUPER_ADMIN = "xiake139"
 local ADMIN_PASSWORD = "114124"
 
 -- 模块状态
 local adminLoggedIn_ = false
+local currentAdminUser_ = ""  -- 当前登录的管理员用户名
 local rootPanel_ = nil
 local contentPanel_ = nil
 local msgLabel_ = nil
@@ -178,6 +179,7 @@ local function SaveCategoryToCloud(category)
         for id, data in pairs(DataManager.monsters) do
             sections[id] = {
                 ["名称"] = data.name or id,
+                ["类型"] = data.type or "普通怪",
                 ["描述"] = data.desc or "",
                 ["生命值"] = NumFormat.Int(data.hp or 20),
                 ["攻击力"] = NumFormat.Int(data.atk or 3),
@@ -364,7 +366,59 @@ local function SaveCategoryToCloud(category)
         SaveConfigToCloud("系统配置/game_config.ini", content, function(ok)
             ShowMsg(ok and "游戏设置已保存到云端" or "保存失败")
         end)
+    elseif category == "admins" then
+        -- 管理员列表序列化为逗号分隔字符串
+        local list = {}
+        for username in pairs(DataManager.admins) do
+            table.insert(list, username)
+        end
+        content = table.concat(list, ",")
+        SaveConfigToCloud("系统配置/admins.txt", content, function(ok)
+            ShowMsg(ok and "管理员列表已保存到云端" or "保存失败")
+        end)
     end
+end
+
+--- 从云端加载管理员列表
+local function LoadAdminsFromCloud(onDone)
+    local cloud = DataManager.GetCloudProvider()
+    if not cloud then
+        if onDone then onDone() end
+        return
+    end
+    cloud:Get("系统配置/admins.txt", {
+        ok = function(val)
+            DataManager.admins = {}
+            if val and val ~= "" then
+                for username in string.gmatch(val, "([^,]+)") do
+                    local trimmed = username:match("^%s*(.-)%s*$")
+                    if trimmed ~= "" then
+                        DataManager.admins[trimmed] = true
+                    end
+                end
+            end
+            print("[Admin] 管理员列表已加载: " .. tostring(val))
+            if onDone then onDone() end
+        end,
+        error = function()
+            DataManager.admins = {}
+            if onDone then onDone() end
+        end,
+    })
+end
+
+--- 判断是否为总管理员
+---@param username string
+---@return boolean
+local function IsSuperAdmin(username)
+    return username == SUPER_ADMIN
+end
+
+--- 判断是否有管理员权限（总管理员或被授权的管理员）
+---@param username string
+---@return boolean
+local function IsAdmin(username)
+    return username == SUPER_ADMIN or DataManager.admins[username] == true
 end
 
 -- =============== 分类内容渲染 ===============
@@ -1035,6 +1089,7 @@ RenderPlayers = function()
     ClearContent()
     contentPanel_:AddChild(CreateSearchBar("搜索玩家名...", function() RenderPlayers() end))
     ShowMsg("正在加载玩家列表...")
+    LoadAdminsFromCloud(function()
     DataManager.GetAllPlayers(function(players)
         if #players == 0 then
             ShowMsg("暂无注册玩家")
@@ -1049,6 +1104,86 @@ RenderPlayers = function()
         ShowMsg("共 " .. #players .. " 个玩家" .. (searchKeyword_ ~= "" and ("，匹配 " .. #filtered .. " 个") or ""))
         for i, info in ipairs(filtered) do
             local bgColor = (i % 2 == 0) and { 25, 20, 45, 200 } or { 20, 15, 35, 200 }
+            local isPlayerAdmin = IsAdmin(info.username)
+            local adminTag = ""
+            if info.username == SUPER_ADMIN then
+                adminTag = " [总管理员]"
+            elseif isPlayerAdmin then
+                adminTag = " [管理员]"
+            end
+            local rowChildren = {
+                UI.Panel {
+                    flexDirection = "column",
+                    flexGrow = 1,
+                    flexShrink = 1,
+                    children = {
+                        UI.Label {
+                            text = info.username .. adminTag,
+                            fontSize = 13,
+                            fontColor = isPlayerAdmin and { 255, 200, 80, 255 } or { 220, 220, 240, 255 },
+                        },
+                        UI.Label {
+                            text = "密码: " .. info.password .. "  角色: " .. (info.charName or ""),
+                            fontSize = 11,
+                            fontColor = { 140, 140, 160, 255 },
+                        },
+                    },
+                },
+                UI.Button {
+                    text = "查看",
+                    fontSize = 10,
+                    width = 42,
+                    height = 24,
+                    variant = "secondary",
+                    onClick = function()
+                        ShowPlayerDetailDialog(info.username, info, false)
+                    end,
+                },
+                UI.Button {
+                    text = "修改",
+                    fontSize = 10,
+                    width = 42,
+                    height = 24,
+                    marginLeft = 4,
+                    variant = "secondary",
+                    onClick = function()
+                        ShowPlayerDetailDialog(info.username, info, true)
+                    end,
+                },
+                UI.Button {
+                    text = "删除",
+                    fontSize = 10,
+                    width = 42,
+                    height = 24,
+                    marginLeft = 4,
+                    variant = "secondary",
+                    onClick = function()
+                        ShowDeleteConfirmDialog(info.username)
+                    end,
+                },
+            }
+            -- 总管理员可以设置/取消其他玩家为管理员（不能操作自己和总管理员）
+            if IsSuperAdmin(currentAdminUser_) and info.username ~= SUPER_ADMIN then
+                local btnText = isPlayerAdmin and "取消管理员" or "设为管理员"
+                local btnVariant = isPlayerAdmin and "secondary" or "primary"
+                table.insert(rowChildren, UI.Button {
+                    text = btnText,
+                    fontSize = 9,
+                    width = 62,
+                    height = 24,
+                    marginLeft = 4,
+                    variant = btnVariant,
+                    onClick = function()
+                        if isPlayerAdmin then
+                            DataManager.admins[info.username] = nil
+                        else
+                            DataManager.admins[info.username] = true
+                        end
+                        SaveCategoryToCloud("admins")
+                        RenderPlayers()
+                    end,
+                })
+            end
             local row = UI.Panel {
                 width = "100%",
                 flexDirection = "row",
@@ -1058,61 +1193,12 @@ RenderPlayers = function()
                 paddingTop = 6,
                 paddingBottom = 6,
                 backgroundColor = bgColor,
-                children = {
-                    UI.Panel {
-                        flexDirection = "column",
-                        flexGrow = 1,
-                        flexShrink = 1,
-                        children = {
-                            UI.Label {
-                                text = info.username,
-                                fontSize = 13,
-                                fontColor = { 220, 220, 240, 255 },
-                            },
-                            UI.Label {
-                                text = "密码: " .. info.password .. "  角色: " .. (info.charName or ""),
-                                fontSize = 11,
-                                fontColor = { 140, 140, 160, 255 },
-                            },
-                        },
-                    },
-                    UI.Button {
-                        text = "查看",
-                        fontSize = 10,
-                        width = 42,
-                        height = 24,
-                        variant = "secondary",
-                        onClick = function()
-                            ShowPlayerDetailDialog(info.username, info, false)
-                        end,
-                    },
-                    UI.Button {
-                        text = "修改",
-                        fontSize = 10,
-                        width = 42,
-                        height = 24,
-                        marginLeft = 4,
-                        variant = "secondary",
-                        onClick = function()
-                            ShowPlayerDetailDialog(info.username, info, true)
-                        end,
-                    },
-                    UI.Button {
-                        text = "删除",
-                        fontSize = 10,
-                        width = 42,
-                        height = 24,
-                        marginLeft = 4,
-                        variant = "secondary",
-                        onClick = function()
-                            ShowDeleteConfirmDialog(info.username)
-                        end,
-                    },
-                },
+                children = rowChildren,
             }
             contentPanel_:AddChild(row)
         end
     end)
+    end) -- LoadAdminsFromCloud
 end
 
 -- =============== 游戏设置管理 ===============
@@ -1320,12 +1406,14 @@ local function RenderMonsters()
     for id, data in pairs(DataManager.monsters) do
         if not MatchSearch(data.name or id) then goto continue_monsters end
         idx = idx + 1
+        local typeTag = data.type and ("[" .. data.type .. "] ") or ""
         local row = CreateListRow(
-            data.name or id,
+            typeTag .. (data.name or id),
             "HP:" .. (data.hp or 0) .. " ATK:" .. (data.atk or 0) .. " EXP:" .. (data.exp or 0),
             function()
                 ShowEditDialog("编辑怪物 - " .. id, {
                     { label = "名称", key = "name", value = data.name },
+                    { label = "类型", key = "type", value = data.type or "普通怪", opts = { placeholder = "普通怪/精英怪/BOSS/帝级/仙级/神级/创世级" } },
                     { label = "描述", key = "desc", value = data.desc, opts = { width = 220 } },
                     { label = "生命值", key = "hp", value = data.hp },
                     { label = "攻击力", key = "atk", value = data.atk },
@@ -1335,7 +1423,7 @@ local function RenderMonsters()
                     { label = "掉落", key = "drops", value = data.drops, opts = { width = 220, placeholder = "物品:概率,..." } },
                 }, function(v)
                     DataManager.monsters[id] = {
-                        name = v.name, desc = v.desc,
+                        name = v.name, type = v.type or "普通怪", desc = v.desc,
                         hp = v.hp or "20", atk = v.atk or "3",
                         def = v.def or "1", exp = v.exp or "5",
                         gold = v.gold or "2", drops = v.drops,
@@ -1359,6 +1447,7 @@ local function RenderMonsters()
         onClick = function()
             ShowEditDialog("添加怪物", {
                 { label = "ID(名称)", key = "id", value = "", opts = { placeholder = "如：火焰鸟" } },
+                { label = "类型", key = "type", value = "普通怪", opts = { placeholder = "普通怪/精英怪/BOSS/帝级/仙级/神级/创世级" } },
                 { label = "描述", key = "desc", value = "", opts = { width = 220 } },
                 { label = "生命值", key = "hp", value = "50" },
                 { label = "攻击力", key = "atk", value = "10" },
@@ -1369,7 +1458,7 @@ local function RenderMonsters()
             }, function(v)
                 if v.id == "" then return end
                 DataManager.monsters[v.id] = {
-                    name = v.id, desc = v.desc,
+                    name = v.id, type = v.type or "普通怪", desc = v.desc,
                     hp = v.hp or "50", atk = v.atk or "10",
                     def = v.def or "5", exp = v.exp or "15",
                     gold = v.gold or "8", drops = v.drops,
@@ -2686,22 +2775,76 @@ end
 
 --- 生成怪物数据
 ---@param count number
-local function GenerateMonsters(count)
+-- 怪物类型定义：{ 名称, 属性下限, 属性上限, 描述后缀 }
+local MONSTER_TYPES = {
+    { name = "普通怪",  min = "10",            max = "2000",           desc = "散发着微弱的妖气" },
+    { name = "精英怪",  min = "3000",          max = "100000",         desc = "浑身散发着强大气息" },
+    { name = "BOSS",    min = "500000",        max = "1000000",        desc = "威压四方，令人胆寒" },
+    { name = "帝级",    min = "3000000",       max = "500000000",      desc = "帝威无边，天地变色" },
+    { name = "仙级",    min = "600000000",     max = "5000000000",     desc = "仙威浩荡，不可直视" },
+    { name = "神级",    min = "5000000000",    max = "60000000000",    desc = "神威如狱，万物臣服" },
+    { name = "创世级",  min = "60000000000",   max = "10000000000000000000000000000000000000000", desc = "创世之力，毁天灭地" },
+}
+
+--- 在BigNum区间 [minStr, maxStr] 内生成随机数
+---@param minStr string
+---@param maxStr string
+---@return string
+local function BigNumRandRange(minStr, maxStr)
+    -- 如果数字足够小，用 math.random
+    local minN = tonumber(minStr)
+    local maxN = tonumber(maxStr)
+    if minN and maxN and maxN <= 2000000000 then
+        return tostring(math.random(math.floor(minN), math.floor(maxN)))
+    end
+    -- 大数：用 BigNum 做区间内随机
+    -- 计算 range = max - min
+    local range = BigNum.sub(maxStr, minStr)
+    -- 取 range 的位数，然后生成随机系数 0.0~1.0 映射
+    local digits = #range
+    -- 生成一个 digits 位的随机数
+    local result = ""
+    for d = 1, digits do
+        result = result .. tostring(math.random(0, 9))
+    end
+    -- 去掉前导零
+    result = result:gsub("^0+", "")
+    if result == "" then result = "0" end
+    -- 如果随机数 > range，取模
+    if BigNum.gt(result, range) then
+        -- 简单处理：随机系数按比例缩放
+        local halfRange = BigNum.div(range, "2")
+        result = BigNum.add(halfRange, BigNum.div(result, tostring(digits)))
+        if BigNum.gt(result, range) then
+            result = range
+        end
+    end
+    return BigNum.add(minStr, result)
+end
+
+---@param count number
+---@param monsterType number 怪物类型索引（1~7）
+local function GenerateMonsters(count, monsterType)
+    local typeIdx = monsterType or 1
+    if typeIdx < 1 then typeIdx = 1 end
+    if typeIdx > #MONSTER_TYPES then typeIdx = #MONSTER_TYPES end
+    local mtype = MONSTER_TYPES[typeIdx]
+
     local generated = 0
     for i = 1, count do
         local name = RandPick(GEN_NAMES.monster_prefix) .. RandPick(GEN_NAMES.monster_suffix)
         if DataManager.monsters[name] then
             name = name .. tostring(i)
         end
-        local tier = math.random(1, 5) -- 1=弱 5=强
-        local hp = tostring(tier * math.random(30, 60))
-        local atk = tostring(tier * math.random(5, 12))
-        local def = tostring(tier * math.random(2, 8))
-        local exp = tostring(tier * math.random(8, 20))
-        local gold = tostring(tier * math.random(5, 15))
+        local hp = BigNumRandRange(mtype.min, mtype.max)
+        local atk = BigNumRandRange(mtype.min, mtype.max)
+        local def = BigNumRandRange(mtype.min, mtype.max)
+        local exp = BigNumRandRange(mtype.min, mtype.max)
+        local gold = BigNumRandRange(mtype.min, mtype.max)
         DataManager.monsters[name] = {
             name = name,
-            desc = "一只实力不俗的" .. name .. "，散发着妖气",
+            type = mtype.name,
+            desc = "一只" .. mtype.name .. "级的" .. name .. "，" .. mtype.desc,
             hp = hp,
             atk = atk,
             def = def,
@@ -3438,7 +3581,80 @@ local function RenderGenerator()
 
     -- 各类型生成区块
     local mapSection = CreateGenSection("地图", "maps", "5", GenerateMaps)
-    local monsterSection = CreateGenSection("怪物", "monsters", "10", GenerateMonsters)
+
+    -- === 怪物生成（含类型选择） ===
+    local monsterNumField = UI.TextField { value = "10", placeholder = "数量", width = 60, height = 30, fontSize = 13 }
+    genFields["monsters"] = monsterNumField
+    local monsterResultLabel = UI.Label { text = "", fontSize = 11, fontColor = { 100, 255, 150, 255 }, height = 16 }
+    local selectedMonsterType = 1  -- 默认普通怪
+    local monsterTypeBtns = {}
+    local function refreshMonsterTypeBtns()
+        for idx, btn in ipairs(monsterTypeBtns) do
+            btn:SetVariant(idx == selectedMonsterType and "primary" or "secondary")
+        end
+    end
+    local monsterTypeBtnChildren = {}
+    for idx, mtype in ipairs(MONSTER_TYPES) do
+        local btn = UI.Button {
+            text = mtype.name, fontSize = 10, width = 52, height = 22,
+            variant = idx == 1 and "primary" or "secondary",
+            onClick = function()
+                selectedMonsterType = idx
+                refreshMonsterTypeBtns()
+            end,
+        }
+        monsterTypeBtns[idx] = btn
+        table.insert(monsterTypeBtnChildren, btn)
+    end
+    local monsterSection = UI.Panel {
+        width = "100%",
+        flexDirection = "column",
+        backgroundColor = { 25, 20, 45, 200 },
+        borderRadius = 8,
+        padding = 12,
+        marginBottom = 8,
+        children = {
+            UI.Label {
+                text = "怪物",
+                fontSize = 14,
+                fontColor = { 255, 200, 100, 255 },
+                marginBottom = 6,
+            },
+            UI.Panel {
+                flexDirection = "row", alignItems = "center", gap = 4, marginBottom = 6,
+                flexWrap = "wrap",
+                children = (function()
+                    local c = { UI.Label { text = "类型:", fontSize = 11, fontColor = { 200, 200, 220, 255 } } }
+                    for _, btn in ipairs(monsterTypeBtnChildren) do table.insert(c, btn) end
+                    return c
+                end)(),
+            },
+            UI.Panel {
+                flexDirection = "row", alignItems = "center", gap = 8,
+                children = {
+                    UI.Label { text = "一键生成", fontSize = 12, fontColor = { 200, 200, 220, 255 } },
+                    monsterNumField,
+                    UI.Label { text = "个怪物", fontSize = 12, fontColor = { 200, 200, 220, 255 } },
+                    UI.Button {
+                        text = "生成", variant = "primary", width = 60, height = 28, fontSize = 12,
+                        onClick = function()
+                            local n = tonumber(monsterNumField:GetValue()) or 0
+                            if n <= 0 then
+                                monsterResultLabel:SetText("请输入有效数量")
+                                return
+                            end
+                            if n > 100 then n = 100 end
+                            local generated = GenerateMonsters(n, selectedMonsterType)
+                            local typeName = MONSTER_TYPES[selectedMonsterType].name
+                            monsterResultLabel:SetText("成功生成 " .. generated .. " 个" .. typeName)
+                            ShowMsg("怪物生成完成: " .. generated .. " 个" .. typeName)
+                        end,
+                    },
+                },
+            },
+            monsterResultLabel,
+        },
+    }
     -- === 装备生成（含部位+品质选择） ===
     local equipNumField = UI.TextField { value = "10", placeholder = "数量", width = 60, height = 30, fontSize = 13 }
     genFields["equipment"] = equipNumField
@@ -3868,6 +4084,7 @@ end
 ---@return Widget
 function AdminUI.CreateLogin()
     adminLoggedIn_ = false
+    currentAdminUser_ = ""
 
     local usernameField = UI.TextField {
         placeholder = "管理员账号",
@@ -3904,13 +4121,33 @@ function AdminUI.CreateLogin()
                                 onClick = function()
                                     local u = usernameField:GetValue()
                                     local p = passwordField:GetValue()
-                                    if u == ADMIN_USERNAME and p == ADMIN_PASSWORD then
+                                    -- 总管理员用固定密码登录
+                                    if u == SUPER_ADMIN and p == ADMIN_PASSWORD then
                                         adminLoggedIn_ = true
+                                        currentAdminUser_ = u
                                         loginMsg:SetText("")
                                         AdminUI.ShowDashboard()
-                                    else
-                                        loginMsg:SetText("账号或密码错误")
+                                        return
                                     end
+                                    -- 被授权的管理员：先加载管理员列表再验证
+                                    loginMsg:SetText("验证中...")
+                                    LoadAdminsFromCloud(function()
+                                        if not IsAdmin(u) then
+                                            loginMsg:SetText("无管理员权限")
+                                            return
+                                        end
+                                        -- 验证玩家账号密码
+                                        DataManager.VerifyPlayerPassword(u, p, function(ok)
+                                            if ok then
+                                                adminLoggedIn_ = true
+                                                currentAdminUser_ = u
+                                                loginMsg:SetText("")
+                                                AdminUI.ShowDashboard()
+                                            else
+                                                loginMsg:SetText("账号或密码错误")
+                                            end
+                                        end)
+                                    end)
                                 end,
                             },
                             UI.Button {
@@ -3974,6 +4211,7 @@ function AdminUI.ShowDashboard()
                         text = "退出", variant = "secondary", fontSize = 11,
                         onClick = function()
                             adminLoggedIn_ = false
+                            currentAdminUser_ = ""
                             SwitchState("login")
                         end,
                     },
