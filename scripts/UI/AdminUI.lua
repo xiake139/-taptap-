@@ -2728,13 +2728,13 @@ local function GenerateItems(count, selectedTypes, duration)
         local itemDuration = nil
         if typeName == "经验倍率" then
             value = tostring(math.random(2, 100))
-            local durMin = (duration and duration > 0) and math.ceil(duration / 60) or math.random(5, 60)
-            itemDuration = durMin * 60
+            local durMin = (duration and duration > 0) and duration or math.random(5, 60)
+            itemDuration = durMin
             name = value .. "倍经验卡[" .. durMin .. "分钟]"
         elseif typeName == "货币倍率" then
             value = tostring(math.random(2, 100))
-            local durMin = (duration and duration > 0) and math.ceil(duration / 60) or math.random(5, 60)
-            itemDuration = durMin * 60
+            local durMin = (duration and duration > 0) and duration or math.random(5, 60)
+            itemDuration = durMin
             name = value .. "倍货币卡[" .. durMin .. "分钟]"
         else
             local prefix = RandPick(GEN_NAMES.item_prefix)
