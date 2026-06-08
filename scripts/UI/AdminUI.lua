@@ -3632,7 +3632,6 @@ local function RenderGenerator()
                 children = {
                     UI.Label { text = "生成大境界数量:", fontSize = 12, fontColor = { 180, 180, 200, 255 }, marginRight = 8 },
                     cultCountInput,
-                    UI.Label { text = " (最多" .. #ALL_REALMS .. "个)", fontSize = 11, fontColor = { 140, 140, 160, 255 }, marginLeft = 6 },
                 },
             },
             UI.Button {
@@ -3644,13 +3643,18 @@ local function RenderGenerator()
                 onClick = function()
                     local realmCount = tonumber(cultCountInput:GetValue()) or 7
                     if realmCount < 1 then realmCount = 1 end
-                    if realmCount > #ALL_REALMS then realmCount = #ALL_REALMS end
                     local layers = { "一层", "二层", "三层", "四层", "五层", "六层", "七层", "八层", "九层" }
                     local newCult = {}
                     local lvl = 1
                     for i = 1, realmCount do
+                        local realmName
+                        if i <= #ALL_REALMS then
+                            realmName = ALL_REALMS[i]
+                        else
+                            realmName = "第" .. (i - #ALL_REALMS) .. "重天"
+                        end
                         for _, layer in ipairs(layers) do
-                            newCult[tostring(lvl)] = ALL_REALMS[i] .. layer
+                            newCult[tostring(lvl)] = realmName .. layer
                             lvl = lvl + 1
                         end
                     end
