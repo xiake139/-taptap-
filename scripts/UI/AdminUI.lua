@@ -3599,6 +3599,65 @@ local function RenderGenerator()
         },
     }
 
+    -- 一键删除所有系统数据
+    local deleteResult = UI.Label { text = "", fontSize = 12, fontColor = { 255, 100, 100, 255 }, marginTop = 6 }
+    local deleteSection = UI.Panel {
+        width = "100%",
+        flexDirection = "column",
+        backgroundColor = { 50, 20, 20, 220 },
+        borderRadius = 8,
+        padding = 12,
+        marginTop = 12,
+        borderColor = { 255, 80, 80, 100 },
+        borderWidth = 1,
+        children = {
+            UI.Label {
+                text = "一键删除",
+                fontSize = 16,
+                fontColor = { 255, 80, 80, 255 },
+                marginBottom = 4,
+            },
+            UI.Label {
+                text = "删除所有系统数据（地图、怪物、物品、装备、任务、商店、副本、NPC、礼包）",
+                fontSize = 11,
+                fontColor = { 200, 140, 140, 255 },
+                marginBottom = 10,
+            },
+            UI.Button {
+                text = "一键删除所有数据",
+                variant = "danger",
+                width = 160,
+                height = 36,
+                fontSize = 14,
+                onClick = function()
+                    -- 清空所有系统数据
+                    DataManager.maps = {}
+                    DataManager.monsters = {}
+                    DataManager.items = {}
+                    DataManager.equipment = {}
+                    DataManager.quests = {}
+                    DataManager.shops = {}
+                    DataManager.dungeons = {}
+                    DataManager.npcs = {}
+                    DataManager.giftpacks = {}
+                    -- 保存到云端
+                    SaveCategoryToCloud("maps")
+                    SaveCategoryToCloud("monsters")
+                    SaveCategoryToCloud("items")
+                    SaveCategoryToCloud("equipment")
+                    SaveCategoryToCloud("quests")
+                    SaveCategoryToCloud("shops")
+                    SaveCategoryToCloud("dungeons")
+                    SaveCategoryToCloud("npcs")
+                    SaveCategoryToCloud("giftpacks")
+                    deleteResult:SetText("已删除所有系统数据！")
+                    ShowMsg("已删除所有系统数据")
+                end,
+            },
+            deleteResult,
+        },
+    }
+
     -- 将所有区块添加到内容面板
     contentPanel_:AddChild(UI.Panel {
         width = "100%",
@@ -3614,6 +3673,7 @@ local function RenderGenerator()
             npcSection,
             questSection,
             deploySection,
+            deleteSection,
         },
     })
 end
