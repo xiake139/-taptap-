@@ -3178,18 +3178,23 @@ local function DeployAll()
     end
 
     -- 11. 检查玩家起始地是否有效，如果不存在于地图数据中则更新
-    local gameConfig = require("Config.game_config")
-    local startMap = gameConfig.game and gameConfig.game.start_map or ""
+    local gc = DataManager.gameConfig or {}
+    local gameSec = gc["game"] or {}
+    local startMap = gameSec.start_map or ""
     if startMap == "" or not DataManager.maps[startMap] then
         -- 起始地不存在于当前地图中，设为第一个地图
         if #mapNames > 0 then
             local newStart = mapNames[1]
-            gameConfig.game.start_map = newStart
-            -- 同步写入 ConfigData 全局配置
-            if DataManager.global_config then
-                DataManager.global_config.start_map = newStart
+            -- 更新 DataManager.gameConfig（UI 数据源）
+            if not gc["game"] then gc["game"] = {} end
+            gc["game"].start_map = newStart
+            DataManager.gameConfig = gc
+            -- 同步更新 require 的 game_config 模块
+            local gameConfigMod = require("Config.game_config")
+            if gameConfigMod.game then
+                gameConfigMod.game.start_map = newStart
             end
-            SaveCategoryToCloud("global")
+            SaveCategoryToCloud("game_config")
             changes = changes + 1
         end
     end
