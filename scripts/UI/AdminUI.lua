@@ -2725,13 +2725,16 @@ local function GenerateItems(count, selectedTypes, duration)
         local info = ITEM_TYPE_EFFECTS[typeName] or ITEM_TYPE_EFFECTS["材料"]
         local name
         local value = "0"
+        local itemDuration = nil
         if typeName == "经验倍率" then
             value = tostring(math.random(2, 100))
-            local durMin = (duration and duration > 0) and math.floor(duration / 60) or math.random(5, 60)
+            local durMin = (duration and duration > 0) and math.ceil(duration / 60) or math.random(5, 60)
+            itemDuration = durMin * 60
             name = value .. "倍经验卡[" .. durMin .. "分钟]"
         elseif typeName == "货币倍率" then
             value = tostring(math.random(2, 100))
-            local durMin = (duration and duration > 0) and math.floor(duration / 60) or math.random(5, 60)
+            local durMin = (duration and duration > 0) and math.ceil(duration / 60) or math.random(5, 60)
+            itemDuration = durMin * 60
             name = value .. "倍货币卡[" .. durMin .. "分钟]"
         else
             local prefix = RandPick(GEN_NAMES.item_prefix)
@@ -2757,8 +2760,9 @@ local function GenerateItems(count, selectedTypes, duration)
             effect = info.effect,
             value = value,
         }
-        if duration and duration > 0 then
-            itemData.duration = tostring(duration)
+        local finalDur = itemDuration or ((duration and duration > 0) and duration or nil)
+        if finalDur and finalDur > 0 then
+            itemData.duration = tostring(finalDur)
         end
         DataManager.items[name] = itemData
         generated = generated + 1
