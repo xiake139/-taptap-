@@ -1764,7 +1764,7 @@ end
 --- 装备部位选项
 local EQUIP_SLOTS = { "武器", "防具", "饰品" }
 --- 装备品质选项
-local EQUIP_QUALITIES = { "白色", "绿色", "蓝色", "紫色", "金色" }
+local EQUIP_QUALITIES = { "白色", "绿色", "橙色", "红色", "彩色", "地级", "天级", "帝级", "仙级", "神级", "创世级" }
 
 --- 创建按钮组选择器（通用）
 ---@param options string[] 选项列表
@@ -2865,17 +2865,30 @@ local function GenerateMonsters(count, monsterType)
     return generated
 end
 
---- 装备部位/品质中文到英文映射
+--- 装备部位映射
 local EQUIP_SLOT_MAP = { ["武器"] = "weapon", ["防具"] = "armor", ["饰品"] = "accessory" }
-local EQUIP_QUALITY_MAP = { ["白色"] = "white", ["绿色"] = "green", ["蓝色"] = "blue", ["紫色"] = "purple", ["金色"] = "gold" }
-local EQUIP_QUALITY_MULT = { ["white"] = 1, ["green"] = 2, ["blue"] = 3, ["purple"] = 5, ["gold"] = 8 }
+
+--- 装备品质属性区间定义（min~max）
+local EQUIP_QUALITY_RANGES = {
+    ["白色"]   = { min = "100",               max = "3000" },
+    ["绿色"]   = { min = "10000",             max = "60000" },
+    ["橙色"]   = { min = "700000",            max = "1000000" },
+    ["红色"]   = { min = "5000000",           max = "100000000" },
+    ["彩色"]   = { min = "500000000",         max = "1000000000000" },
+    ["地级"]   = { min = "2000000000000",     max = "5000000000000" },
+    ["天级"]   = { min = "6000000000000",     max = "50000000000000" },
+    ["帝级"]   = { min = "100000000000000",   max = "2000000000000000" },
+    ["仙级"]   = { min = "5000000000000000",  max = "70000000000000000" },
+    ["神级"]   = { min = "100000000000000000", max = "5000000000000000000" },
+    ["创世级"] = { min = "7000000000000000000", max = "90000000000000000000" },
+}
 
 --- 生成装备数据（支持部位和品质过滤）
 ---@param count number
 ---@param filterSlots string[]|nil 选中的部位中文列表
 ---@param filterQualities string[]|nil 选中的品质中文列表
 local function GenerateEquipment(count, filterSlots, filterQualities)
-    -- 构建实际使用的英文列表
+    -- 构建实际使用的部位列表
     local slots = {}
     if filterSlots and #filterSlots > 0 then
         for _, s in ipairs(filterSlots) do
@@ -2885,20 +2898,20 @@ local function GenerateEquipment(count, filterSlots, filterQualities)
     end
     if #slots == 0 then slots = { "weapon", "armor", "accessory" } end
 
+    -- 构建品质列表（直接使用中文名）
     local qualities = {}
     if filterQualities and #filterQualities > 0 then
         for _, q in ipairs(filterQualities) do
-            local en = EQUIP_QUALITY_MAP[q]
-            if en then table.insert(qualities, en) end
+            if EQUIP_QUALITY_RANGES[q] then table.insert(qualities, q) end
         end
     end
-    if #qualities == 0 then qualities = { "white", "green", "blue", "purple", "gold" } end
+    if #qualities == 0 then qualities = { "白色", "绿色", "橙色", "红色", "彩色", "地级", "天级", "帝级", "仙级", "神级", "创世级" } end
 
     local generated = 0
     for i = 1, count do
         local slot = slots[math.random(1, #slots)]
         local quality = qualities[math.random(1, #qualities)]
-        local mult = EQUIP_QUALITY_MULT[quality] or 1
+        local range = EQUIP_QUALITY_RANGES[quality]
         local prefix = RandPick(GEN_NAMES.equip_prefix)
         local suffix
         if slot == "weapon" then suffix = RandPick(GEN_NAMES.equip_weapon)
@@ -2909,12 +2922,25 @@ local function GenerateEquipment(count, filterSlots, filterQualities)
         if DataManager.equipment[name] then
             name = name .. tostring(i)
         end
-        local atkVal = (slot == "weapon") and tostring(mult * math.random(3, 10)) or tostring(math.random(0, math.floor(mult * 2)))
-        local defVal = (slot == "armor") and tostring(mult * math.random(3, 8)) or tostring(math.random(0, math.floor(mult * 2)))
-        local hpVal = tostring(mult * math.random(5, 20))
-        local lvReq = tostring(math.max(1, mult * 2 + math.random(-1, 1)))
-        local price = tostring(mult * math.random(20, 100))
-        local sell = tostring(math.floor(tonumber(price) * 0.4))
+        -- 根据品质区间生成属性（武器偏攻击，防具偏防御，饰品偏生命）
+        local baseVal = BigNumRandRange(range.min, range.max)
+        local atkVal, defVal, hpVal
+        if slot == "weapon" then
+            atkVal = baseVal
+            defVal = BigNumRandRange(range.min, BigNum.div(BigNum.add(range.min, range.max), "4"))
+            hpVal = BigNumRandRange(range.min, BigNum.div(BigNum.add(range.min, range.max), "3"))
+        elseif slot == "armor" then
+            defVal = baseVal
+            atkVal = BigNumRandRange(range.min, BigNum.div(BigNum.add(range.min, range.max), "4"))
+            hpVal = BigNumRandRange(range.min, BigNum.div(BigNum.add(range.min, range.max), "2"))
+        else
+            hpVal = baseVal
+            atkVal = BigNumRandRange(range.min, BigNum.div(BigNum.add(range.min, range.max), "3"))
+            defVal = BigNumRandRange(range.min, BigNum.div(BigNum.add(range.min, range.max), "3"))
+        end
+        local lvReq = tostring(math.random(1, 100))
+        local price = BigNum.mul(baseVal, tostring(math.random(2, 5)))
+        local sell = BigNum.div(price, "3")
         DataManager.equipment[name] = {
             name = name,
             slot = slot,
@@ -3696,7 +3722,7 @@ local function RenderGenerator()
 
     -- 品质多选
     local equipQualBtns = {}
-    local equipQualSelected = { ["白色"] = true, ["绿色"] = true, ["蓝色"] = true, ["紫色"] = true, ["金色"] = true }
+    local equipQualSelected = { ["白色"] = true, ["绿色"] = true, ["橙色"] = true, ["红色"] = true, ["彩色"] = true, ["地级"] = true, ["天级"] = true, ["帝级"] = true, ["仙级"] = true, ["神级"] = true, ["创世级"] = true }
     local function refreshEquipQualBtns()
         for name, btn in pairs(equipQualBtns) do
             btn:SetVariant(equipQualSelected[name] and "primary" or "secondary")
@@ -3705,7 +3731,7 @@ local function RenderGenerator()
     local equipQualChildren = {}
     for _, qName in ipairs(EQUIP_QUALITIES) do
         local btn = UI.Button {
-            text = qName, fontSize = 10, width = 44, height = 22,
+            text = qName, fontSize = 9, width = 42, height = 20,
             variant = "primary",
             onClick = function()
                 if equipQualSelected[qName] then
