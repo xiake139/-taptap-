@@ -3599,6 +3599,61 @@ local function RenderGenerator()
         },
     }
 
+    -- 一键生成境界
+    local cultResult = UI.Label { text = "", fontSize = 12, fontColor = { 100, 255, 180, 255 }, marginTop = 6 }
+    local cultSection = UI.Panel {
+        width = "100%",
+        flexDirection = "column",
+        backgroundColor = { 25, 35, 50, 220 },
+        borderRadius = 8,
+        padding = 12,
+        marginTop = 12,
+        borderColor = { 100, 200, 255, 80 },
+        borderWidth = 1,
+        children = {
+            UI.Label {
+                text = "一键生成境界",
+                fontSize = 16,
+                fontColor = { 100, 200, 255, 255 },
+                marginBottom = 4,
+            },
+            UI.Label {
+                text = "自动生成修仙境界体系，每个境界九层",
+                fontSize = 11,
+                fontColor = { 160, 160, 180, 255 },
+                marginBottom = 10,
+            },
+            UI.Button {
+                text = "生成境界",
+                variant = "primary",
+                width = 120,
+                height = 36,
+                fontSize = 14,
+                onClick = function()
+                    -- 修仙境界体系：每个大境界9层
+                    local realms = { "练气期", "筑基期", "金丹期", "元婴期", "化神期", "渡劫期", "大乘期" }
+                    local layers = { "一层", "二层", "三层", "四层", "五层", "六层", "七层", "八层", "九层" }
+                    local newCult = {}
+                    local lvl = 1
+                    for _, realm in ipairs(realms) do
+                        for _, layer in ipairs(layers) do
+                            newCult[tostring(lvl)] = realm .. layer
+                            lvl = lvl + 1
+                        end
+                    end
+                    -- 写入 gameConfig
+                    local gc = DataManager.gameConfig or {}
+                    gc["cultivation"] = newCult
+                    DataManager.gameConfig = gc
+                    SaveCategoryToCloud("game_config")
+                    cultResult:SetText("已生成 " .. (lvl - 1) .. " 个境界等级（" .. #realms .. " 大境界 × 9 层）")
+                    ShowMsg("境界生成完成: " .. #realms .. " 大境界 × 9 层 = " .. (lvl - 1) .. " 级")
+                end,
+            },
+            cultResult,
+        },
+    }
+
     -- 一键删除所有系统数据
     local deleteResult = UI.Label { text = "", fontSize = 12, fontColor = { 255, 100, 100, 255 }, marginTop = 6 }
     local deleteSection = UI.Panel {
@@ -3673,6 +3728,7 @@ local function RenderGenerator()
             npcSection,
             questSection,
             deploySection,
+            cultSection,
             deleteSection,
         },
     })
