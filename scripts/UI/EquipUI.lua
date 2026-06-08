@@ -227,20 +227,41 @@ function EquipUI.Unequip(slot)
     EquipUI.Refresh()
 end
 
+--- 显示装备操作提示（短暂显示在面板顶部）
+---@param msg string
+function EquipUI.ShowTip(msg)
+    print("[EquipUI] " .. msg)
+    if not parentRef_ then return end
+    -- 查找或创建提示标签
+    local tip = parentRef_:FindById("equipTip")
+    if tip then
+        tip:SetText("> " .. msg)
+    else
+        parentRef_:AddChild(UI.Label {
+            id = "equipTip",
+            text = "> " .. msg,
+            fontSize = 12,
+            fontColor = { 255, 200, 100, 255 },
+            textAlign = "center",
+            marginBottom = 4,
+        })
+    end
+end
+
 --- 从背包装备
 ---@param bagIndex number
 function EquipUI.EquipFromBag(bagIndex)
     print("[EquipUI] EquipFromBag 被调用, bagIndex=" .. tostring(bagIndex))
     local player = DataManager.playerData
-    if not player then print("[EquipUI] player为nil"); return end
+    if not player then EquipUI.ShowTip("数据异常"); return end
 
     local item = player.bag[bagIndex]
-    if not item then print("[EquipUI] bag[" .. tostring(bagIndex) .. "]为nil, bag长度=" .. #player.bag); return end
+    if not item then EquipUI.ShowTip("物品不存在(索引:" .. tostring(bagIndex) .. ")"); return end
 
     print("[EquipUI] 尝试装备: " .. tostring(item.name))
     local itemData = DataManager.GetEquipData(item.name)
-    if not itemData then print("[EquipUI] GetEquipData返回nil, name=" .. tostring(item.name)); return end
-    if not itemData.slot then print("[EquipUI] itemData.slot为nil, name=" .. tostring(item.name)); return end
+    if not itemData then EquipUI.ShowTip("找不到装备数据: " .. tostring(item.name)); return end
+    if not itemData.slot then EquipUI.ShowTip("该物品无法装备(无部位): " .. tostring(item.name)); return end
 
     print("[EquipUI] 物品部位: " .. tostring(itemData.slot))
 
@@ -249,7 +270,7 @@ function EquipUI.EquipFromBag(bagIndex)
     local playerLevel = player.status.level or "1"
     print("[EquipUI] 等级检查: 玩家=" .. playerLevel .. " 需求=" .. levelReq)
     if BigNum.lt(playerLevel, levelReq) then
-        print("[EquipUI] 等级不足，需要等级 " .. levelReq)
+        EquipUI.ShowTip("等级不足! 需要等级" .. levelReq .. ", 当前" .. playerLevel)
         return
     end
 
@@ -279,9 +300,11 @@ function EquipUI.EquipFromBag(bagIndex)
         table.remove(player.bag, bagIndex)
     end
 
-    print("[EquipUI] 装备了 " .. item.name .. " → " .. slot)
+    local equipedName = item.name
+    print("[EquipUI] 装备了 " .. equipedName .. " → " .. slot)
     DataManager.SaveToCloud(player)
     EquipUI.Refresh()
+    EquipUI.ShowTip("已装备: " .. equipedName)
 end
 
 --- 获取品质颜色
