@@ -657,9 +657,9 @@ function GameUI.ShowLeaderboardDetail(source)
         paddingLeft = 4, paddingRight = 4,
         marginBottom = 4,
         children = {
-            UI.Label { text = "排名", fontSize = 11, fontColor = { 200, 170, 100, 255 }, width = 40 },
-            UI.Label { text = "玩家昵称", fontSize = 11, fontColor = { 200, 170, 100, 255 }, flexGrow = 1 },
-            UI.Label { text = "数值", fontSize = 11, fontColor = { 200, 170, 100, 255 }, width = 80, textAlign = "right" },
+            UI.Label { text = "排名", fontSize = 11, fontColor = { 200, 170, 100, 255 }, width = 36 },
+            UI.Label { text = "玩家昵称", fontSize = 11, fontColor = { 200, 170, 100, 255 }, flexGrow = 1, flexShrink = 1 },
+            UI.Label { text = "数值", fontSize = 11, fontColor = { 200, 170, 100, 255 }, width = 110, textAlign = "right" },
         },
     })
 
@@ -682,11 +682,12 @@ function GameUI.ShowLeaderboardDetail(source)
             width = "100%",
             paddingLeft = 4, paddingRight = 4,
             paddingTop = 3, paddingBottom = 3,
+            alignItems = "center",
             backgroundColor = (i % 2 == 0) and { 40, 35, 60, 150 } or { 30, 25, 50, 100 },
             children = {
-                UI.Label { text = "#" .. i, fontSize = 12, fontColor = rankColor, width = 40 },
-                UI.Label { text = item.name, fontSize = 12, fontColor = { 220, 220, 240, 255 }, flexGrow = 1 },
-                UI.Label { text = NumFormat.Short(item.value), fontSize = 12, fontColor = { 100, 255, 200, 255 }, width = 80, textAlign = "right" },
+                UI.Label { text = "#" .. i, fontSize = 12, fontColor = rankColor, width = 36 },
+                UI.Label { text = item.name, fontSize = 12, fontColor = { 220, 220, 240, 255 }, flexGrow = 1, flexShrink = 1 },
+                UI.Label { text = NumFormat.Short(item.value), fontSize = 12, fontColor = { 100, 255, 200, 255 }, width = 110, textAlign = "right", whiteSpace = "normal" },
             },
         })
     end
