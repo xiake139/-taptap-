@@ -13,6 +13,18 @@ local parentRef_ = nil
 local listings_ = {}        -- 当前交易所列表 [{seller, item_name, item_count, price_type, price_gold, price_item, price_item_count, timestamp}]
 local isLoading_ = false
 local GameUI = nil           -- 延迟引用
+local currentDialog_ = nil   -- 当前弹窗引用（用于关闭）
+
+--- 关闭当前弹窗
+local function CloseDialog()
+    if currentDialog_ then
+        if not GameUI then GameUI = require("UI.GameUI") end
+        if GameUI.rootPanel then
+            GameUI.rootPanel:RemoveChild(currentDialog_)
+        end
+        currentDialog_ = nil
+    end
+end
 
 --- 云端存储 key
 local TRADE_CLOUD_KEY = "系统配置/trade_market.ini"
@@ -296,8 +308,29 @@ function TradeUI.ShowSellDialog()
         return
     end
 
+    CloseDialog()  -- 关闭之前的弹窗
+
     -- 选择物品阶段
-    local dialogPanel = UI.Panel {
+    local itemsPanel = UI.ScrollView {
+        width = "100%",
+        maxHeight = 300,
+        scrollY = true,
+        flexDirection = "column",
+        gap = 4,
+    }
+    for i, item in ipairs(player.bag) do
+        itemsPanel:AddChild(UI.Button {
+            text = item.name .. " x" .. tostring(item.count),
+            variant = "secondary",
+            width = "100%",
+            onClick = function()
+                CloseDialog()
+                TradeUI.ShowPriceDialog(item)
+            end,
+        })
+    end
+
+    currentDialog_ = UI.Panel {
         position = "absolute",
         top = 0, left = 0, right = 0, bottom = 0,
         backgroundColor = { 0, 0, 0, 180 },
@@ -320,38 +353,13 @@ function TradeUI.ShowSellDialog()
                         textAlign = "center",
                     },
                     UI.Panel { width = "100%", height = 1, backgroundColor = { 60, 50, 80, 255 } },
-                    (function()
-                        local itemsPanel = UI.ScrollView {
-                            width = "100%",
-                            maxHeight = 300,
-                            scrollY = true,
-                            flexDirection = "column",
-                            gap = 4,
-                        }
-                        for i, item in ipairs(player.bag) do
-                            itemsPanel:AddChild(UI.Button {
-                                text = item.name .. " x" .. tostring(item.count),
-                                variant = "secondary",
-                                width = "100%",
-                                onClick = function()
-                                    -- 关闭选择弹窗，打开定价弹窗
-                                    if GameUI.rootPanel then
-                                        GameUI.rootPanel:RemoveChild(dialogPanel)
-                                    end
-                                    TradeUI.ShowPriceDialog(item)
-                                end,
-                            })
-                        end
-                        return itemsPanel
-                    end)(),
+                    itemsPanel,
                     UI.Button {
                         text = "取消",
                         variant = "danger",
                         width = "100%",
                         onClick = function()
-                            if GameUI.rootPanel then
-                                GameUI.rootPanel:RemoveChild(dialogPanel)
-                            end
+                            CloseDialog()
                         end,
                     },
                 },
@@ -360,7 +368,7 @@ function TradeUI.ShowSellDialog()
     }
 
     if GameUI.rootPanel then
-        GameUI.rootPanel:AddChild(dialogPanel)
+        GameUI.rootPanel:AddChild(currentDialog_)
     end
 end
 
@@ -369,14 +377,14 @@ end
 function TradeUI.ShowPriceDialog(bagItem)
     if not GameUI then GameUI = require("UI.GameUI") end
 
+    CloseDialog()  -- 关闭之前的弹窗
+
     local sellCount = 1
     local priceType = "gold"  -- "gold" or "item"
     local priceGold = "100"
     local priceItemName = ""
     local priceItemCount = 1
 
-    ---@type Widget
-    local dialogPanel = nil
     local contentArea = nil
 
     --- 渲染定价内容
@@ -512,7 +520,7 @@ function TradeUI.ShowPriceDialog(bagItem)
         gap = 4,
     }
 
-    dialogPanel = UI.Panel {
+    currentDialog_ = UI.Panel {
         position = "absolute",
         top = 0, left = 0, right = 0, bottom = 0,
         backgroundColor = { 0, 0, 0, 180 },
@@ -546,7 +554,7 @@ function TradeUI.ShowPriceDialog(bagItem)
                                 variant = "primary",
                                 flexGrow = 1,
                                 onClick = function()
-                                    TradeUI.ConfirmSell(bagItem, sellCount, priceType, priceGold, priceItemName, priceItemCount, dialogPanel)
+                                    TradeUI.ConfirmSell(bagItem, sellCount, priceType, priceGold, priceItemName, priceItemCount)
                                 end,
                             },
                             UI.Button {
@@ -554,9 +562,7 @@ function TradeUI.ShowPriceDialog(bagItem)
                                 variant = "danger",
                                 flexGrow = 1,
                                 onClick = function()
-                                    if GameUI.rootPanel then
-                                        GameUI.rootPanel:RemoveChild(dialogPanel)
-                                    end
+                                    CloseDialog()
                                 end,
                             },
                         },
@@ -569,22 +575,34 @@ function TradeUI.ShowPriceDialog(bagItem)
     RenderPriceContent()
 
     if GameUI.rootPanel then
-        GameUI.rootPanel:AddChild(dialogPanel)
+        GameUI.rootPanel:AddChild(currentDialog_)
     end
 end
 
 -- =============== 交易逻辑 ===============
 
 --- 确认挂售
-function TradeUI.ConfirmSell(bagItem, sellCount, priceType, priceGold, priceItemName, priceItemCount, dialogPanel)
+function TradeUI.ConfirmSell(bagItem, sellCount, priceType, priceGold, priceItemName, priceItemCount)
     if not GameUI then GameUI = require("UI.GameUI") end
     local player = DataManager.playerData
     if not player then return end
 
-    -- 校验数量
-    local bagCount = tonumber(bagItem.count) or 0
-    if sellCount < 1 or sellCount > bagCount then
+    -- 校验数量：实时从背包查询当前数量
+    local actualBagCount = 0
+    for _, item in ipairs(player.bag) do
+        if item.name == bagItem.name then
+            actualBagCount = tonumber(item.count) or 0
+            break
+        end
+    end
+
+    if sellCount < 1 then
         TradeUI.ShowMsg("挂售数量无效")
+        return
+    end
+
+    if sellCount > actualBagCount then
+        TradeUI.ShowMsg("背包物品数量不足，挂售失败")
         return
     end
 
@@ -640,15 +658,18 @@ function TradeUI.ConfirmSell(bagItem, sellCount, priceType, priceGold, priceItem
     table.insert(listings_, 1, newListing)  -- 最新在前
 
     -- 关闭弹窗
-    if GameUI.rootPanel and dialogPanel then
-        GameUI.rootPanel:RemoveChild(dialogPanel)
-    end
+    CloseDialog()
 
     -- 保存交易数据和玩家数据
     SaveListings(function()
         DataManager.SaveToCloud(player)
         TradeUI.ShowMsg("挂售成功！")
-        TradeUI.Refresh()
+        -- 自动跳转到交易所页面并刷新
+        if GameUI.ShowPanel then
+            GameUI.ShowPanel("trade")
+        else
+            TradeUI.Refresh()
+        end
     end)
 end
 
