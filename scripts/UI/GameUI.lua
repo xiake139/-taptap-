@@ -163,7 +163,7 @@ function GameUI.Create()
                 return logScroll_
             end)(),
 
-            -- 底部：功能按钮
+            -- 底部：功能按钮（第一行主要功能 + 第二行可横向滑动）
             UI.Panel {
                 width = "100%",
                 flexDirection = "column",
@@ -171,27 +171,34 @@ function GameUI.Create()
                 children = {
                     UI.Panel {
                         flexDirection = "row",
-                        justifyContent = "space-around",
                         width = "100%",
+                        gap = 4,
                         children = {
-                            UI.Button { text = "状态", variant = "primary", flexGrow = 1, marginRight = 4, onClick = function() GameUI.ShowPanel("status") end },
-                            UI.Button { text = "背包", variant = "primary", flexGrow = 1, marginRight = 4, onClick = function() GameUI.ShowPanel("bag") end },
+                            UI.Button { text = "状态", variant = "primary", flexGrow = 1, onClick = function() GameUI.ShowPanel("status") end },
+                            UI.Button { text = "背包", variant = "primary", flexGrow = 1, onClick = function() GameUI.ShowPanel("bag") end },
                             UI.Button { text = "商城", variant = "primary", flexGrow = 1, onClick = function() GameUI.ShowPanel("shop") end },
                         },
                     },
-                    UI.Panel {
-                        flexDirection = "row",
-                        justifyContent = "space-around",
+                    UI.ScrollView {
                         width = "100%",
+                        height = 38,
+                        scrollX = true,
+                        scrollY = false,
                         children = {
-                            UI.Button { text = "境界", variant = "secondary", flexGrow = 1, marginRight = 4, onClick = function() GameUI.ShowPanel("realm") end },
-                            UI.Button { text = "副本", variant = "secondary", flexGrow = 1, marginRight = 4, onClick = function() GameUI.ShowPanel("dungeon") end },
-                            UI.Button { text = "装备", variant = "secondary", flexGrow = 1, marginRight = 4, onClick = function() GameUI.ShowPanel("equip") end },
-                            UI.Button { text = "任务", variant = "secondary", flexGrow = 1, marginRight = 4, onClick = function() GameUI.ShowPanel("quest") end },
-                            UI.Button { text = "礼包", variant = "secondary", flexGrow = 1, marginRight = 4, onClick = function() GameUI.ShowPanel("giftpack") end },
-                            UI.Button { text = "交易", variant = "secondary", flexGrow = 1, marginRight = 4, onClick = function() GameUI.ShowPanel("trade") end },
-                            UI.Button { text = "排行", variant = "secondary", flexGrow = 1, marginRight = 4, onClick = function() GameUI.ShowPanel("leaderboard") end },
-                            UI.Button { text = "聊天", variant = "secondary", flexGrow = 1, onClick = function() GameUI.ShowPanel("chat") end },
+                            UI.Panel {
+                                flexDirection = "row",
+                                gap = 6,
+                                children = {
+                                    UI.Button { text = "境界", variant = "secondary", width = 60, onClick = function() GameUI.ShowPanel("realm") end },
+                                    UI.Button { text = "副本", variant = "secondary", width = 60, onClick = function() GameUI.ShowPanel("dungeon") end },
+                                    UI.Button { text = "装备", variant = "secondary", width = 60, onClick = function() GameUI.ShowPanel("equip") end },
+                                    UI.Button { text = "任务", variant = "secondary", width = 60, onClick = function() GameUI.ShowPanel("quest") end },
+                                    UI.Button { text = "礼包", variant = "secondary", width = 60, onClick = function() GameUI.ShowPanel("giftpack") end },
+                                    UI.Button { text = "交易", variant = "secondary", width = 60, onClick = function() GameUI.ShowPanel("trade") end },
+                                    UI.Button { text = "排行", variant = "secondary", width = 60, onClick = function() GameUI.ShowPanel("leaderboard") end },
+                                    UI.Button { text = "聊天", variant = "secondary", width = 60, onClick = function() GameUI.ShowPanel("chat") end },
+                                },
+                            },
                         },
                     },
                 },

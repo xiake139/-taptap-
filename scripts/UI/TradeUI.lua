@@ -60,15 +60,23 @@ local function DeserializeListings(str)
     return list
 end
 
+--- 获取云存储实例（兼容多人模式的CloudProxy）
+local function GetCloud()
+    return DataManager.GetCloudProvider()
+end
+
 --- 从云端加载交易所数据
 local function LoadListings(callback)
     isLoading_ = true
-    if not clientCloud then
+    local cloud = GetCloud()
+    if not cloud then
+        print("[TradeUI] 云存储不可用，使用空列表")
+        listings_ = {}
         isLoading_ = false
         if callback then callback() end
         return
     end
-    clientCloud:Get(TRADE_CLOUD_KEY, {
+    cloud:Get(TRADE_CLOUD_KEY, {
         ok = function(values)
             local raw = values[TRADE_CLOUD_KEY]
             if raw and raw ~= "" then
@@ -82,6 +90,7 @@ local function LoadListings(callback)
         end,
         error = function(code, reason)
             isLoading_ = false
+            listings_ = {}
             print("[TradeUI] 加载交易所失败: " .. tostring(reason))
             if callback then callback() end
         end,
@@ -90,12 +99,13 @@ end
 
 --- 保存交易所数据到云端
 local function SaveListings(callback)
-    if not clientCloud then
+    local cloud = GetCloud()
+    if not cloud then
         if callback then callback(false) end
         return
     end
     local content = SerializeListings(listings_)
-    clientCloud:Set(TRADE_CLOUD_KEY, content, {
+    cloud:Set(TRADE_CLOUD_KEY, content, {
         ok = function()
             print("[TradeUI] 保存交易所数据成功")
             if callback then callback(true) end
