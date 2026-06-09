@@ -37,6 +37,7 @@ local CATEGORIES = {
     { id = "dungeons", name = "副本" },
     { id = "npcs", name = "NPC" },
     { id = "giftpacks", name = "礼包" },
+    { id = "realms", name = "境界管理" },
     { id = "generator", name = "一键生成" },
 }
 
@@ -326,6 +327,50 @@ local function SaveCategoryToCloud(category)
         content = IniParser.Serialize(sections)
         SaveConfigToCloud("系统配置/giftpacks.ini", content, function(ok)
             ShowMsg(ok and "礼包配置已保存到云端" or "保存失败")
+        end)
+    elseif category == "realms" then
+        local sections = {}
+        for _, data in ipairs(DataManager.realms) do
+            sections[data.name] = {
+                ["名称"] = data.name,
+                ["阶段"] = tostring(data.stage),
+                ["层数"] = tostring(data.layers),
+                ["描述"] = data.desc or "",
+                ["突破材料"] = data.breakthrough_material or "",
+                ["突破数量"] = tostring(data.breakthrough_count or 0),
+                ["提升材料"] = data.upgrade_material or "",
+                ["提升数量"] = tostring(data.upgrade_count or 0),
+                ["层经验"] = tostring(data.layer_exp or "100"),
+                ["攻击加成"] = tostring(data.atk_bonus or "0"),
+                ["防御加成"] = tostring(data.def_bonus or "0"),
+                ["生命加成"] = tostring(data.hp_bonus or "0"),
+            }
+        end
+        content = IniParser.Serialize(sections)
+        SaveConfigToCloud("系统配置/realms.ini", content, function(ok)
+            ShowMsg(ok and "境界配置已保存到云端" or "保存失败")
+        end)
+    elseif category == "realm_pills" then
+        local sections = {}
+        for id, data in pairs(DataManager.realmPills) do
+            sections[id] = {
+                ["名称"] = data.name or id,
+                ["描述"] = data.desc or "",
+                ["数值"] = tostring(data.value or "0"),
+            }
+        end
+        content = IniParser.Serialize(sections)
+        -- 同步注入 items
+        for id, pill in pairs(DataManager.realmPills) do
+            DataManager.items[id] = {
+                name = pill.name,
+                type = "境界经验",
+                value = pill.value,
+                desc = pill.desc,
+            }
+        end
+        SaveConfigToCloud("系统配置/realm_pills.ini", content, function(ok)
+            ShowMsg(ok and "境界经验丹配置已保存到云端" or "保存失败")
         end)
     elseif category == "game_config" then
         local gc = DataManager.gameConfig
@@ -3575,6 +3620,187 @@ local function DeployAll()
     return changes
 end
 
+--- 渲染境界管理面板
+local function RenderRealms()
+    ClearContent()
+    contentPanel_:AddChild(CreateSearchBar("搜索境界名...", function() RenderRealms() end))
+    local count = #DataManager.realms
+    ShowMsg("共 " .. count .. " 个境界")
+
+    for idx, data in ipairs(DataManager.realms) do
+        if not MatchSearch(data.name) then goto continue_realms end
+        local subtext = "阶段:" .. data.stage .. " 层数:" .. data.layers
+            .. " 层经验:" .. (data.layer_exp or "100")
+            .. " 攻:" .. (data.atk_bonus or "0")
+            .. " 防:" .. (data.def_bonus or "0")
+            .. " 血:" .. (data.hp_bonus or "0")
+        local row = CreateListRow(
+            "[" .. data.stage .. "] " .. data.name,
+            subtext,
+            function()
+                ShowEditDialog("编辑境界 - " .. data.name, {
+                    { label = "名称", key = "name", value = data.name },
+                    { label = "阶段(排序)", key = "stage", value = tostring(data.stage) },
+                    { label = "层数", key = "layers", value = tostring(data.layers) },
+                    { label = "描述", key = "desc", value = data.desc or "", opts = { width = 220 } },
+                    { label = "每层经验", key = "layer_exp", value = tostring(data.layer_exp or "100") },
+                    { label = "攻击加成(每层)", key = "atk_bonus", value = tostring(data.atk_bonus or "0") },
+                    { label = "防御加成(每层)", key = "def_bonus", value = tostring(data.def_bonus or "0") },
+                    { label = "生命加成(每层)", key = "hp_bonus", value = tostring(data.hp_bonus or "0") },
+                    { label = "提升材料", key = "upgrade_material", value = data.upgrade_material or "" },
+                    { label = "提升数量(每层)", key = "upgrade_count", value = tostring(data.upgrade_count or 0) },
+                    { label = "突破材料", key = "breakthrough_material", value = data.breakthrough_material or "" },
+                    { label = "突破数量", key = "breakthrough_count", value = tostring(data.breakthrough_count or 0) },
+                }, function(v)
+                    data.name = v.name or data.name
+                    data.stage = tonumber(v.stage) or data.stage
+                    data.layers = tonumber(v.layers) or data.layers
+                    data.desc = v.desc or ""
+                    data.layer_exp = v.layer_exp or "100"
+                    data.atk_bonus = v.atk_bonus or "0"
+                    data.def_bonus = v.def_bonus or "0"
+                    data.hp_bonus = v.hp_bonus or "0"
+                    data.upgrade_material = v.upgrade_material or ""
+                    data.upgrade_count = tonumber(v.upgrade_count) or 0
+                    data.breakthrough_material = v.breakthrough_material or ""
+                    data.breakthrough_count = tonumber(v.breakthrough_count) or 0
+                    -- 重建索引
+                    table.sort(DataManager.realms, function(a, b) return a.stage < b.stage end)
+                    DataManager.realmsByStage = {}
+                    for _, r in ipairs(DataManager.realms) do
+                        DataManager.realmsByStage[r.stage] = r
+                    end
+                    SaveCategoryToCloud("realms")
+                    CloseDialog()
+                    RenderRealms()
+                end)
+            end, idx, function()
+                -- 删除境界
+                for i, r in ipairs(DataManager.realms) do
+                    if r == data then
+                        table.remove(DataManager.realms, i)
+                        break
+                    end
+                end
+                DataManager.realmsByStage = {}
+                for _, r in ipairs(DataManager.realms) do
+                    DataManager.realmsByStage[r.stage] = r
+                end
+                SaveCategoryToCloud("realms")
+                RenderRealms()
+            end)
+        contentPanel_:AddChild(row)
+        ::continue_realms::
+    end
+
+    contentPanel_:AddChild(UI.Button {
+        text = "+ 添加境界",
+        variant = "primary", width = 120, marginTop = 8, marginLeft = 12,
+        onClick = function()
+            local nextStage = #DataManager.realms + 1
+            ShowEditDialog("添加境界", {
+                { label = "名称", key = "name", value = "", opts = { placeholder = "如：渡劫期" } },
+                { label = "阶段(排序)", key = "stage", value = tostring(nextStage) },
+                { label = "层数", key = "layers", value = "9" },
+                { label = "描述", key = "desc", value = "", opts = { width = 220 } },
+                { label = "每层经验", key = "layer_exp", value = "100" },
+                { label = "攻击加成(每层)", key = "atk_bonus", value = "10" },
+                { label = "防御加成(每层)", key = "def_bonus", value = "5" },
+                { label = "生命加成(每层)", key = "hp_bonus", value = "100" },
+                { label = "提升材料", key = "upgrade_material", value = "灵石碎片" },
+                { label = "提升数量(每层)", key = "upgrade_count", value = "10" },
+                { label = "突破材料", key = "breakthrough_material", value = "灵石" },
+                { label = "突破数量", key = "breakthrough_count", value = "100" },
+            }, function(v)
+                if not v.name or v.name == "" then return end
+                local newRealm = {
+                    name = v.name,
+                    stage = tonumber(v.stage) or nextStage,
+                    layers = tonumber(v.layers) or 9,
+                    desc = v.desc or "",
+                    layer_exp = v.layer_exp or "100",
+                    atk_bonus = v.atk_bonus or "0",
+                    def_bonus = v.def_bonus or "0",
+                    hp_bonus = v.hp_bonus or "0",
+                    upgrade_material = v.upgrade_material or "",
+                    upgrade_count = tonumber(v.upgrade_count) or 0,
+                    breakthrough_material = v.breakthrough_material or "",
+                    breakthrough_count = tonumber(v.breakthrough_count) or 0,
+                }
+                table.insert(DataManager.realms, newRealm)
+                table.sort(DataManager.realms, function(a, b) return a.stage < b.stage end)
+                DataManager.realmsByStage = {}
+                for _, r in ipairs(DataManager.realms) do
+                    DataManager.realmsByStage[r.stage] = r
+                end
+                SaveCategoryToCloud("realms")
+                CloseDialog()
+                RenderRealms()
+            end)
+        end,
+    })
+
+    -- =============== 境界经验丹管理区域 ===============
+    contentPanel_:AddChild(UI.Panel {
+        width = "100%", height = 1, backgroundColor = { 80, 70, 120, 200 }, marginTop = 12, marginBottom = 4,
+    })
+    contentPanel_:AddChild(UI.Label {
+        text = "境界经验丹配置",
+        fontSize = 14, fontColor = { 200, 180, 255, 255 },
+        marginLeft = 12, marginBottom = 4,
+    })
+
+    local pillIdx = 0
+    for id, pill in pairs(DataManager.realmPills) do
+        pillIdx = pillIdx + 1
+        local row = CreateListRow(
+            pill.name,
+            "经验值:" .. (pill.value or "0") .. "  " .. (pill.desc or ""),
+            function()
+                ShowEditDialog("编辑经验丹 - " .. id, {
+                    { label = "名称", key = "name", value = pill.name },
+                    { label = "描述", key = "desc", value = pill.desc or "", opts = { width = 220 } },
+                    { label = "经验数值", key = "value", value = tostring(pill.value or "0") },
+                }, function(v)
+                    pill.name = v.name or pill.name
+                    pill.desc = v.desc or ""
+                    pill.value = v.value or "0"
+                    SaveCategoryToCloud("realm_pills")
+                    CloseDialog()
+                    RenderRealms()
+                end)
+            end, pillIdx, function()
+                DataManager.realmPills[id] = nil
+                DataManager.items[id] = nil
+                SaveCategoryToCloud("realm_pills")
+                RenderRealms()
+            end)
+        contentPanel_:AddChild(row)
+    end
+
+    contentPanel_:AddChild(UI.Button {
+        text = "+ 添加经验丹",
+        variant = "primary", width = 130, marginTop = 8, marginLeft = 12,
+        onClick = function()
+            ShowEditDialog("添加境界经验丹", {
+                { label = "名称(ID)", key = "id", value = "", opts = { placeholder = "如：极品经验丹" } },
+                { label = "描述", key = "desc", value = "", opts = { width = 220 } },
+                { label = "经验数值", key = "value", value = "500" },
+            }, function(v)
+                if not v.id or v.id == "" then return end
+                DataManager.realmPills[v.id] = {
+                    name = v.id,
+                    desc = v.desc or "",
+                    value = v.value or "0",
+                }
+                SaveCategoryToCloud("realm_pills")
+                CloseDialog()
+                RenderRealms()
+            end)
+        end,
+    })
+end
+
 --- 渲染一键生成面板
 local function RenderGenerator()
     ClearContent()
@@ -4085,6 +4311,7 @@ local function RenderCategory(catId)
     elseif catId == "dungeons" then RenderDungeons()
     elseif catId == "npcs" then RenderNPCs()
     elseif catId == "giftpacks" then RenderGiftPacks()
+    elseif catId == "realms" then RenderRealms()
     elseif catId == "generator" then RenderGenerator()
     end
 end

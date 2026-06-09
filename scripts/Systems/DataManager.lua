@@ -38,6 +38,9 @@ DataManager.quests = {}
 DataManager.shops = {}
 DataManager.dungeons = {}
 DataManager.giftpacks = {}
+DataManager.realms = {}       -- 境界配置列表（按阶段排序）
+DataManager.realmsByStage = {} -- 按阶段索引 { [阶段数字] = realmData }
+DataManager.realmPills = {}   -- 境界经验丹配置 { [名称] = { name, desc, value } }
 DataManager.admins = {}  -- 管理员列表 { [username] = true }
 DataManager.leaderboards = {}
 DataManager.rankingData = {}  -- 所有玩家的排行数据 { [玩家名] = { 名称=xx, 等级=xx, ... } }
@@ -293,6 +296,56 @@ local function ParseGiftPacks(sections)
     return packs
 end
 
+--- 解析 realms.ini → realms 表（按阶段排序的列表）
+local function ParseRealms(sections)
+    local realms = {}
+    for sectionName, data in pairs(sections) do
+        local entry = {
+            name = data["名称"] or sectionName,
+            stage = tonumber(data["阶段"]) or 1,
+            layers = tonumber(data["层数"]) or 9,
+            desc = data["描述"] or "",
+            breakthrough_material = data["突破材料"] or "",
+            breakthrough_count = tonumber(data["突破数量"]) or 0,
+            upgrade_material = data["提升材料"] or "",
+            upgrade_count = tonumber(data["提升数量"]) or 0,
+            layer_exp = data["层经验"] or "100",
+            atk_bonus = data["攻击加成"] or "0",
+            def_bonus = data["防御加成"] or "0",
+            hp_bonus = data["生命加成"] or "0",
+        }
+        table.insert(realms, entry)
+    end
+    -- 按阶段排序
+    table.sort(realms, function(a, b) return a.stage < b.stage end)
+    return realms
+end
+
+--- 解析 realm_pills.ini → realmPills 表
+local function ParseRealmPills(sections)
+    local pills = {}
+    for sectionName, data in pairs(sections) do
+        pills[sectionName] = {
+            name = data["名称"] or sectionName,
+            desc = data["描述"] or "",
+            value = data["数值"] or "0",
+        }
+    end
+    return pills
+end
+
+--- 将境界经验丹注入 items 表（类型固定为"境界经验"）
+local function InjectRealmPillsToItems()
+    for id, pill in pairs(DataManager.realmPills) do
+        DataManager.items[id] = {
+            name = pill.name,
+            type = "境界经验",
+            value = pill.value,
+            desc = pill.desc,
+        }
+    end
+end
+
 --- 解析 leaderboards.ini → leaderboards 表
 local function ParseLeaderboards(sections)
     local boards = {}
@@ -362,6 +415,18 @@ local function LoadLocalDefaults()
     if ConfigData.giftpacks then
         DataManager.giftpacks = ParseGiftPacks(IniParser.Parse(ConfigData.giftpacks))
     end
+    if ConfigData.realms then
+        DataManager.realms = ParseRealms(IniParser.Parse(ConfigData.realms))
+        -- 构建阶段索引
+        DataManager.realmsByStage = {}
+        for _, r in ipairs(DataManager.realms) do
+            DataManager.realmsByStage[r.stage] = r
+        end
+    end
+    if ConfigData.realm_pills then
+        DataManager.realmPills = ParseRealmPills(IniParser.Parse(ConfigData.realm_pills))
+        InjectRealmPillsToItems()
+    end
 end
 
 --- 打印当前系统数据统计
@@ -389,6 +454,7 @@ local SYSTEM_CLOUD_KEYS = {
     "系统配置/dungeons.ini",
     "系统配置/npcs.ini",
     "系统配置/giftpacks.ini",
+    "系统配置/realm_pills.ini",
 }
 
 --- 延迟加载的键（打开对应面板时才拉取，减少启动压力）
@@ -487,6 +553,13 @@ function DataManager.LoadSystemData(callback)
             v = values["系统配置/giftpacks.ini"]
             if v and v ~= "" then
                 DataManager.giftpacks = ParseGiftPacks(IniParser.Parse(v))
+                hasCloud = true
+            end
+            -- realm_pills
+            v = values["系统配置/realm_pills.ini"]
+            if v and v ~= "" then
+                DataManager.realmPills = ParseRealmPills(IniParser.Parse(v))
+                InjectRealmPillsToItems()
                 hasCloud = true
             end
             -- leaderboards/ranking_data/chat_messages 改为按需加载，不在启动时拉取
@@ -603,6 +676,9 @@ function DataManager.CreateNewPlayer(username, charName)
             def = defaults.def or "3",
             gold = defaults.gold or "50",
             current_map = startMap,
+            realm = "1",  -- 当前境界阶段（从1开始，独立于等级）
+            realm_layer = "1", -- 当前境界层数（小境界，1-9）
+            realm_exp = "0",   -- 当前层修炼经验
         },
         bag = {},       -- { {name="物品名", count=数量}, ... }
         equip = {       -- 装备槽（13部位）
@@ -661,6 +737,9 @@ function DataManager.PlayerDataToFiles(playerData)
         def = "防御力",
         gold = "金币",
         current_map = "当前地图",
+        realm = "境界",
+        realm_layer = "境界层",
+        realm_exp = "境界经验",
     }
     for k, v in pairs(playerData.status) do
         local zhKey = statusMap[k] or k
@@ -773,6 +852,9 @@ function DataManager.FilesToPlayerData(fileMap)
         ["防御力"] = "def",
         ["金币"] = "gold",
         ["当前地图"] = "current_map",
+        ["境界"] = "realm",
+        ["境界层"] = "realm_layer",
+        ["境界经验"] = "realm_exp",
     }
 
     -- 账号配置已集中存储，从 currentAccount/currentPassword 获取
@@ -1842,6 +1924,7 @@ function DataManager.SendChatMessage(content, callback)
 
             -- 限制消息数量
             while #DataManager.chatMessages > MAX_CHAT_MESSAGES do
+                ---@diagnostic disable-next-line: param-type-mismatch
                 table.remove(DataManager.chatMessages, 1)
             end
 
@@ -1887,6 +1970,7 @@ function DataManager.SendChatMessage(content, callback)
                 time = os.date("%m-%d %H:%M"),
             })
             while #DataManager.chatMessages > MAX_CHAT_MESSAGES do
+                ---@diagnostic disable-next-line: param-type-mismatch
                 table.remove(DataManager.chatMessages, 1)
             end
             local sections = {}
@@ -1939,6 +2023,107 @@ function DataManager.RefreshChatMessages(callback)
             if callback then callback() end
         end,
     })
+end
+
+--- 获取当前玩家境界数据
+---@return table|nil realmData 当前境界配置
+function DataManager.GetCurrentRealm()
+    local player = DataManager.playerData
+    if not player then return nil end
+    local stage = tonumber(player.status.realm) or 1
+    return DataManager.realmsByStage[stage]
+end
+
+--- 获取下一阶段境界数据（用于突破）
+---@return table|nil realmData 下一境界配置，已是最高则返回 nil
+function DataManager.GetNextRealm()
+    local player = DataManager.playerData
+    if not player then return nil end
+    local stage = tonumber(player.status.realm) or 1
+    return DataManager.realmsByStage[stage + 1]
+end
+
+--- 获取当前层数
+---@return number
+function DataManager.GetRealmLayer()
+    local player = DataManager.playerData
+    if not player then return 1 end
+    return tonumber(player.status.realm_layer) or 1
+end
+
+--- 获取当前层修炼经验
+---@return string
+function DataManager.GetRealmExp()
+    local player = DataManager.playerData
+    if not player then return "0" end
+    return player.status.realm_exp or "0"
+end
+
+--- 判断当前是否处于大境界的最高层（即需要突破才能进入下一大境界）
+---@return boolean
+function DataManager.IsAtMaxLayer()
+    local realm = DataManager.GetCurrentRealm()
+    if not realm then return true end
+    local layer = DataManager.GetRealmLayer()
+    return layer >= realm.layers
+end
+
+--- 获取境界属性加成（基于大境界阶段 + 当前层数的累计加成）
+---@return string atk, string def, string hp
+function DataManager.GetRealmBonus()
+    local player = DataManager.playerData
+    if not player then return "0", "0", "0" end
+    local stage = tonumber(player.status.realm) or 1
+    local layer = tonumber(player.status.realm_layer) or 1
+    local totalAtk = "0"
+    local totalDef = "0"
+    local totalHp = "0"
+    -- 累计所有已过境界的全层加成
+    for i = 1, stage - 1 do
+        local r = DataManager.realmsByStage[i]
+        if r then
+            local layers = r.layers or 9
+            for _ = 1, layers do
+                totalAtk = BigNum.add(totalAtk, r.atk_bonus or "0")
+                totalDef = BigNum.add(totalDef, r.def_bonus or "0")
+                totalHp = BigNum.add(totalHp, r.hp_bonus or "0")
+            end
+        end
+    end
+    -- 当前境界已达到的层数加成
+    local curRealm = DataManager.realmsByStage[stage]
+    if curRealm then
+        for _ = 1, layer do
+            totalAtk = BigNum.add(totalAtk, curRealm.atk_bonus or "0")
+            totalDef = BigNum.add(totalDef, curRealm.def_bonus or "0")
+            totalHp = BigNum.add(totalHp, curRealm.hp_bonus or "0")
+        end
+    end
+    return totalAtk, totalDef, totalHp
+end
+
+--- 获取指定阶段的境界名称
+---@param stage number|string
+---@return string
+function DataManager.GetRealmName(stage)
+    local s = tonumber(stage) or 1
+    local realm = DataManager.realmsByStage[s]
+    if realm then return realm.name end
+    return "未知"
+end
+
+--- 获取完整境界显示名（如"练气期三层"）
+---@return string
+function DataManager.GetRealmFullName()
+    local player = DataManager.playerData
+    if not player then return "未知" end
+    local stage = tonumber(player.status.realm) or 1
+    local layer = tonumber(player.status.realm_layer) or 1
+    local realm = DataManager.realmsByStage[stage]
+    if not realm then return "未知" end
+    local layerNames = { "一", "二", "三", "四", "五", "六", "七", "八", "九" }
+    local layerStr = layerNames[layer] or tostring(layer)
+    return realm.name .. layerStr .. "层"
 end
 
 return DataManager

@@ -75,15 +75,21 @@ function StatusUI.Render(parent)
     local buffAtk = BagUI.GetBuffValue(player, "攻击")
     local buffDef = BagUI.GetBuffValue(player, "防御")
 
-    -- 攻击/防御总加成文字（装备和buff加成是小数值，用普通number）
-    local atkBonus = equipAtk + buffAtk
-    local defBonus = equipDef + buffDef
-    local atkTotal = BigNum.add(s.atk or "0", tostring(atkBonus))
+    -- 境界加成
+    local realmAtk, realmDef, _ = DataManager.GetRealmBonus()
+
+    -- 攻击/防御总加成文字
+    local atkBonusNum = equipAtk + buffAtk
+    local atkBonusTotal = BigNum.add(tostring(atkBonusNum), realmAtk)
+    local atkTotal = BigNum.add(s.atk or "0", atkBonusTotal)
     local atkStr = NumFormat.Short(atkTotal)
-    if atkBonus > 0 then atkStr = atkStr .. " (+" .. NumFormat.Short(tostring(atkBonus)) .. ")" end
-    local defTotal = BigNum.add(s.def or "0", tostring(defBonus))
+    if BigNum.gt(atkBonusTotal, "0") then atkStr = atkStr .. " (+" .. NumFormat.Short(atkBonusTotal) .. ")" end
+
+    local defBonusNum = equipDef + buffDef
+    local defBonusTotal = BigNum.add(tostring(defBonusNum), realmDef)
+    local defTotal = BigNum.add(s.def or "0", defBonusTotal)
     local defStr = NumFormat.Short(defTotal)
-    if defBonus > 0 then defStr = defStr .. " (+" .. NumFormat.Short(tostring(defBonus)) .. ")" end
+    if BigNum.gt(defBonusTotal, "0") then defStr = defStr .. " (+" .. NumFormat.Short(defBonusTotal) .. ")" end
 
     -- 创建倍率标签（保留引用用于动态更新）
     expRateLabel_ = UI.Label { text = calcRateStr(player, "经验倍率"), fontSize = 14, fontColor = { 220, 220, 240, 255 } }
@@ -99,6 +105,7 @@ function StatusUI.Render(parent)
             UI.Panel { width = "100%", height = 1, backgroundColor = { 50, 40, 70, 255 } },
 
             StatusUI.StatRow("角色名", s.name or "无名"),
+            StatusUI.StatRow("境界", DataManager.GetRealmFullName()),
             StatusUI.StatRow("等级", NumFormat.Short(level)),
             StatusUI.StatRow("经验", NumFormat.Short(curExp) .. " / " .. NumFormat.Short(needExp)),
 

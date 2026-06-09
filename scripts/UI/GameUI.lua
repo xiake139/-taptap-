@@ -35,6 +35,7 @@ local EquipUI = nil
 local QuestUI = nil
 local CombatUI = nil
 local DialogUI = nil
+local RealmUI = nil
 
 --- 创建主游戏界面
 ---@return Widget
@@ -182,6 +183,7 @@ function GameUI.Create()
                         justifyContent = "space-around",
                         width = "100%",
                         children = {
+                            UI.Button { text = "境界", variant = "secondary", flexGrow = 1, marginRight = 4, onClick = function() GameUI.ShowPanel("realm") end },
                             UI.Button { text = "副本", variant = "secondary", flexGrow = 1, marginRight = 4, onClick = function() GameUI.ShowPanel("dungeon") end },
                             UI.Button { text = "装备", variant = "secondary", flexGrow = 1, marginRight = 4, onClick = function() GameUI.ShowPanel("equip") end },
                             UI.Button { text = "任务", variant = "secondary", flexGrow = 1, marginRight = 4, onClick = function() GameUI.ShowPanel("quest") end },
@@ -379,6 +381,9 @@ function GameUI.ShowPanel(panelType)
     elseif panelType == "quest" then
         if not QuestUI then QuestUI = require("UI.QuestUI") end
         QuestUI.Render(mainContent_)
+    elseif panelType == "realm" then
+        if not RealmUI then RealmUI = require("UI.RealmUI") end
+        RealmUI.Render(mainContent_)
     elseif panelType == "giftpack" then
         GameUI.RenderGiftPackPanel()
     elseif panelType == "leaderboard" then

@@ -53,17 +53,18 @@ function CombatUI.Render()
     local player = DataManager.playerData
     if not player then return end
 
-    -- 计算玩家总属性（含装备加成 + buff加成）
+    -- 计算玩家总属性（含装备加成 + buff加成 + 境界加成）
     local StatusUI = require("UI.StatusUI")
     local BagUI = require("UI.BagUI")
     local eAtk, eDef, eHp = StatusUI.GetEquipBonus()
     local buffAtk = BagUI.GetBuffValue(player, "攻击")
     local buffDef = BagUI.GetBuffValue(player, "防御")
     local buffHp = BagUI.GetBuffValue(player, "生命上限")
-    local playerAtk = BigNum.add(BigNum.add(player.status.atk or "5", tostring(eAtk)), tostring(buffAtk))
-    local playerDef = BigNum.add(BigNum.add(player.status.def or "3", tostring(eDef)), tostring(buffDef))
+    local rAtk, rDef, rHp = DataManager.GetRealmBonus()
+    local playerAtk = BigNum.add(BigNum.add(BigNum.add(player.status.atk or "5", tostring(eAtk)), tostring(buffAtk)), rAtk)
+    local playerDef = BigNum.add(BigNum.add(BigNum.add(player.status.def or "3", tostring(eDef)), tostring(buffDef)), rDef)
     local playerHp = BigNum.new(player.status.hp or "100")
-    local playerMaxHp = BigNum.add(BigNum.add(player.status.max_hp or "100", tostring(eHp)), tostring(buffHp))
+    local playerMaxHp = BigNum.add(BigNum.add(BigNum.add(player.status.max_hp or "100", tostring(eHp)), tostring(buffHp)), rHp)
 
     -- 战斗日志
     combatLog_ = UI.Panel {
@@ -164,8 +165,9 @@ function CombatUI.DoAttack()
     local eAtk, eDef, _ = StatusUI.GetEquipBonus()
     local buffAtk = BagUI.GetBuffValue(player, "攻击")
     local buffDef = BagUI.GetBuffValue(player, "防御")
-    local playerAtk = BigNum.add(BigNum.add(player.status.atk or "5", tostring(eAtk)), tostring(buffAtk))
-    local playerDef = BigNum.add(BigNum.add(player.status.def or "3", tostring(eDef)), tostring(buffDef))
+    local rAtk2, rDef2, _ = DataManager.GetRealmBonus()
+    local playerAtk = BigNum.add(BigNum.add(BigNum.add(player.status.atk or "5", tostring(eAtk)), tostring(buffAtk)), rAtk2)
+    local playerDef = BigNum.add(BigNum.add(BigNum.add(player.status.def or "3", tostring(eDef)), tostring(buffDef)), rDef2)
 
     -- 玩家攻击怪物
     local dmgToMonster = BigNum.max("1", BigNum.add(BigNum.sub(playerAtk, monsterDef_), tostring(math.random(-2, 3))))
@@ -220,7 +222,8 @@ function CombatUI.UsePotion()
             local BagUI = require("UI.BagUI")
             local _, eDef, _ = StatusUI.GetEquipBonus()
             local buffDef = BagUI.GetBuffValue(player, "防御")
-            local playerDef = BigNum.add(BigNum.add(player.status.def or "3", tostring(eDef)), tostring(buffDef))
+            local _, rDef3, _ = DataManager.GetRealmBonus()
+            local playerDef = BigNum.add(BigNum.add(BigNum.add(player.status.def or "3", tostring(eDef)), tostring(buffDef)), rDef3)
             local dmg = BigNum.max("1", BigNum.add(BigNum.sub(monsterAtk_, playerDef), tostring(math.random(-1, 2))))
             player.status.hp = BigNum.sub(BigNum.new(player.status.hp or "100"), dmg)
             CombatUI.AddCombatLog(monsterName_ .. "趁机攻击，造成 " .. NumFormat.Short(dmg) .. " 伤害")
@@ -312,6 +315,27 @@ function CombatUI.Victory()
                     end
                 end
             end
+        end
+    end
+
+    -- 额外灵石掉落（境界突破材料，所有怪物通用）
+    local realmStoneChance = 15  -- 基础15%概率掉落灵石
+    if mData and tonumber(mData.level or "1") >= 5 then
+        realmStoneChance = 25  -- 5级以上怪物25%概率
+    end
+    if math.random(100) <= realmStoneChance then
+        local stoneName = "灵石"
+        table.insert(drops, stoneName)
+        local found = false
+        for _, bagItem in ipairs(player.bag) do
+            if bagItem.name == stoneName then
+                bagItem.count = BigNum.add(bagItem.count or "0", "1")
+                found = true
+                break
+            end
+        end
+        if not found then
+            table.insert(player.bag, { name = stoneName, count = "1" })
         end
     end
 

@@ -313,6 +313,12 @@ function BagUI.UseItem(index)
         end
     end
 
+    -- 境界经验类：增加修炼经验
+    if itemType:find("境界经验") then
+        player.status.realm_exp = BigNum.add(player.status.realm_exp or "0", val)
+        effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "获得修炼经验 +" .. BigNum.toShort(val)
+    end
+
     if effectMsg == "" then
         effectMsg = "使用成功"
     end
