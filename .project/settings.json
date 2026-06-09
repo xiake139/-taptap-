@@ -23,8 +23,13 @@
   "@runtime": {
     "multiplayer": {
       "enabled": true,
-      "persistent_world": {
-        "enabled": true
+      "background_match": true,
+      "max_players": 4,
+      "match_info": {
+        "desc_name": "free_match_with_ai",
+        "player_number": 1,
+        "immediately_start": true,
+        "match_timeout": 1
       }
     }
   }

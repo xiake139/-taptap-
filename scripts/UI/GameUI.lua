@@ -37,6 +37,7 @@ local CombatUI = nil
 local DialogUI = nil
 local RealmUI = nil
 local TradeUI = nil
+local MailboxUI = nil
 
 --- 创建主游戏界面
 ---@return Widget
@@ -175,8 +176,10 @@ function GameUI.Create()
                     { text = "任务", panel = "quest", variant = "secondary" },
                     { text = "礼包", panel = "giftpack", variant = "secondary" },
                     { text = "交易", panel = "trade", variant = "secondary" },
+                    { text = "邮箱", panel = "mailbox", variant = "secondary" },
                     { text = "排行", panel = "leaderboard", variant = "secondary" },
                     { text = "聊天", panel = "chat", variant = "secondary" },
+                    { text = "退出", panel = "logout", variant = "danger" },
                 }
                 -- 每3个一排
                 local rows = {}
@@ -399,12 +402,22 @@ function GameUI.ShowPanel(panelType)
     elseif panelType == "trade" then
         if not TradeUI then TradeUI = require("UI.TradeUI") end
         TradeUI.Render(mainContent_)
+    elseif panelType == "mailbox" then
+        if not MailboxUI then MailboxUI = require("UI.MailboxUI") end
+        MailboxUI.Render(mainContent_)
     elseif panelType == "giftpack" then
         GameUI.RenderGiftPackPanel()
     elseif panelType == "leaderboard" then
         GameUI.RenderLeaderboardPanel()
     elseif panelType == "chat" then
         GameUI.RenderChatPanel()
+    elseif panelType == "logout" then
+        -- 退出登录：清除数据并返回登录界面
+        DataManager.playerData = nil
+        DataManager.currentAccount = nil
+        DataManager.currentPassword = nil
+        SwitchState("login")
+        return
     end
 end
 

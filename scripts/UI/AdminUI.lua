@@ -38,6 +38,8 @@ local CATEGORIES = {
     { id = "npcs", name = "NPC" },
     { id = "giftpacks", name = "礼包" },
     { id = "realms", name = "境界管理" },
+    { id = "distribute", name = "发放物品" },
+    { id = "chests", name = "宝箱管理" },
     { id = "generator", name = "一键生成" },
 }
 
@@ -3822,6 +3824,403 @@ local function RenderRealms()
     })
 end
 
+--- 前向声明：宝箱管理相关函数（存在循环引用）
+local SaveChestsToCloud
+local RenderChestsList
+local ShowChestEditDialog
+
+--- 渲染发放物品货币面板
+local function RenderDistribute()
+    ClearContent()
+
+    -- 发放模式选择
+    local modeLabel = UI.Label {
+        text = "当前模式：全服发放",
+        fontSize = 13,
+        fontColor = { 100, 200, 255, 255 },
+        marginBottom = 4,
+    }
+    local isGlobal = true
+
+    -- 目标玩家输入
+    local targetPanel, targetField = CreateFormField("目标玩家", "", { placeholder = "输入玩家账号", width = 160 })
+    targetPanel:SetVisible(false)
+
+    -- 发放内容表单
+    local goldPanel, goldField = CreateFormField("金币数量", "0", { placeholder = "0", width = 120 })
+    local itemsPanel, itemsField = CreateFormField("物品列表", "", { placeholder = "物品:数量,物品2:数量", width = 220 })
+    local titlePanel, titleField = CreateFormField("邮件标题", "系统发放", { placeholder = "邮件标题", width = 180 })
+    local contentPanel, contentField = CreateFormField("邮件内容", "管理员发放奖励", { placeholder = "邮件内容", width = 220 })
+
+    local resultLabel = UI.Label {
+        text = "",
+        fontSize = 12,
+        fontColor = { 200, 200, 200, 255 },
+        marginTop = 8,
+        whiteSpace = "normal",
+    }
+
+    contentPanel_:AddChild(UI.Panel {
+        width = "100%",
+        flexDirection = "column",
+        padding = 8,
+        gap = 6,
+        children = {
+            UI.Label { text = "发放物品/货币", fontSize = 16, fontColor = { 255, 200, 100, 255 }, marginBottom = 8 },
+            -- 模式切换
+            UI.Panel {
+                flexDirection = "row",
+                gap = 8,
+                marginBottom = 4,
+                children = {
+                    UI.Button {
+                        text = "全服发放",
+                        variant = "primary",
+                        height = 30,
+                        onClick = function()
+                            isGlobal = true
+                            modeLabel:SetText("当前模式：全服发放")
+                            targetPanel:SetVisible(false)
+                        end,
+                    },
+                    UI.Button {
+                        text = "指定玩家",
+                        variant = "secondary",
+                        height = 30,
+                        onClick = function()
+                            isGlobal = false
+                            modeLabel:SetText("当前模式：指定玩家发放")
+                            targetPanel:SetVisible(true)
+                        end,
+                    },
+                },
+            },
+            modeLabel,
+            targetPanel,
+            UI.Panel { width = "100%", height = 1, backgroundColor = { 50, 40, 70, 255 }, marginTop = 4, marginBottom = 4 },
+            goldPanel,
+            itemsPanel,
+            titlePanel,
+            contentPanel,
+            UI.Button {
+                text = "确认发放",
+                variant = "danger",
+                width = "100%",
+                height = 36,
+                marginTop = 8,
+                onClick = function()
+                    local gold = goldField:GetValue() or "0"
+                    local items = itemsField:GetValue() or ""
+                    local title = titleField:GetValue() or "系统发放"
+                    local mailContent = contentField:GetValue() or ""
+
+                    if gold == "0" and items == "" then
+                        resultLabel:SetText("请填写金币或物品")
+                        resultLabel:SetFontColor({ 255, 100, 100, 255 })
+                        return
+                    end
+
+                    local MailboxUI = require("UI.MailboxUI")
+                    local mailData = {
+                        type = "admin",
+                        title = title,
+                        content = mailContent,
+                        gold = gold,
+                        items = items,
+                        sender = "管理员",
+                    }
+
+                    if isGlobal then
+                        -- 全服发放
+                        resultLabel:SetText("正在发放中...")
+                        resultLabel:SetFontColor({ 255, 200, 100, 255 })
+                        DataManager.GetAllPlayers(function(players)
+                            local accounts = {}
+                            for _, p in ipairs(players) do
+                                table.insert(accounts, p.username)
+                            end
+                            MailboxUI.SendMailBatch(accounts, mailData, function(okCount, failCount)
+                                resultLabel:SetText("全服发放完成！成功 " .. okCount .. " 人，失败 " .. failCount .. " 人")
+                                resultLabel:SetFontColor({ 100, 255, 100, 255 })
+                            end)
+                        end)
+                    else
+                        -- 指定玩家
+                        local target = targetField:GetValue() or ""
+                        if target == "" then
+                            resultLabel:SetText("请输入目标玩家账号")
+                            resultLabel:SetFontColor({ 255, 100, 100, 255 })
+                            return
+                        end
+                        resultLabel:SetText("正在发放...")
+                        resultLabel:SetFontColor({ 255, 200, 100, 255 })
+                        MailboxUI.SendMail(target, mailData, function(ok)
+                            if ok then
+                                resultLabel:SetText("发放成功！已发送邮件给 " .. target)
+                                resultLabel:SetFontColor({ 100, 255, 100, 255 })
+                            else
+                                resultLabel:SetText("发放失败，请检查玩家账号")
+                                resultLabel:SetFontColor({ 255, 100, 100, 255 })
+                            end
+                        end)
+                    end
+                end,
+            },
+            resultLabel,
+        },
+    })
+end
+
+--- 保存宝箱配置到云端
+---@param chests table
+---@param callback fun(boolean)
+SaveChestsToCloud = function(chests, callback)
+    local sections = {}
+    for _, chest in ipairs(chests) do
+        sections[chest.name] = {
+            ["类型"] = chest.type or "固定",
+            ["物品"] = chest.items or "",
+        }
+    end
+    local content = IniParser.Serialize(sections)
+    SaveConfigToCloud("系统配置/chests.ini", content, callback)
+end
+
+--- 显示宝箱编辑弹窗
+---@param chest table|nil 为 nil 则新建
+---@param chests table 完整宝箱列表引用
+ShowChestEditDialog = function(chest, chests)
+    CloseDialog()
+
+    local isNew = (chest == nil)
+    local origName = chest and chest.name or ""
+
+    local namePanel, nameField = CreateFormField("宝箱名称", origName, { placeholder = "输入宝箱名称", width = 160 })
+    local typePanel, typeField = CreateFormField("宝箱类型", chest and chest.type or "固定", { placeholder = "固定 或 随机", width = 120 })
+    local itemsPanel, itemsField = CreateFormField("物品列表", chest and chest.items or "", { placeholder = "物品:数量,物品2:数量", width = 220 })
+
+    local dialogPanel = UI.Panel {
+        position = "absolute",
+        width = "90%",
+        left = "5%",
+        top = 60,
+        backgroundColor = { 30, 25, 50, 250 },
+        borderRadius = 8,
+        padding = 12,
+        flexDirection = "column",
+        gap = 8,
+        children = {
+            UI.Label {
+                text = isNew and "添加宝箱" or ("编辑: " .. origName),
+                fontSize = 14,
+                fontColor = { 255, 220, 100, 255 },
+            },
+            namePanel,
+            typePanel,
+            itemsPanel,
+            UI.Panel {
+                flexDirection = "row",
+                gap = 8,
+                marginTop = 8,
+                children = {
+                    UI.Button {
+                        text = "保存",
+                        variant = "primary",
+                        height = 30,
+                        onClick = function()
+                            local newName = nameField:GetValue() or ""
+                            local newType = typeField:GetValue() or "固定"
+                            local newItems = itemsField:GetValue() or ""
+
+                            if newName == "" then
+                                ShowMsg("宝箱名称不能为空")
+                                return
+                            end
+
+                            -- 类型校验
+                            if newType ~= "固定" and newType ~= "随机" then
+                                newType = "固定"
+                            end
+
+                            if isNew then
+                                table.insert(chests, { name = newName, type = newType, items = newItems })
+                            else
+                                -- 更新
+                                for _, c in ipairs(chests) do
+                                    if c.name == origName then
+                                        c.name = newName
+                                        c.type = newType
+                                        c.items = newItems
+                                        break
+                                    end
+                                end
+                            end
+
+                            SaveChestsToCloud(chests, function(ok)
+                                ShowMsg(ok and "宝箱保存成功" or "保存失败")
+                                CloseDialog()
+                                RenderChestsList(chests)
+                            end)
+                        end,
+                    },
+                    UI.Button {
+                        text = "取消",
+                        variant = "secondary",
+                        height = 30,
+                        onClick = function() CloseDialog() end,
+                    },
+                },
+            },
+        },
+    }
+
+    editDialog_ = dialogPanel
+    if rootPanel_ then
+        rootPanel_:AddChild(dialogPanel)
+    end
+end
+
+--- 渲染宝箱列表
+---@param chests table
+RenderChestsList = function(chests)
+    if not contentPanel_ then return end
+    contentPanel_:ClearChildren()
+
+    contentPanel_:AddChild(UI.Label {
+        text = "宝箱管理",
+        fontSize = 16,
+        fontColor = { 255, 200, 100, 255 },
+        marginBottom = 8,
+    })
+
+    -- 添加宝箱按钮
+    contentPanel_:AddChild(UI.Button {
+        text = "+ 添加宝箱",
+        variant = "primary",
+        height = 32,
+        marginBottom = 8,
+        onClick = function()
+            ShowChestEditDialog(nil, chests)
+        end,
+    })
+
+    if #chests == 0 then
+        contentPanel_:AddChild(UI.Label {
+            text = "暂无宝箱配置",
+            fontSize = 13,
+            fontColor = { 150, 150, 170, 255 },
+            marginTop = 12,
+        })
+        return
+    end
+
+    -- 列表
+    for i, chest in ipairs(chests) do
+        local typeColor = (chest.type == "随机") and { 200, 100, 255, 255 } or { 100, 200, 255, 255 }
+        contentPanel_:AddChild(UI.Panel {
+            width = "100%",
+            backgroundColor = (i % 2 == 0) and { 35, 30, 55, 200 } or { 25, 20, 45, 200 },
+            borderRadius = 4,
+            padding = 8,
+            marginBottom = 4,
+            flexDirection = "column",
+            gap = 2,
+            children = {
+                UI.Panel {
+                    flexDirection = "row",
+                    width = "100%",
+                    justifyContent = "space-between",
+                    alignItems = "center",
+                    children = {
+                        UI.Panel {
+                            flexDirection = "row",
+                            gap = 8,
+                            alignItems = "center",
+                            children = {
+                                UI.Label { text = chest.name, fontSize = 13, fontColor = { 220, 200, 150, 255 } },
+                                UI.Label { text = "[" .. chest.type .. "]", fontSize = 11, fontColor = typeColor },
+                            },
+                        },
+                        UI.Panel {
+                            flexDirection = "row",
+                            gap = 4,
+                            children = {
+                                UI.Button {
+                                    text = "编辑",
+                                    variant = "secondary",
+                                    height = 24,
+                                    fontSize = 11,
+                                    onClick = function() ShowChestEditDialog(chest, chests) end,
+                                },
+                                UI.Button {
+                                    text = "删除",
+                                    variant = "danger",
+                                    height = 24,
+                                    fontSize = 11,
+                                    onClick = function()
+                                        for j, c in ipairs(chests) do
+                                            if c.name == chest.name then
+                                                table.remove(chests, j)
+                                                break
+                                            end
+                                        end
+                                        SaveChestsToCloud(chests, function(ok)
+                                            ShowMsg(ok and "删除成功" or "删除失败")
+                                            RenderChestsList(chests)
+                                        end)
+                                    end,
+                                },
+                            },
+                        },
+                    },
+                },
+                UI.Label {
+                    text = "物品: " .. chest.items,
+                    fontSize = 11,
+                    fontColor = { 180, 180, 200, 255 },
+                    whiteSpace = "normal",
+                },
+            },
+        })
+    end
+end
+
+--- 渲染宝箱管理面板
+local function RenderChests()
+    ClearContent()
+    ShowMsg("正在加载宝箱配置...")
+
+    -- 从云端加载宝箱配置
+    local cloud = DataManager.GetCloudProvider()
+    if not cloud then
+        ShowMsg("云存储不可用")
+        return
+    end
+
+    local CHESTS_KEY = "系统配置/chests.ini"
+    cloud:Get(CHESTS_KEY, {
+        ok = function(values)
+            local raw = values[CHESTS_KEY]
+            local chests = {}
+            if raw and raw ~= "" then
+                local sections = IniParser.Parse(raw)
+                for name, data in pairs(sections) do
+                    table.insert(chests, {
+                        name = name,
+                        type = data["类型"] or "固定",
+                        items = data["物品"] or "",
+                    })
+                end
+            end
+            table.sort(chests, function(a, b) return a.name < b.name end)
+            RenderChestsList(chests)
+        end,
+        error = function(code, reason)
+            ShowMsg("加载宝箱配置失败: " .. tostring(reason))
+        end,
+    })
+end
+
 --- 渲染一键生成面板
 local function RenderGenerator()
     ClearContent()
@@ -4333,6 +4732,8 @@ local function RenderCategory(catId)
     elseif catId == "npcs" then RenderNPCs()
     elseif catId == "giftpacks" then RenderGiftPacks()
     elseif catId == "realms" then RenderRealms()
+    elseif catId == "distribute" then RenderDistribute()
+    elseif catId == "chests" then RenderChests()
     elseif catId == "generator" then RenderGenerator()
     end
 end

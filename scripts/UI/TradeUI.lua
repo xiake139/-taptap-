@@ -224,7 +224,6 @@ function TradeUI.Render(parent)
     parentRef_ = parent
     -- 先加载最新数据再渲染，加载完后自动领取待领取收入
     LoadListings(function()
-        CollectPendingIncome()
         TradeUI.Refresh()
     end)
     -- 先显示加载中
@@ -904,25 +903,30 @@ function TradeUI.BuyListing(index)
         table.insert(player.bag, { name = entry.item_name, count = tostring(entry.item_count) })
     end
 
-    -- 为卖家添加待领取收入
-    local incomeEntry = {
-        recipient = entry.seller,
-        from_buyer = currentUser,
-        item_sold = entry.item_name .. " x" .. tostring(entry.item_count),
+    -- 发送邮件通知卖家
+    local MailboxUI = require("UI.MailboxUI")
+    local mailData = {
+        type = "trade",
+        title = "交易成功",
+        sender = currentUser,
         timestamp = os.time(),
     }
     if entry.price_type == "gold" then
-        incomeEntry.type = "gold"
-        incomeEntry.gold = entry.price_gold
-        incomeEntry.item_name = ""
-        incomeEntry.item_count = 0
+        mailData.content = currentUser .. " 购买了你的 " .. entry.item_name .. " x" .. tostring(entry.item_count)
+        mailData.gold = entry.price_gold
+        mailData.items = ""
     else
-        incomeEntry.type = "item"
-        incomeEntry.gold = "0"
-        incomeEntry.item_name = entry.price_item
-        incomeEntry.item_count = entry.price_item_count
+        mailData.content = currentUser .. " 用 " .. entry.price_item .. " x" .. tostring(entry.price_item_count) .. " 换购了你的 " .. entry.item_name .. " x" .. tostring(entry.item_count)
+        mailData.gold = "0"
+        mailData.items = entry.price_item .. ":" .. tostring(entry.price_item_count)
     end
-    table.insert(pendingIncome_, incomeEntry)
+    MailboxUI.SendMail(entry.seller, mailData, function(ok)
+        if ok then
+            print("[TradeUI] 交易邮件已发送给卖家: " .. entry.seller)
+        else
+            print("[TradeUI] 交易邮件发送失败")
+        end
+    end)
 
     -- 从交易列表移除
     table.remove(listings_, index)

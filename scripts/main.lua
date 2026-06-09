@@ -42,6 +42,9 @@ function Start()
     graphics.windowTitle = "创世修仙"
     print("[Main] 游戏启动...")
 
+    -- 初始化 UI
+    InitUI()
+
     -- 如果是联网模式，初始化 CloudProxy
     if IsNetworkMode() then
         print("[Main] 检测到联网模式，初始化 CloudProxy...")
@@ -49,10 +52,10 @@ function Start()
         CloudProxy.Init()
         -- 将 CloudProxy 设置到 DataManager
         DataManager.SetCloudProvider(CloudProxy)
-    end
 
-    -- 初始化 UI
-    InitUI()
+        -- 后台匹配模式：订阅 ServerReady 事件（服务器连接就绪后触发）
+        SubscribeToEvent("ServerReady", "HandleServerReady")
+    end
 
     -- 加载系统数据（异步，完成后显示登录界面）
     DataManager.LoadSystemData(function()
@@ -61,6 +64,11 @@ function Start()
 
     SubscribeToEvent("KeyDown", "HandleKeyDown")
     SubscribeToEvent("Update", "HandleUpdate")
+end
+
+--- 后台匹配模式下服务器连接就绪回调
+function HandleServerReady(eventType, eventData)
+    print("[Main] ServerReady - 服务器连接已就绪")
 end
 
 local buffCheckTimer_ = 0

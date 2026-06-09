@@ -10,6 +10,9 @@ local BagUI = {}
 local GameUI = nil  -- 延迟加载
 local EquipUI = nil -- 延迟加载
 
+--- 宝箱名称缓存（从云端加载后缓存，避免每次渲染都异步查询）
+local chestNamesCache_ = nil  -- nil=未加载, table=已加载的宝箱名称集合
+
 --- 中文部位→英文key映射
 local SLOT_CN_TO_KEY = {
     ["武器"] = "weapon", ["头盔"] = "helmet", ["铠甲"] = "armor", ["护腕"] = "bracer",
@@ -20,11 +23,70 @@ local SLOT_CN_TO_KEY = {
 
 local parentRef_ = nil
 
+--- 加载宝箱名称缓存
+---@param callback fun()|nil 加载完成回调
+function BagUI.LoadChestNames(callback)
+    local IniParser = require("Utils.IniParser")
+    local cloud = DataManager.GetCloudProvider()
+    if not cloud then
+        chestNamesCache_ = {}
+        if callback then callback() end
+        return
+    end
+
+    local CHESTS_KEY = "系统配置/chests.ini"
+    cloud:Get(CHESTS_KEY, {
+        ok = function(values)
+            local raw = values[CHESTS_KEY]
+            chestNamesCache_ = {}
+            if raw and raw ~= "" then
+                local sections = IniParser.Parse(raw)
+                for name, _ in pairs(sections) do
+                    chestNamesCache_[name] = true
+                end
+            end
+            print("[BagUI] 宝箱缓存已加载，共 " .. tostring(BagUI.GetChestCount()) .. " 种宝箱")
+            if callback then callback() end
+        end,
+        error = function()
+            chestNamesCache_ = {}
+            if callback then callback() end
+        end,
+    })
+end
+
+--- 获取宝箱缓存数量
+function BagUI.GetChestCount()
+    if not chestNamesCache_ then return 0 end
+    local n = 0
+    for _ in pairs(chestNamesCache_) do n = n + 1 end
+    return n
+end
+
+--- 判断物品名是否是宝箱（通过缓存匹配）
+---@param itemName string
+---@return boolean
+function BagUI.IsChest(itemName)
+    if chestNamesCache_ and chestNamesCache_[itemName] then
+        return true
+    end
+    return false
+end
+
 --- 渲染背包面板
 ---@param parent Widget
 function BagUI.Render(parent)
     parentRef_ = parent
-    BagUI.Refresh()
+    -- 首次打开背包时加载宝箱缓存，加载完后刷新
+    if chestNamesCache_ == nil then
+        BagUI.LoadChestNames(function()
+            BagUI.Refresh()
+        end)
+        -- 先显示一次（无宝箱按钮），等缓存加载后再刷新
+        BagUI.Refresh()
+    else
+        BagUI.Refresh()
+    end
 end
 
 --- 刷新背包显示
@@ -67,6 +129,8 @@ function BagUI.Refresh()
         local itemType = itemData and itemData.type or "材料"
         local isConsumable = itemData and itemType ~= "材料" and not itemData.slot
         local isEquip = itemData and itemData.slot
+        -- 宝箱判断：type含"宝箱"，或物品名匹配宝箱配置缓存
+        local isChest = (itemType:find("宝箱")) or BagUI.IsChest(item.name)
 
         local btnChildren = {}
 
@@ -83,7 +147,14 @@ function BagUI.Refresh()
             })
         end
 
-        if isConsumable then
+        if isChest then
+            table.insert(btnChildren, UI.Button {
+                text = "打开",
+                variant = "success",
+                height = 26,
+                onClick = function() BagUI.OpenChest(i, item.name) end,
+            })
+        elseif isConsumable then
             table.insert(btnChildren, UI.Button {
                 text = "使用",
                 variant = "success",
@@ -245,6 +316,13 @@ function BagUI.UseItem(index)
     if not itemData then return end
 
     local itemType = itemData.type or "材料"
+
+    -- 宝箱类：异步加载配置后开箱
+    if itemType:find("宝箱") or BagUI.IsChest(item.name) then
+        BagUI.OpenChest(index, item.name)
+        return
+    end
+
     local val = itemData.value or "0"  -- 保留字符串，大数安全
     local valNum = tonumber(val) or 0  -- 用于倍率等小数场景
     local duration = tonumber(itemData.duration) or 0  -- 分钟，0=永久
@@ -438,6 +516,135 @@ function BagUI.SellItem(index)
     print("[BagUI] 卖出 " .. item.name .. "，获得 " .. sellPrice .. " 金币")
     DataManager.SaveToCloud(player)
     BagUI.Refresh()
+end
+
+--- 开启宝箱（异步加载宝箱配置后处理）
+---@param index number 背包中物品索引
+---@param chestName string 宝箱物品名称
+function BagUI.OpenChest(index, chestName)
+    local player = DataManager.playerData
+    if not player then return end
+
+    BagUI.ShowTip("正在开启宝箱...")
+
+    local IniParser = require("Utils.IniParser")
+    local cloud = DataManager.GetCloudProvider()
+    if not cloud then
+        BagUI.ShowTip("云存储不可用，无法开启宝箱")
+        return
+    end
+
+    local CHESTS_KEY = "系统配置/chests.ini"
+    cloud:Get(CHESTS_KEY, {
+        ok = function(values)
+            local raw = values[CHESTS_KEY]
+            if not raw or raw == "" then
+                BagUI.ShowTip("未找到宝箱配置")
+                return
+            end
+
+            local sections = IniParser.Parse(raw)
+            -- 查找匹配的宝箱配置
+            local chestConfig = nil
+            for name, data in pairs(sections) do
+                if name == chestName then
+                    chestConfig = data
+                    break
+                end
+            end
+
+            if not chestConfig then
+                BagUI.ShowTip("未配置此宝箱: " .. chestName)
+                return
+            end
+
+            local chestType = chestConfig["类型"] or "固定"
+            local itemsStr = chestConfig["物品"] or ""
+
+            if itemsStr == "" then
+                BagUI.ShowTip("宝箱为空")
+                return
+            end
+
+            -- 解析物品列表：物品:数量,物品2:数量,...
+            local itemList = {}
+            for entry in itemsStr:gmatch("[^,]+") do
+                entry = entry:match("^%s*(.-)%s*$") -- trim
+                local name, count = entry:match("^(.+):(%d+)$")
+                if name and count then
+                    table.insert(itemList, { name = name, count = count })
+                end
+            end
+
+            if #itemList == 0 then
+                BagUI.ShowTip("宝箱配置格式错误")
+                return
+            end
+
+            -- 确认背包中物品仍然存在
+            local item = player.bag[index]
+            if not item or item.name ~= chestName then
+                BagUI.ShowTip("物品已变化，请重新操作")
+                BagUI.Refresh()
+                return
+            end
+
+            -- 扣除宝箱物品
+            item.count = BigNum.sub(item.count or "1", "1")
+            if BigNum.lte(item.count, "0") then
+                table.remove(player.bag, index)
+            end
+
+            -- 发放奖励
+            local rewards = {}
+            if chestType == "随机" then
+                -- 随机选择一个物品
+                local pick = itemList[math.random(1, #itemList)]
+                table.insert(rewards, pick)
+            else
+                -- 固定：发放全部物品
+                for _, v in ipairs(itemList) do
+                    table.insert(rewards, v)
+                end
+            end
+
+            -- 将奖励添加到背包
+            for _, reward in ipairs(rewards) do
+                local found = false
+                for _, bagItem in ipairs(player.bag) do
+                    if bagItem.name == reward.name then
+                        bagItem.count = BigNum.add(bagItem.count or "0", reward.count)
+                        found = true
+                        break
+                    end
+                end
+                if not found then
+                    table.insert(player.bag, { name = reward.name, count = reward.count })
+                end
+            end
+
+            -- 构造奖励展示信息
+            local rewardMsg = ""
+            for _, r in ipairs(rewards) do
+                if rewardMsg ~= "" then rewardMsg = rewardMsg .. "，" end
+                rewardMsg = rewardMsg .. r.name .. " x" .. r.count
+            end
+
+            print("[BagUI] 开启宝箱 " .. chestName .. "(" .. chestType .. ")，获得: " .. rewardMsg)
+            DataManager.SaveToCloud(player)
+            BagUI.Refresh()
+            BagUI.ShowTip("开启 " .. chestName .. " 获得: " .. rewardMsg)
+
+            -- 通知 GameUI 日志
+            local GameUI = require("UI.GameUI")
+            if GameUI.AddLog then
+                GameUI.AddLog("开启 " .. chestName .. " 获得: " .. rewardMsg)
+            end
+        end,
+        error = function(code, reason)
+            BagUI.ShowTip("加载宝箱配置失败: " .. tostring(reason))
+        end,
+    })
 end
 
 return BagUI
