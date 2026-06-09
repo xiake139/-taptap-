@@ -11,6 +11,7 @@ local TradeUI = {}
 
 local parentRef_ = nil
 local listings_ = {}        -- 当前交易所列表 [{seller, item_name, item_count, price_type, price_gold, price_item, price_item_count, timestamp}]
+local pendingIncome_ = {}   -- 待领取收入 [{recipient, type, gold, item_name, item_count, from_buyer, item_sold, timestamp}]
 local isLoading_ = false
 local GameUI = nil           -- 延迟引用
 local currentDialog_ = nil   -- 当前弹窗引用（用于关闭）
@@ -31,8 +32,8 @@ local TRADE_CLOUD_KEY = "系统配置/trade_market.ini"
 
 -- =============== 数据层 ===============
 
---- 序列化交易列表为字符串（INI格式）
-local function SerializeListings(list)
+--- 序列化交易列表为字符串（INI格式，包含挂售列表 + 待领取收入）
+local function SerializeListings(list, incomeList)
     local lines = {}
     for i, entry in ipairs(list) do
         table.insert(lines, "[listing_" .. i .. "]")
@@ -46,30 +47,58 @@ local function SerializeListings(list)
         table.insert(lines, "timestamp=" .. tostring(entry.timestamp or 0))
         table.insert(lines, "")
     end
+    -- 序列化待领取收入
+    for i, entry in ipairs(incomeList or {}) do
+        table.insert(lines, "[income_" .. i .. "]")
+        table.insert(lines, "recipient=" .. (entry.recipient or ""))
+        table.insert(lines, "type=" .. (entry.type or "gold"))
+        table.insert(lines, "gold=" .. (entry.gold or "0"))
+        table.insert(lines, "item_name=" .. (entry.item_name or ""))
+        table.insert(lines, "item_count=" .. tostring(entry.item_count or 0))
+        table.insert(lines, "from_buyer=" .. (entry.from_buyer or ""))
+        table.insert(lines, "item_sold=" .. (entry.item_sold or ""))
+        table.insert(lines, "timestamp=" .. tostring(entry.timestamp or 0))
+        table.insert(lines, "")
+    end
     return table.concat(lines, "\n")
 end
 
---- 反序列化字符串为交易列表
+--- 反序列化字符串为交易列表 + 待领取收入
 local function DeserializeListings(str)
-    if not str or str == "" then return {} end
+    if not str or str == "" then return {}, {} end
     local IniParser = require("Utils.IniParser")
     local sections = IniParser.Parse(str)
     local list = {}
+    local incomeList = {}
     for sectionName, data in pairs(sections) do
-        table.insert(list, {
-            seller = data["seller"] or "",
-            item_name = data["item_name"] or "",
-            item_count = tonumber(data["item_count"]) or 1,
-            price_type = data["price_type"] or "gold",
-            price_gold = data["price_gold"] or "0",
-            price_item = data["price_item"] or "",
-            price_item_count = tonumber(data["price_item_count"]) or 0,
-            timestamp = tonumber(data["timestamp"]) or 0,
-        })
+        if sectionName:find("^listing_") then
+            table.insert(list, {
+                seller = data["seller"] or "",
+                item_name = data["item_name"] or "",
+                item_count = tonumber(data["item_count"]) or 1,
+                price_type = data["price_type"] or "gold",
+                price_gold = data["price_gold"] or "0",
+                price_item = data["price_item"] or "",
+                price_item_count = tonumber(data["price_item_count"]) or 0,
+                timestamp = tonumber(data["timestamp"]) or 0,
+            })
+        elseif sectionName:find("^income_") then
+            table.insert(incomeList, {
+                recipient = data["recipient"] or "",
+                type = data["type"] or "gold",
+                gold = data["gold"] or "0",
+                item_name = data["item_name"] or "",
+                item_count = tonumber(data["item_count"]) or 0,
+                from_buyer = data["from_buyer"] or "",
+                item_sold = data["item_sold"] or "",
+                timestamp = tonumber(data["timestamp"]) or 0,
+            })
+        end
     end
     -- 按时间排序（最新在前）
     table.sort(list, function(a, b) return a.timestamp > b.timestamp end)
-    return list
+    table.sort(incomeList, function(a, b) return a.timestamp > b.timestamp end)
+    return list, incomeList
 end
 
 --- 获取云存储实例（兼容多人模式的CloudProxy）
@@ -84,6 +113,7 @@ local function LoadListings(callback)
     if not cloud then
         print("[TradeUI] 云存储不可用，使用空列表")
         listings_ = {}
+        pendingIncome_ = {}
         isLoading_ = false
         if callback then callback() end
         return
@@ -92,17 +122,19 @@ local function LoadListings(callback)
         ok = function(values)
             local raw = values[TRADE_CLOUD_KEY]
             if raw and raw ~= "" then
-                listings_ = DeserializeListings(raw)
+                listings_, pendingIncome_ = DeserializeListings(raw)
             else
                 listings_ = {}
+                pendingIncome_ = {}
             end
             isLoading_ = false
-            print("[TradeUI] 加载交易所数据成功，共 " .. #listings_ .. " 条挂售")
+            print("[TradeUI] 加载交易所数据成功，共 " .. #listings_ .. " 条挂售, " .. #pendingIncome_ .. " 条待领取")
             if callback then callback() end
         end,
         error = function(code, reason)
             isLoading_ = false
             listings_ = {}
+            pendingIncome_ = {}
             print("[TradeUI] 加载交易所失败: " .. tostring(reason))
             if callback then callback() end
         end,
@@ -116,7 +148,7 @@ local function SaveListings(callback)
         if callback then callback(false) end
         return
     end
-    local content = SerializeListings(listings_)
+    local content = SerializeListings(listings_, pendingIncome_)
     cloud:Set(TRADE_CLOUD_KEY, content, {
         ok = function()
             print("[TradeUI] 保存交易所数据成功")
@@ -129,14 +161,70 @@ local function SaveListings(callback)
     })
 end
 
+--- 领取当前玩家的所有待领取收入
+local function CollectPendingIncome()
+    local player = DataManager.playerData
+    if not player then return end
+    local currentUser = player.account and player.account.username or ""
+    if currentUser == "" then return end
+
+    local collected = {}
+    local remaining = {}
+
+    for _, entry in ipairs(pendingIncome_) do
+        if entry.recipient == currentUser then
+            table.insert(collected, entry)
+        else
+            table.insert(remaining, entry)
+        end
+    end
+
+    if #collected == 0 then return end
+
+    -- 发放收入到玩家数据
+    for _, entry in ipairs(collected) do
+        if entry.type == "gold" then
+            -- 增加金币
+            local curGold = BigNum.new(player.status.gold)
+            local addGold = BigNum.new(entry.gold)
+            player.status.gold = BigNum.add(curGold, addGold)
+            TradeUI.ShowMsg("收到交易收入：" .. NumFormat.Short(entry.gold) .. " 金币（" .. (entry.from_buyer or "?") .. " 购买了你的 " .. (entry.item_sold or "?") .. "）")
+        else
+            -- 增加物品
+            local addedToBag = false
+            for _, item in ipairs(player.bag) do
+                if item.name == entry.item_name then
+                    item.count = tostring((tonumber(item.count) or 0) + entry.item_count)
+                    addedToBag = true
+                    break
+                end
+            end
+            if not addedToBag then
+                table.insert(player.bag, { name = entry.item_name, count = tostring(entry.item_count) })
+            end
+            TradeUI.ShowMsg("收到交易收入：" .. (entry.item_name or "?") .. " x" .. tostring(entry.item_count) .. "（" .. (entry.from_buyer or "?") .. " 购买了你的 " .. (entry.item_sold or "?") .. "）")
+        end
+    end
+
+    -- 更新待领取列表（移除已领取的）
+    pendingIncome_ = remaining
+
+    -- 保存玩家数据和更新后的交易所数据
+    DataManager.SaveToCloud(player)
+    SaveListings(function()
+        print("[TradeUI] 领取收入完成，共 " .. #collected .. " 条")
+    end)
+end
+
 -- =============== UI 层 ===============
 
 --- 渲染交易所面板
 ---@param parent Widget
 function TradeUI.Render(parent)
     parentRef_ = parent
-    -- 先加载最新数据再渲染
+    -- 先加载最新数据再渲染，加载完后自动领取待领取收入
     LoadListings(function()
+        CollectPendingIncome()
         TradeUI.Refresh()
     end)
     -- 先显示加载中
@@ -744,6 +832,26 @@ function TradeUI.BuyListing(index)
     if not addedToBag then
         table.insert(player.bag, { name = entry.item_name, count = tostring(entry.item_count) })
     end
+
+    -- 为卖家添加待领取收入
+    local incomeEntry = {
+        recipient = entry.seller,
+        from_buyer = currentUser,
+        item_sold = entry.item_name .. " x" .. tostring(entry.item_count),
+        timestamp = os.time(),
+    }
+    if entry.price_type == "gold" then
+        incomeEntry.type = "gold"
+        incomeEntry.gold = entry.price_gold
+        incomeEntry.item_name = ""
+        incomeEntry.item_count = 0
+    else
+        incomeEntry.type = "item"
+        incomeEntry.gold = "0"
+        incomeEntry.item_name = entry.price_item
+        incomeEntry.item_count = entry.price_item_count
+    end
+    table.insert(pendingIncome_, incomeEntry)
 
     -- 从交易列表移除
     table.remove(listings_, index)
