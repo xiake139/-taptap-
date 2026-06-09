@@ -392,7 +392,7 @@ function TradeUI.ShowPriceDialog(bagItem)
             gap = 6,
             children = {
                 UI.Label { text = "挂售数量：", fontSize = 13, fontColor = { 180, 180, 200, 255 } },
-                UI.Input {
+                UI.TextField {
                     value = tostring(sellCount),
                     width = 80,
                     fontSize = 13,
@@ -448,7 +448,7 @@ function TradeUI.ShowPriceDialog(bagItem)
                 marginTop = 8,
                 children = {
                     UI.Label { text = "售价金币：", fontSize = 13, fontColor = { 255, 215, 0, 255 } },
-                    UI.Input {
+                    UI.TextField {
                         value = priceGold,
                         width = 120,
                         fontSize = 13,
@@ -472,7 +472,7 @@ function TradeUI.ShowPriceDialog(bagItem)
                         gap = 6,
                         children = {
                             UI.Label { text = "所需物品：", fontSize = 13, fontColor = { 100, 220, 180, 255 } },
-                            UI.Input {
+                            UI.TextField {
                                 value = priceItemName,
                                 width = 140,
                                 fontSize = 13,
@@ -489,7 +489,7 @@ function TradeUI.ShowPriceDialog(bagItem)
                         gap = 6,
                         children = {
                             UI.Label { text = "所需数量：", fontSize = 13, fontColor = { 100, 220, 180, 255 } },
-                            UI.Input {
+                            UI.TextField {
                                 value = tostring(priceItemCount),
                                 width = 80,
                                 fontSize = 13,
