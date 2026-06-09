@@ -59,7 +59,7 @@ function CreateCharUI.Create()
                         textAlign = "center",
                     },
                     UI.Label {
-                        text = "起始境界：练气期一层",
+                        text = "起始等级：1",
                         fontSize = 14,
                         fontColor = { 130, 200, 130, 255 },
                         textAlign = "center",

@@ -8,6 +8,7 @@ local BigNum = require("Utils.BigNum")
 local EquipUI = {}
 
 local parentRef_ = nil
+local GameUI = nil -- 延迟加载避免循环引用
 
 --- 中文部位→英文key映射（兼容玩家数据结构）
 local SLOT_CN_TO_KEY = {
@@ -77,20 +78,7 @@ function EquipUI.Refresh()
 
     for _, slot in ipairs(slots) do
         local equipName = player.equip[slot.key] or ""
-        local eData = nil
-        local statsText = ""
-
-        if equipName ~= "" then
-            eData = DataManager.GetEquipData(equipName)
-            if eData then
-                local parts = {}
-                if BigNum.gt(eData.atk or "0", "0") then table.insert(parts, "攻+" .. BigNum.toShort(eData.atk)) end
-                if BigNum.gt(eData.def or "0", "0") then table.insert(parts, "防+" .. BigNum.toShort(eData.def)) end
-                if BigNum.gt(eData.hp or "0", "0") then table.insert(parts, "血+" .. BigNum.toShort(eData.hp)) end
-                statsText = table.concat(parts, " ")
-            end
-        end
-
+        local eData = equipName ~= "" and DataManager.GetEquipData(equipName) or nil
         local qualityColor = EquipUI.GetQualityColor(eData and eData.quality or "white")
 
         scrollContent:AddChild(UI.Panel {
@@ -104,23 +92,19 @@ function EquipUI.Refresh()
             gap = 8,
             children = {
                 UI.Label { text = "[" .. slot.label .. "]", fontSize = 14, fontColor = { 140, 140, 160, 255 }, width = 50 },
-                UI.Panel {
+                UI.Label {
+                    text = equipName ~= "" and equipName or "（未装备）",
+                    fontSize = 14,
+                    fontColor = equipName ~= "" and qualityColor or { 100, 100, 120, 255 },
                     flexGrow = 1,
                     flexShrink = 1,
-                    flexDirection = "column",
-                    children = {
-                        UI.Label {
-                            text = equipName ~= "" and equipName or "（未装备）",
-                            fontSize = 14,
-                            fontColor = equipName ~= "" and qualityColor or { 100, 100, 120, 255 },
-                        },
-                        statsText ~= "" and UI.Label {
-                            text = statsText,
-                            fontSize = 11,
-                            fontColor = { 150, 200, 150, 255 },
-                        } or UI.Panel { height = 0 },
-                    },
                 },
+                equipName ~= "" and UI.Button {
+                    text = "详情",
+                    variant = "secondary",
+                    height = 28,
+                    onClick = function() EquipUI.ShowDetail(equipName) end,
+                } or UI.Panel { width = 0 },
                 equipName ~= "" and UI.Button {
                     text = "卸下",
                     variant = "secondary",
@@ -149,12 +133,6 @@ function EquipUI.Refresh()
         if itemData and itemData.slot then
             hasEquippable = true
             local qualityColor = EquipUI.GetQualityColor(itemData.quality or "white")
-            local parts = {}
-            if BigNum.gt(itemData.atk or "0", "0") then table.insert(parts, "攻+" .. BigNum.toShort(itemData.atk)) end
-            if BigNum.gt(itemData.def or "0", "0") then table.insert(parts, "防+" .. BigNum.toShort(itemData.def)) end
-            if BigNum.gt(itemData.hp or "0", "0") then table.insert(parts, "血+" .. BigNum.toShort(itemData.hp)) end
-
-            -- 部位显示（中文）
             local slotKey = SLOT_CN_TO_KEY[itemData.slot] or itemData.slot
             local slotLabel = SLOT_KEY_TO_LABEL[slotKey] or itemData.slot or "未知"
 
@@ -169,14 +147,18 @@ function EquipUI.Refresh()
                 gap = 6,
                 children = {
                     UI.Label { text = "[" .. slotLabel .. "]", fontSize = 12, fontColor = { 120, 120, 150, 255 }, width = 46 },
-                    UI.Panel {
+                    UI.Label {
+                        text = item.name .. " x" .. item.count,
+                        fontSize = 13,
+                        fontColor = qualityColor,
                         flexGrow = 1,
                         flexShrink = 1,
-                        flexDirection = "column",
-                        children = {
-                            UI.Label { text = item.name .. " x" .. item.count, fontSize = 13, fontColor = qualityColor },
-                            UI.Label { text = table.concat(parts, " "), fontSize = 11, fontColor = { 150, 200, 150, 255 } },
-                        },
+                    },
+                    UI.Button {
+                        text = "详情",
+                        variant = "secondary",
+                        height = 26,
+                        onClick = function() EquipUI.ShowDetail(item.name) end,
                     },
                     UI.Button {
                         text = "装备",
@@ -305,6 +287,123 @@ function EquipUI.EquipFromBag(bagIndex)
     DataManager.SaveToCloud(player)
     EquipUI.Refresh()
     EquipUI.ShowTip("已装备: " .. equipedName)
+end
+
+--- 显示装备详情弹窗
+---@param equipName string
+function EquipUI.ShowDetail(equipName)
+    if not equipName or equipName == "" then return end
+    local eData = DataManager.GetEquipData(equipName)
+    if not eData then return end
+
+    local qualityColor = EquipUI.GetQualityColor(eData.quality or "white")
+    local slotKey = SLOT_CN_TO_KEY[eData.slot] or eData.slot or ""
+    local slotLabel = SLOT_KEY_TO_LABEL[slotKey] or eData.slot or "未知"
+
+    -- 属性列表
+    local statRows = {}
+    if BigNum.gt(eData.atk or "0", "0") then table.insert(statRows, { label = "攻击力", value = "+" .. BigNum.toShort(eData.atk), color = { 255, 120, 120, 255 } }) end
+    if BigNum.gt(eData.def or "0", "0") then table.insert(statRows, { label = "防御力", value = "+" .. BigNum.toShort(eData.def), color = { 120, 180, 255, 255 } }) end
+    if BigNum.gt(eData.hp or "0", "0") then table.insert(statRows, { label = "生命值", value = "+" .. BigNum.toShort(eData.hp), color = { 120, 255, 120, 255 } }) end
+
+    -- 等级需求
+    local levelReq = eData.level_req or "0"
+    local playerLevel = DataManager.playerData and DataManager.playerData.status.level or "1"
+    local levelMet = BigNum.gte(playerLevel, levelReq)
+
+    local statChildren = {}
+    for _, row in ipairs(statRows) do
+        table.insert(statChildren, UI.Panel {
+            flexDirection = "row", justifyContent = "space-between", width = "100%", marginBottom = 6,
+            children = {
+                UI.Label { text = row.label, fontSize = 14, fontColor = { 180, 180, 200, 255 }, width = 80, flexShrink = 0 },
+                UI.Label { text = row.value, fontSize = 14, fontColor = row.color, flexShrink = 1, textAlign = "right" },
+            },
+        })
+    end
+
+    -- 等级需求行
+    if tonumber(levelReq) and tonumber(levelReq) > 0 then
+        table.insert(statChildren, UI.Panel {
+            flexDirection = "row", justifyContent = "space-between", width = "100%", marginTop = 6,
+            children = {
+                UI.Label { text = "需要等级", fontSize = 13, fontColor = { 150, 150, 170, 255 }, width = 80, flexShrink = 0 },
+                UI.Label { text = levelReq, fontSize = 13, fontColor = levelMet and { 150, 255, 150, 255 } or { 255, 80, 80, 255 }, textAlign = "right" },
+            },
+        })
+    end
+
+    -- 先创建引用变量
+    ---@type Widget
+    local dialog = nil
+
+    dialog = UI.Panel {
+        id = "equipDetailOverlay",
+        position = "absolute",
+        left = 0, top = 0, right = 0, bottom = 0,
+        justifyContent = "center", alignItems = "center",
+        backgroundColor = { 0, 0, 0, 180 },
+        onClick = function()
+            -- 点击遮罩层也可关闭
+            if dialog then dialog:Remove() end
+        end,
+        children = {
+            UI.Panel {
+                width = "85%",
+                maxWidth = 320,
+                padding = 20,
+                backgroundColor = { 30, 25, 50, 245 },
+                borderRadius = 12,
+                borderWidth = 2,
+                borderColor = qualityColor,
+                flexDirection = "column",
+                alignItems = "center",
+                gap = 10,
+                -- 阻止点击穿透到遮罩层
+                onClick = function() end,
+                children = {
+                    -- 名称
+                    UI.Label { text = equipName, fontSize = 18, fontColor = qualityColor, textAlign = "center" },
+                    -- 品质 + 部位
+                    UI.Panel {
+                        flexDirection = "row", gap = 16, marginBottom = 4,
+                        children = {
+                            UI.Label { text = "品质: " .. (eData.quality or "未知"), fontSize = 13, fontColor = qualityColor },
+                            UI.Label { text = "部位: " .. slotLabel, fontSize = 13, fontColor = { 180, 180, 200, 255 } },
+                        },
+                    },
+                    -- 分隔线
+                    UI.Panel { width = "100%", height = 1, backgroundColor = { 80, 60, 120, 200 } },
+                    -- 属性
+                    UI.Panel {
+                        width = "100%", flexDirection = "column", paddingLeft = 8, paddingRight = 8, paddingTop = 4, paddingBottom = 4,
+                        children = statChildren,
+                    },
+                    -- 关闭按钮
+                    UI.Button {
+                        text = "关  闭",
+                        variant = "secondary",
+                        width = 100,
+                        height = 34,
+                        marginTop = 8,
+                        onClick = function()
+                            if dialog then dialog:Remove() end
+                        end,
+                    },
+                },
+            },
+        },
+    }
+
+    -- 添加到游戏根面板（覆盖所有内容）
+    if not GameUI then GameUI = require("UI.GameUI") end
+    local root = GameUI.rootPanel
+    if not root then root = parentRef_ end  -- fallback
+    if root then
+        local old = root:FindById("equipDetailOverlay")
+        if old then old:Remove() end
+        root:AddChild(dialog)
+    end
 end
 
 --- 获取品质颜色

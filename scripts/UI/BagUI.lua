@@ -7,6 +7,9 @@ local BigNum = require("Utils.BigNum")
 
 local BagUI = {}
 
+local GameUI = nil  -- 延迟加载
+local EquipUI = nil -- 延迟加载
+
 --- 中文部位→英文key映射
 local SLOT_CN_TO_KEY = {
     ["武器"] = "weapon", ["头盔"] = "helmet", ["铠甲"] = "armor", ["护腕"] = "bracer",
@@ -66,6 +69,19 @@ function BagUI.Refresh()
         local isEquip = itemData and itemData.slot
 
         local btnChildren = {}
+
+        -- 装备类物品显示详情按钮
+        if isEquip then
+            table.insert(btnChildren, UI.Button {
+                text = "详情",
+                variant = "secondary",
+                height = 26,
+                onClick = function()
+                    if not EquipUI then EquipUI = require("UI.EquipUI") end
+                    EquipUI.ShowDetail(item.name)
+                end,
+            })
+        end
 
         if isConsumable then
             table.insert(btnChildren, UI.Button {

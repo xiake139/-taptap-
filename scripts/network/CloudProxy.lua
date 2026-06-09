@@ -135,7 +135,10 @@ function CloudProxy:Get(key, events)
     serverConn:SendRemoteEvent(EVENTS.CLOUD_GET, true, data)
 end
 
---- 单 key 写入
+--- WebSocket 安全分片阈值
+local MAX_CHUNK = 60000
+
+--- 单 key 写入（支持分片：大 value 自动拆分多条消息）
 ---@param key string
 ---@param value string
 ---@param events table {ok=function(), error=function(code, reason)}
@@ -162,11 +165,34 @@ function CloudProxy:Set(key, value, events)
         error = events and events.error,
     }
 
-    local data = VariantMap()
-    data["ReqId"] = Variant(reqId)
-    data["Key"] = Variant(key)
-    data["Value"] = Variant(tostring(value))
-    serverConn:SendRemoteEvent(EVENTS.CLOUD_SET, true, data)
+    local valStr = tostring(value)
+    local dataLen = #valStr
+
+    if dataLen <= MAX_CHUNK then
+        -- 单条发送
+        local data = VariantMap()
+        data["ReqId"] = Variant(reqId)
+        data["Key"] = Variant(key)
+        data["Value"] = Variant(valStr)
+        data["ChunkIndex"] = Variant(1)
+        data["ChunkTotal"] = Variant(1)
+        serverConn:SendRemoteEvent(EVENTS.CLOUD_SET, true, data)
+    else
+        -- 分片发送
+        local chunkTotal = math.ceil(dataLen / MAX_CHUNK)
+        for ci = 1, chunkTotal do
+            local startPos = (ci - 1) * MAX_CHUNK + 1
+            local endPos = math.min(ci * MAX_CHUNK, dataLen)
+            local chunk = valStr:sub(startPos, endPos)
+            local data = VariantMap()
+            data["ReqId"] = Variant(reqId)
+            data["Key"] = Variant(key)
+            data["Value"] = Variant(chunk)
+            data["ChunkIndex"] = Variant(ci)
+            data["ChunkTotal"] = Variant(chunkTotal)
+            serverConn:SendRemoteEvent(EVENTS.CLOUD_SET, true, data)
+        end
+    end
 end
 
 -- =============== BatchGet 构建器 ===============
@@ -256,10 +282,30 @@ function BatchSetBuilder:Save(desc, events)
     end
     local encoded = table.concat(parts, "\2")
 
-    local data = VariantMap()
-    data["ReqId"] = Variant(reqId)
-    data["Data"] = Variant(encoded)
-    serverConn:SendRemoteEvent(EVENTS.CLOUD_BATCH_SET, true, data)
+    local dataLen = #encoded
+    if dataLen <= MAX_CHUNK then
+        -- 单条发送
+        local data = VariantMap()
+        data["ReqId"] = Variant(reqId)
+        data["Data"] = Variant(encoded)
+        data["ChunkIndex"] = Variant(1)
+        data["ChunkTotal"] = Variant(1)
+        serverConn:SendRemoteEvent(EVENTS.CLOUD_BATCH_SET, true, data)
+    else
+        -- 分片发送
+        local chunkTotal = math.ceil(dataLen / MAX_CHUNK)
+        for ci = 1, chunkTotal do
+            local startPos = (ci - 1) * MAX_CHUNK + 1
+            local endPos = math.min(ci * MAX_CHUNK, dataLen)
+            local chunk = encoded:sub(startPos, endPos)
+            local data = VariantMap()
+            data["ReqId"] = Variant(reqId)
+            data["Data"] = Variant(chunk)
+            data["ChunkIndex"] = Variant(ci)
+            data["ChunkTotal"] = Variant(chunkTotal)
+            serverConn:SendRemoteEvent(EVENTS.CLOUD_BATCH_SET, true, data)
+        end
+    end
 end
 
 --- 创建 BatchSet 构建器（兼容 clientCloud:BatchSet() 接口）
@@ -270,22 +316,55 @@ end
 
 -- =============== 响应处理（全局函数，由事件系统调用） ===============
 
+-- 分片缓冲区（Get 和 BatchGet 共用）: reqId -> { chunks={}, received=0, total=N }
+local chunkBuffers_ = {}
+
 function HandleCloudGetResult(eventType, eventData)
     local reqId = eventData["ReqId"]:GetString()
     local cb = pendingCallbacks_[reqId]
     if not cb then return end
-    pendingCallbacks_[reqId] = nil
 
     local success = eventData["Success"]:GetBool()
-    if success then
-        local key = eventData["Key"]:GetString()
-        local value = eventData["Value"]:GetString()
-        -- 构造与 clientCloud 一致的 values 表
-        local values = { [key] = value }
-        if cb.ok then cb.ok(values, {}) end
-    else
+    if not success then
+        pendingCallbacks_[reqId] = nil
+        chunkBuffers_[reqId] = nil
         local errMsg = eventData["Error"]:GetString()
         if cb.error then cb.error(-1, errMsg) end
+        return
+    end
+
+    local key = eventData["Key"]:GetString()
+    local chunkData = eventData["Value"]:GetString()
+    local chunkIndex = eventData["ChunkIndex"]:GetInt()
+    local chunkTotal = eventData["ChunkTotal"]:GetInt()
+
+    -- 无分片或旧协议
+    if chunkTotal <= 1 then
+        pendingCallbacks_[reqId] = nil
+        chunkBuffers_[reqId] = nil
+        local values = { [key] = chunkData }
+        if cb.ok then cb.ok(values, {}) end
+        return
+    end
+
+    -- 分片累积
+    if not chunkBuffers_[reqId] then
+        chunkBuffers_[reqId] = { chunks = {}, received = 0, total = chunkTotal, key = key }
+    end
+    local buf = chunkBuffers_[reqId]
+    buf.chunks[chunkIndex] = chunkData
+    buf.received = buf.received + 1
+
+    if buf.received >= buf.total then
+        pendingCallbacks_[reqId] = nil
+        local parts = {}
+        for i = 1, buf.total do
+            parts[i] = buf.chunks[i] or ""
+        end
+        chunkBuffers_[reqId] = nil
+        local value = table.concat(parts)
+        local values = { [buf.key] = value }
+        if cb.ok then cb.ok(values, {}) end
     end
 end
 
@@ -303,9 +382,6 @@ function HandleCloudSetResult(eventType, eventData)
         if cb.error then cb.error(-1, errMsg) end
     end
 end
-
--- 分片缓冲区: reqId -> { chunks = {}, received = 0, total = N }
-local chunkBuffers_ = {}
 
 function HandleCloudBatchGetResult(eventType, eventData)
     local reqId = eventData["ReqId"]:GetString()

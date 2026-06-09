@@ -11,6 +11,12 @@ local Server = {}
 -- serverCloud 要求 uid 必须是正整数（≥1），0 无效！
 local SHARED_UID = 1
 
+-- WebSocket 安全分片阈值
+local MAX_CHUNK = 60000
+
+-- 分片接收缓冲区 { [reqId] = { chunks={}, received=N, total=N, key=string } }
+local chunkBuffers_ = {}
+
 --- 将任意 key（含中文/特殊字符）编码为 serverCloud 兼容的 ASCII key
 --- serverCloud 只接受 [A-Za-z0-9._-] 字符的 key
 ---@param raw string 原始 key，如 "系统配置/maps.ini"
@@ -74,12 +80,33 @@ function HandleCloudGet(eventType, eventData)
                 end
             end
 
-            local resp = VariantMap()
-            resp["ReqId"] = Variant(reqId)
-            resp["Key"] = Variant(key)
-            resp["Value"] = Variant(value)
-            resp["Success"] = Variant(true)
-            connection:SendRemoteEvent(EVENTS.CLOUD_GET_RESULT, true, resp)
+            -- 分片发送大 value
+            local dataLen = #value
+            if dataLen <= MAX_CHUNK then
+                local resp = VariantMap()
+                resp["ReqId"] = Variant(reqId)
+                resp["Key"] = Variant(key)
+                resp["Value"] = Variant(value)
+                resp["Success"] = Variant(true)
+                resp["ChunkIndex"] = Variant(1)
+                resp["ChunkTotal"] = Variant(1)
+                connection:SendRemoteEvent(EVENTS.CLOUD_GET_RESULT, true, resp)
+            else
+                local chunkTotal = math.ceil(dataLen / MAX_CHUNK)
+                for ci = 1, chunkTotal do
+                    local startPos = (ci - 1) * MAX_CHUNK + 1
+                    local endPos = math.min(ci * MAX_CHUNK, dataLen)
+                    local chunk = value:sub(startPos, endPos)
+                    local resp = VariantMap()
+                    resp["ReqId"] = Variant(reqId)
+                    resp["Key"] = Variant(key)
+                    resp["Value"] = Variant(chunk)
+                    resp["Success"] = Variant(true)
+                    resp["ChunkIndex"] = Variant(ci)
+                    resp["ChunkTotal"] = Variant(chunkTotal)
+                    connection:SendRemoteEvent(EVENTS.CLOUD_GET_RESULT, true, resp)
+                end
+            end
         end,
         error = function(code, reason)
             print("[Server] CloudGet 失败: " .. tostring(reason))
@@ -94,15 +121,53 @@ function HandleCloudGet(eventType, eventData)
     })
 end
 
---- 处理单 key 写入请求
+--- 处理单 key 写入请求（支持分片接收）
 function HandleCloudSet(eventType, eventData)
     local connection = eventData["Connection"]:GetPtr("Connection")
     local reqId = eventData["ReqId"]:GetString()
     local key = eventData["Key"]:GetString()
-    local value = eventData["Value"]:GetString()
+    local chunkData = eventData["Value"]:GetString()
+    local chunkIndex = eventData["ChunkIndex"]:GetInt()
+    local chunkTotal = eventData["ChunkTotal"]:GetInt()
+
+    -- 分片重组
+    local value
+    if chunkTotal <= 1 then
+        value = chunkData
+    else
+        if not chunkBuffers_[reqId] then
+            chunkBuffers_[reqId] = { chunks = {}, received = 0, total = chunkTotal, key = key }
+        end
+        local buf = chunkBuffers_[reqId]
+        buf.chunks[chunkIndex] = chunkData
+        buf.received = buf.received + 1
+        if buf.received < buf.total then
+            return -- 等待更多分片
+        end
+        -- 所有分片到齐，拼接
+        local parts = {}
+        for i = 1, buf.total do
+            parts[i] = buf.chunks[i] or ""
+        end
+        value = table.concat(parts)
+        chunkBuffers_[reqId] = nil
+    end
 
     local encodedKey = encodeKey(key)
-    print("[Server] CloudSet key=" .. key .. " encoded=" .. encodedKey .. " reqId=" .. reqId .. " len=" .. #value)
+    local valueLen = #value
+    print("[Server] CloudSet key=" .. key .. " encoded=" .. encodedKey .. " reqId=" .. reqId .. " len=" .. valueLen)
+
+    -- 值大小保护：超过 512KB 拒绝写入，避免后端崩溃
+    local MAX_VALUE_SIZE = 512 * 1024  -- 512KB
+    if valueLen > MAX_VALUE_SIZE then
+        print("[Server] CloudSet 拒绝: 值过大 (" .. valueLen .. " > " .. MAX_VALUE_SIZE .. ") key=" .. key)
+        local resp = VariantMap()
+        resp["ReqId"] = Variant(reqId)
+        resp["Success"] = Variant(false)
+        resp["Error"] = Variant("值过大(" .. valueLen .. "字节)，超过512KB上限，请减少数据量")
+        connection:SendRemoteEvent(EVENTS.CLOUD_SET_RESULT, true, resp)
+        return
+    end
 
     -- serverCloud:Set 的 value 必须是 table，用 {v=string} 包装
     serverCloud:Set(SHARED_UID, encodedKey, {v = value}, {
@@ -224,12 +289,36 @@ function HandleCloudBatchGet(eventType, eventData)
     })
 end
 
---- 处理批量写入请求
+--- 处理批量写入请求（支持分片接收）
 --- 客户端发送 Data 为序列化格式: key\1value\2key\1value\2...
 function HandleCloudBatchSet(eventType, eventData)
     local connection = eventData["Connection"]:GetPtr("Connection")
     local reqId = eventData["ReqId"]:GetString()
-    local dataStr = eventData["Data"]:GetString()
+    local chunkData = eventData["Data"]:GetString()
+    local chunkIndex = eventData["ChunkIndex"]:GetInt()
+    local chunkTotal = eventData["ChunkTotal"]:GetInt()
+
+    -- 分片重组
+    local dataStr
+    if chunkTotal <= 1 then
+        dataStr = chunkData
+    else
+        if not chunkBuffers_[reqId] then
+            chunkBuffers_[reqId] = { chunks = {}, received = 0, total = chunkTotal }
+        end
+        local buf = chunkBuffers_[reqId]
+        buf.chunks[chunkIndex] = chunkData
+        buf.received = buf.received + 1
+        if buf.received < buf.total then
+            return -- 等待更多分片
+        end
+        local parts = {}
+        for i = 1, buf.total do
+            parts[i] = buf.chunks[i] or ""
+        end
+        dataStr = table.concat(parts)
+        chunkBuffers_[reqId] = nil
+    end
 
     -- 解析数据
     local pairs_list = {}

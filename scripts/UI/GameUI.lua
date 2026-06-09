@@ -10,6 +10,9 @@ local BigNum = require("Utils.BigNum")
 
 local GameUI = {}
 
+--- 游戏根面板引用（供子模块弹窗使用）
+GameUI.rootPanel = nil
+
 -- UI 引用
 local mapNameLabel_ = nil
 local mapDescLabel_ = nil
@@ -195,6 +198,7 @@ function GameUI.Create()
     -- 初始化地图显示
     GameUI.RefreshMap()
 
+    GameUI.rootPanel = root
     return root
 end
 
@@ -944,8 +948,15 @@ function GameUI.CheckLevelUp()
     local level = tostring(player.status.level or "1")
     local exp = BigNum.new(player.status.exp or "0")
     local needExp = DataManager.GetExpForLevel(level)
+    local maxLevel = DataManager.GetMaxLevel()
 
     while BigNum.gte(exp, needExp) do
+        -- 最高等级限制
+        if tonumber(level) >= maxLevel then
+            GameUI.AddLog("已达到最高等级 " .. maxLevel .. "，无法继续提升")
+            break
+        end
+
         exp = BigNum.sub(exp, needExp)
         level = BigNum.add(level, "1")
 
@@ -963,10 +974,7 @@ function GameUI.CheckLevelUp()
         player.status.atk = BigNum.add(player.status.atk or "5", atkAdd)
         player.status.def = BigNum.add(player.status.def or "3", defAdd)
 
-        -- 更新境界
-        player.status.cultivation = DataManager.GetCultivation(level)
-
-        GameUI.AddLog("恭喜突破！等级提升至 " .. level .. "，境界：" .. player.status.cultivation)
+        GameUI.AddLog("恭喜！等级提升至 " .. level)
 
         needExp = DataManager.GetExpForLevel(level)
     end

@@ -346,7 +346,6 @@ local function SaveCategoryToCloud(category)
             ["等级"] = NumFormat.Int(defSec.level or 1),
             ["经验"] = NumFormat.Int(defSec.exp or 0),
             ["金币"] = NumFormat.Int(defSec.gold or 50),
-            ["境界"] = defSec.cultivation or "练气期一层",
         }
         local lvlSec = gc["level_up"] or {}
         sections["升级配置"] = {
@@ -356,12 +355,8 @@ local function SaveCategoryToCloud(category)
             ["每级法力"] = NumFormat.Int(lvlSec.mp_per_level or 10),
             ["每级攻击"] = NumFormat.Int(lvlSec.atk_per_level or 3),
             ["每级防御"] = NumFormat.Int(lvlSec.def_per_level or 2),
+            ["最高等级"] = NumFormat.Int(lvlSec.max_level or 100),
         }
-        local cultSec = gc["cultivation"] or {}
-        sections["境界配置"] = {}
-        for k, v in pairs(cultSec) do
-            sections["境界配置"][tostring(k)] = tostring(v)
-        end
         content = IniParser.Serialize(sections)
         SaveConfigToCloud("系统配置/game_config.ini", content, function(ok)
             ShowMsg(ok and "游戏设置已保存到云端" or "保存失败")
@@ -738,7 +733,6 @@ local function ShowPlayerDetailDialog(username, accountInfo, editMode)
             { label = "攻击力", key = "st_atk", value = st.atk or "5" },
             { label = "防御力", key = "st_def", value = st.def or "3" },
             { label = "金币", key = "st_gold", value = st.gold or "50" },
-            { label = "境界", key = "st_cultivation", value = st.cultivation or "练气期一层" },
             { label = "当前地图", key = "st_current_map", value = st.current_map or "新手村" },
         }
         for _, f in ipairs(statusFields) do
@@ -883,7 +877,6 @@ local function ShowPlayerDetailDialog(username, accountInfo, editMode)
                             atk = fieldWidgets["st_atk"]:GetValue() or "5",
                             def = fieldWidgets["st_def"]:GetValue() or "3",
                             gold = fieldWidgets["st_gold"]:GetValue() or "50",
-                            cultivation = fieldWidgets["st_cultivation"]:GetValue() or "练气期一层",
                             current_map = fieldWidgets["st_current_map"]:GetValue() or "新手村",
                         },
                         bag = {},
@@ -1234,13 +1227,12 @@ end
 
 local function RenderGameConfig()
     ClearContent()
-    ShowMsg("游戏全局设置（含玩家初始属性、升级公式、境界表）")
+    ShowMsg("游戏全局设置（含玩家初始属性、升级公式）")
 
     local gc = DataManager.gameConfig
     local gameSec = gc["game"] or {}
     local defSec = gc["player_default"] or {}
     local lvlSec = gc["level_up"] or {}
-    local cultSec = gc["cultivation"] or {}
 
     -- 游戏设置行
     contentPanel_:AddChild(CreateListRow("游戏设置",
@@ -1268,13 +1260,12 @@ local function RenderGameConfig()
                 { label = "防御力", key = "def", value = defSec.def },
                 { label = "等级", key = "level", value = defSec.level },
                 { label = "金币", key = "gold", value = defSec.gold },
-                { label = "境界", key = "cultivation", value = defSec.cultivation },
             }, function(v)
                 gc["player_default"] = {
                     hp = v.hp or "100", mp = v.mp or "50",
                     atk = v.atk or "5", def = v.def or "3",
                     level = v.level or "1", exp = "0",
-                    gold = v.gold or "50", cultivation = v.cultivation,
+                    gold = v.gold or "50",
                 }
                 SaveCategoryToCloud("game_config")
             end)
@@ -1282,9 +1273,10 @@ local function RenderGameConfig()
 
     -- 升级公式
     contentPanel_:AddChild(CreateListRow("升级公式",
-        "基础经验:" .. (lvlSec.base_exp or 20) .. " 系数:" .. (lvlSec.exp_factor or 1.5),
+        "最高等级:" .. (lvlSec.max_level or 100) .. " 基础经验:" .. (lvlSec.base_exp or 20) .. " 系数:" .. (lvlSec.exp_factor or 1.5),
         function()
             ShowEditDialog("升级公式", {
+                { label = "最高等级", key = "max_level", value = lvlSec.max_level or "100" },
                 { label = "基础经验", key = "base_exp", value = lvlSec.base_exp },
                 { label = "经验系数", key = "exp_factor", value = lvlSec.exp_factor },
                 { label = "每级生命", key = "hp_per_level", value = lvlSec.hp_per_level },
@@ -1293,6 +1285,7 @@ local function RenderGameConfig()
                 { label = "每级防御", key = "def_per_level", value = lvlSec.def_per_level },
             }, function(v)
                 gc["level_up"] = {
+                    max_level = v.max_level or "100",
                     base_exp = v.base_exp or "20", exp_factor = tonumber(v.exp_factor) or 1.5,
                     hp_per_level = v.hp_per_level or "20", mp_per_level = v.mp_per_level or "10",
                     atk_per_level = v.atk_per_level or "3", def_per_level = v.def_per_level or "2",
@@ -1301,44 +1294,6 @@ local function RenderGameConfig()
             end)
         end, 3))
 
-    -- 境界表
-    local cultText = ""
-    for k, v in pairs(cultSec) do
-        cultText = cultText .. "Lv" .. tostring(k) .. "=" .. tostring(v) .. " "
-    end
-    contentPanel_:AddChild(CreateListRow("境界表", cultText,
-        function()
-            -- 动态生成境界字段
-            local cultFields = {}
-            local sortedKeys = {}
-            for k, _ in pairs(cultSec) do
-                table.insert(sortedKeys, tonumber(k) or 0)
-            end
-            table.sort(sortedKeys)
-            for _, lvl in ipairs(sortedKeys) do
-                table.insert(cultFields, { label = "等级" .. lvl, key = tostring(lvl), value = cultSec[tostring(lvl)] or cultSec[lvl] })
-            end
-            -- 额外空槽用于添加
-            table.insert(cultFields, { label = "新等级", key = "new_level", value = "", opts = { placeholder = "数字" } })
-            table.insert(cultFields, { label = "新境界", key = "new_name", value = "", opts = { placeholder = "境界名" } })
-            ShowEditDialog("境界配置", cultFields, function(v)
-                local newCult = {}
-                for _, lvl in ipairs(sortedKeys) do
-                    local key = tostring(lvl)
-                    if v[key] and v[key] ~= "" then
-                        newCult[key] = v[key]
-                    end
-                end
-                -- 添加新境界
-                if v.new_level and v.new_level ~= "" and v.new_name and v.new_name ~= "" then
-                    newCult[v.new_level] = v.new_name
-                end
-                gc["cultivation"] = newCult
-                SaveCategoryToCloud("game_config")
-                CloseDialog()
-                RenderGameConfig()
-            end)
-        end, 4))
 end
 
 -- =============== 通用列表配置管理 ===============
@@ -4030,77 +3985,7 @@ local function RenderGenerator()
         },
     }
 
-    -- 一键生成境界
-    local ALL_REALMS = { "练气期", "筑基期", "金丹期", "元婴期", "化神期", "渡劫期", "大乘期", "仙人境", "真仙境", "金仙境" }
-    local cultCountInput = UI.TextField { width = 60, height = 30, fontSize = 13, value = "7", placeholder = "数量" }
-    local cultResult = UI.Label { text = "", fontSize = 12, fontColor = { 100, 255, 180, 255 }, marginTop = 6 }
-    local cultSection = UI.Panel {
-        width = "100%",
-        flexDirection = "column",
-        backgroundColor = { 25, 35, 50, 220 },
-        borderRadius = 8,
-        padding = 12,
-        marginTop = 12,
-        borderColor = { 100, 200, 255, 80 },
-        borderWidth = 1,
-        children = {
-            UI.Label {
-                text = "一键生成境界",
-                fontSize = 16,
-                fontColor = { 100, 200, 255, 255 },
-                marginBottom = 4,
-            },
-            UI.Label {
-                text = "自动生成修仙境界体系，每个境界九层",
-                fontSize = 11,
-                fontColor = { 160, 160, 180, 255 },
-                marginBottom = 10,
-            },
-            UI.Panel {
-                flexDirection = "row",
-                alignItems = "center",
-                marginBottom = 10,
-                children = {
-                    UI.Label { text = "生成大境界数量:", fontSize = 12, fontColor = { 180, 180, 200, 255 }, marginRight = 8 },
-                    cultCountInput,
-                },
-            },
-            UI.Button {
-                text = "生成境界",
-                variant = "primary",
-                width = 120,
-                height = 36,
-                fontSize = 14,
-                onClick = function()
-                    local realmCount = tonumber(cultCountInput:GetValue()) or 7
-                    if realmCount < 1 then realmCount = 1 end
-                    local layers = { "一层", "二层", "三层", "四层", "五层", "六层", "七层", "八层", "九层" }
-                    local newCult = {}
-                    local lvl = 1
-                    for i = 1, realmCount do
-                        local realmName
-                        if i <= #ALL_REALMS then
-                            realmName = ALL_REALMS[i]
-                        else
-                            realmName = "第" .. (i - #ALL_REALMS) .. "重天"
-                        end
-                        for _, layer in ipairs(layers) do
-                            newCult[tostring(lvl)] = realmName .. layer
-                            lvl = lvl + 1
-                        end
-                    end
-                    -- 写入 gameConfig
-                    local gc = DataManager.gameConfig or {}
-                    gc["cultivation"] = newCult
-                    DataManager.gameConfig = gc
-                    SaveCategoryToCloud("game_config")
-                    cultResult:SetText("已生成 " .. (lvl - 1) .. " 个境界等级（" .. realmCount .. " 大境界 × 9 层）")
-                    ShowMsg("境界生成完成: " .. realmCount .. " 大境界 × 9 层 = " .. (lvl - 1) .. " 级")
-                end,
-            },
-            cultResult,
-        },
-    }
+
 
     -- 一键删除所有系统数据
     local deleteResult = UI.Label { text = "", fontSize = 12, fontColor = { 255, 100, 100, 255 }, marginTop = 6 }
@@ -4176,7 +4061,6 @@ local function RenderGenerator()
             npcSection,
             questSection,
             deploySection,
-            cultSection,
             deleteSection,
         },
     })

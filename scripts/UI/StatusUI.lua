@@ -99,7 +99,6 @@ function StatusUI.Render(parent)
             UI.Panel { width = "100%", height = 1, backgroundColor = { 50, 40, 70, 255 } },
 
             StatusUI.StatRow("角色名", s.name or "无名"),
-            StatusUI.StatRow("境界", s.cultivation or "练气期一层"),
             StatusUI.StatRow("等级", NumFormat.Short(level)),
             StatusUI.StatRow("经验", NumFormat.Short(curExp) .. " / " .. NumFormat.Short(needExp)),
 

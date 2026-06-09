@@ -90,7 +90,6 @@ local function ParseGameConfig(sections)
             level = defSec["等级"] or "1",
             exp = defSec["经验"] or "0",
             gold = defSec["金币"] or "50",
-            cultivation = defSec["境界"] or "练气期一层",
         }
     end
     -- 升级配置
@@ -103,15 +102,8 @@ local function ParseGameConfig(sections)
             mp_per_level = lvlSec["每级法力"] or "10",
             atk_per_level = lvlSec["每级攻击"] or "3",
             def_per_level = lvlSec["每级防御"] or "2",
+            max_level = lvlSec["最高等级"] or "100",
         }
-    end
-    -- 境界配置
-    local cultSec = sections["境界配置"]
-    if cultSec then
-        config["cultivation"] = {}
-        for k, v in pairs(cultSec) do
-            config["cultivation"][k] = v
-        end
     end
     return config
 end
@@ -385,7 +377,7 @@ local function PrintSystemStats()
     print("[DataManager] 礼包数量: " .. DataManager.CountTable(DataManager.giftpacks))
 end
 
---- 云端系统配置键名映射
+--- 云端系统配置键名映射（核心配置，启动时加载）
 local SYSTEM_CLOUD_KEYS = {
     "系统配置/game_config.ini",
     "系统配置/maps.ini",
@@ -397,9 +389,20 @@ local SYSTEM_CLOUD_KEYS = {
     "系统配置/dungeons.ini",
     "系统配置/npcs.ini",
     "系统配置/giftpacks.ini",
+}
+
+--- 延迟加载的键（打开对应面板时才拉取，减少启动压力）
+local LAZY_CLOUD_KEYS = {
     "系统配置/leaderboards.ini",
     "系统配置/ranking_data.ini",
     "系统配置/chat_messages.ini",
+}
+
+--- 延迟数据是否已加载的标记
+local lazyDataLoaded_ = {
+    leaderboards = false,
+    rankingData = false,
+    chatMessages = false,
 }
 
 --- 加载所有系统配置（优先云端，回退本地 ConfigData）
@@ -486,24 +489,7 @@ function DataManager.LoadSystemData(callback)
                 DataManager.giftpacks = ParseGiftPacks(IniParser.Parse(v))
                 hasCloud = true
             end
-            -- leaderboards
-            v = values["系统配置/leaderboards.ini"]
-            if v and v ~= "" then
-                DataManager.leaderboards = ParseLeaderboards(IniParser.Parse(v))
-                hasCloud = true
-            end
-            -- ranking_data（所有玩家排行数据）
-            v = values["系统配置/ranking_data.ini"]
-            if v and v ~= "" then
-                DataManager.rankingData = IniParser.Parse(v)
-                hasCloud = true
-            end
-            -- chat_messages（聊天记录）
-            v = values["系统配置/chat_messages.ini"]
-            if v and v ~= "" then
-                DataManager.chatMessages = DataManager.ParseChatMessages(IniParser.Parse(v))
-                hasCloud = true
-            end
+            -- leaderboards/ranking_data/chat_messages 改为按需加载，不在启动时拉取
 
             if hasCloud then
                 print("[DataManager] 已从云端加载系统配置")
@@ -521,6 +507,66 @@ function DataManager.LoadSystemData(callback)
             if callback then callback() end
         end,
     })
+end
+
+--- 按需加载排行榜/排行数据/聊天记录（首次调用时从云端拉取，之后使用缓存）
+---@param callback fun()|nil 加载完成回调
+function DataManager.LoadLazyData(callback)
+    -- 如果已经加载过，直接回调
+    if lazyDataLoaded_.leaderboards and lazyDataLoaded_.rankingData and lazyDataLoaded_.chatMessages then
+        if callback then callback() end
+        return
+    end
+
+    if not cloud_ then
+        if callback then callback() end
+        return
+    end
+
+    print("[DataManager] 按需加载排行榜/聊天数据...")
+    local batch = cloud_:BatchGet()
+    for _, key in ipairs(LAZY_CLOUD_KEYS) do
+        batch:Key(key)
+    end
+    batch:Fetch({
+        ok = function(values)
+            local v = values["系统配置/leaderboards.ini"]
+            if v and v ~= "" then
+                DataManager.leaderboards = ParseLeaderboards(IniParser.Parse(v))
+            end
+            lazyDataLoaded_.leaderboards = true
+
+            v = values["系统配置/ranking_data.ini"]
+            if v and v ~= "" then
+                DataManager.rankingData = IniParser.Parse(v)
+            end
+            lazyDataLoaded_.rankingData = true
+
+            v = values["系统配置/chat_messages.ini"]
+            if v and v ~= "" then
+                DataManager.chatMessages = DataManager.ParseChatMessages(IniParser.Parse(v))
+            end
+            lazyDataLoaded_.chatMessages = true
+
+            print("[DataManager] 排行榜/聊天数据加载完成")
+            if callback then callback() end
+        end,
+        error = function(code, reason)
+            print("[DataManager] 延迟数据加载失败: " .. tostring(reason))
+            -- 标记为已加载，避免重复尝试
+            lazyDataLoaded_.leaderboards = true
+            lazyDataLoaded_.rankingData = true
+            lazyDataLoaded_.chatMessages = true
+            if callback then callback() end
+        end,
+    })
+end
+
+--- 重置延迟加载标记（管理员修改数据后需要重新拉取时调用）
+function DataManager.ResetLazyData()
+    lazyDataLoaded_.leaderboards = false
+    lazyDataLoaded_.rankingData = false
+    lazyDataLoaded_.chatMessages = false
 end
 
 --- 计算 table 中的键数量
@@ -556,7 +602,6 @@ function DataManager.CreateNewPlayer(username, charName)
             atk = defaults.atk or "5",
             def = defaults.def or "3",
             gold = defaults.gold or "50",
-            cultivation = defaults.cultivation or "练气期一层",
             current_map = startMap,
         },
         bag = {},       -- { {name="物品名", count=数量}, ... }
@@ -615,7 +660,6 @@ function DataManager.PlayerDataToFiles(playerData)
         atk = "攻击力",
         def = "防御力",
         gold = "金币",
-        cultivation = "境界",
         current_map = "当前地图",
     }
     for k, v in pairs(playerData.status) do
@@ -728,7 +772,6 @@ function DataManager.FilesToPlayerData(fileMap)
         ["攻击力"] = "atk",
         ["防御力"] = "def",
         ["金币"] = "gold",
-        ["境界"] = "cultivation",
         ["当前地图"] = "current_map",
     }
 
@@ -1549,21 +1592,11 @@ function DataManager.GetExpForLevel(level)
     return BigNum.mul(baseExp, tostring(multiplier))
 end
 
---- 获取境界名称
----@param level string|number
----@return string
-function DataManager.GetCultivation(level)
-    local cultConfig = DataManager.gameConfig["cultivation"] or {}
-    local result = "练气期一层"
-    local bestLvl = "0"
-    local levelStr = tostring(level)
-    for lvlStr, name in pairs(cultConfig) do
-        if BigNum.gte(levelStr, lvlStr) and BigNum.gt(lvlStr, bestLvl) then
-            bestLvl = lvlStr
-            result = tostring(name)
-        end
-    end
-    return result
+--- 获取最高等级上限
+---@return number
+function DataManager.GetMaxLevel()
+    local lvlConfig = DataManager.gameConfig["level_up"] or {}
+    return tonumber(lvlConfig.max_level) or 100
 end
 
 --- 从排行榜中移除某玩家（删除时调用）
