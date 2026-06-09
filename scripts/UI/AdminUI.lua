@@ -3693,12 +3693,15 @@ local function RenderRealms()
         ::continue_realms::
     end
 
-    contentPanel_:AddChild(UI.Button {
-        text = "+ 添加境界",
-        variant = "primary", width = 120, marginTop = 8, marginLeft = 12,
-        onClick = function()
-            local nextStage = #DataManager.realms + 1
-            ShowEditDialog("添加境界", {
+    contentPanel_:AddChild(UI.Panel {
+        flexDirection = "row", width = "100%", gap = 8, marginTop = 8, marginLeft = 12,
+        children = {
+            UI.Button {
+                text = "+ 添加境界",
+                variant = "primary", width = 120,
+                onClick = function()
+                    local nextStage = #DataManager.realms + 1
+                    ShowEditDialog("添加境界", {
                 { label = "名称", key = "name", value = "", opts = { placeholder = "如：渡劫期" } },
                 { label = "阶段(排序)", key = "stage", value = tostring(nextStage) },
                 { label = "层数", key = "layers", value = "9" },
@@ -3737,7 +3740,25 @@ local function RenderRealms()
                 CloseDialog()
                 RenderRealms()
             end)
-        end,
+                end,
+            },
+            UI.Button {
+                text = "重置为默认(62阶)",
+                variant = "secondary", width = 160,
+                onClick = function()
+                    local IniParser = require("Utils.IniParser")
+                    local ConfigData = require("Config.ConfigData")
+                    DataManager.realms = DataManager.ParseRealms(IniParser.Parse(ConfigData.realms))
+                    DataManager.realmsByStage = {}
+                    for _, r in ipairs(DataManager.realms) do
+                        DataManager.realmsByStage[r.stage] = r
+                    end
+                    SaveCategoryToCloud("realms")
+                    ShowMsg("已重置为默认62阶境界并保存到云端")
+                    RenderRealms()
+                end,
+            },
+        },
     })
 
     -- =============== 境界经验丹管理区域 ===============

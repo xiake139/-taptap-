@@ -321,6 +321,11 @@ local function ParseRealms(sections)
     return realms
 end
 
+--- 暴露给外部调用（如 AdminUI 重置境界）
+function DataManager.ParseRealms(sections)
+    return ParseRealms(sections)
+end
+
 --- 解析 realm_pills.ini → realmPills 表
 local function ParseRealmPills(sections)
     local pills = {}
@@ -454,6 +459,7 @@ local SYSTEM_CLOUD_KEYS = {
     "系统配置/dungeons.ini",
     "系统配置/npcs.ini",
     "系统配置/giftpacks.ini",
+    "系统配置/realms.ini",
     "系统配置/realm_pills.ini",
 }
 
@@ -553,6 +559,16 @@ function DataManager.LoadSystemData(callback)
             v = values["系统配置/giftpacks.ini"]
             if v and v ~= "" then
                 DataManager.giftpacks = ParseGiftPacks(IniParser.Parse(v))
+                hasCloud = true
+            end
+            -- realms
+            v = values["系统配置/realms.ini"]
+            if v and v ~= "" then
+                DataManager.realms = ParseRealms(IniParser.Parse(v))
+                DataManager.realmsByStage = {}
+                for _, r in ipairs(DataManager.realms) do
+                    DataManager.realmsByStage[r.stage] = r
+                end
                 hasCloud = true
             end
             -- realm_pills
