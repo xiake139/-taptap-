@@ -286,11 +286,20 @@ function TradeUI.Refresh()
                 onClick = function() TradeUI.ShowSellDialog() end,
             },
             UI.Button {
+                text = "我的挂售",
+                variant = "secondary",
+                height = 32,
+                onClick = function() TradeUI.ShowMyListings() end,
+            },
+            UI.Button {
                 text = "刷新",
                 variant = "secondary",
                 height = 32,
                 onClick = function()
-                    LoadListings(function() TradeUI.Refresh() end)
+                    LoadListings(function()
+                        CollectPendingIncome()
+                        TradeUI.Refresh()
+                    end)
                 end,
             },
         },
@@ -299,22 +308,84 @@ function TradeUI.Refresh()
     -- 分割线
     parentRef_:AddChild(UI.Panel { width = "100%", height = 1, backgroundColor = { 60, 50, 80, 255 }, marginBottom = 6 })
 
-    -- 挂售列表
-    if #listings_ == 0 then
+    -- 挂售列表（只显示别人的）
+    local currentUser = player.account and player.account.username or ""
+    local hasOthers = false
+
+    for i, entry in ipairs(listings_) do
+        if entry.seller ~= currentUser then
+            TradeUI.RenderListingRow(entry, i, currentUser)
+            hasOthers = true
+        end
+    end
+
+    if not hasOthers then
         parentRef_:AddChild(UI.Label {
-            text = "暂无挂售物品",
+            text = "暂无其他玩家挂售物品",
             fontSize = 13,
             fontColor = { 120, 120, 140, 255 },
             textAlign = "center",
             marginTop = 20,
         })
-        return
     end
+end
 
+--- 显示我的挂售列表
+function TradeUI.ShowMyListings()
+    if not parentRef_ then return end
+    parentRef_:ClearChildren()
+
+    local player = DataManager.playerData
+    if not player then return end
     local currentUser = player.account and player.account.username or ""
 
+    -- 标题
+    parentRef_:AddChild(UI.Label {
+        text = "— 我的挂售 —",
+        fontSize = 16,
+        fontColor = { 200, 170, 100, 255 },
+        textAlign = "center",
+        marginTop = 8,
+    })
+
+    -- 返回按钮
+    parentRef_:AddChild(UI.Panel {
+        flexDirection = "row",
+        width = "100%",
+        justifyContent = "center",
+        gap = 8,
+        marginBottom = 8,
+        marginTop = 6,
+        children = {
+            UI.Button {
+                text = "返回交易所",
+                variant = "secondary",
+                height = 32,
+                onClick = function() TradeUI.Refresh() end,
+            },
+        },
+    })
+
+    -- 分割线
+    parentRef_:AddChild(UI.Panel { width = "100%", height = 1, backgroundColor = { 60, 50, 80, 255 }, marginBottom = 6 })
+
+    -- 只显示自己的挂售
+    local hasMine = false
     for i, entry in ipairs(listings_) do
-        TradeUI.RenderListingRow(entry, i, currentUser)
+        if entry.seller == currentUser then
+            TradeUI.RenderListingRow(entry, i, currentUser)
+            hasMine = true
+        end
+    end
+
+    if not hasMine then
+        parentRef_:AddChild(UI.Label {
+            text = "你还没有挂售任何物品",
+            fontSize = 13,
+            fontColor = { 120, 120, 140, 255 },
+            textAlign = "center",
+            marginTop = 20,
+        })
     end
 end
 
