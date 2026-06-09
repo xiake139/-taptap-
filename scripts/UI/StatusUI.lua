@@ -138,6 +138,23 @@ function StatusUI.Render(parent)
 
             StatusUI.StatRow("金币", NumFormat.Short(s.gold)),
             StatusUI.StatRow("所在地图", s.current_map or "未知"),
+
+            UI.Panel { width = "100%", height = 1, backgroundColor = { 50, 40, 70, 255 }, marginTop = 12 },
+
+            UI.Button {
+                text = "退出登录",
+                variant = "danger",
+                width = "100%",
+                marginTop = 8,
+                onClick = function()
+                    -- 清除当前账号状态
+                    DataManager.playerData = nil
+                    DataManager.currentAccount = nil
+                    DataManager.currentPassword = nil
+                    -- 回到登录界面
+                    SwitchState("login")
+                end,
+            },
         },
     })
 end
