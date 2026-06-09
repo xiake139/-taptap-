@@ -36,6 +36,7 @@ local QuestUI = nil
 local CombatUI = nil
 local DialogUI = nil
 local RealmUI = nil
+local TradeUI = nil
 
 --- 创建主游戏界面
 ---@return Widget
@@ -188,6 +189,7 @@ function GameUI.Create()
                             UI.Button { text = "装备", variant = "secondary", flexGrow = 1, marginRight = 4, onClick = function() GameUI.ShowPanel("equip") end },
                             UI.Button { text = "任务", variant = "secondary", flexGrow = 1, marginRight = 4, onClick = function() GameUI.ShowPanel("quest") end },
                             UI.Button { text = "礼包", variant = "secondary", flexGrow = 1, marginRight = 4, onClick = function() GameUI.ShowPanel("giftpack") end },
+                            UI.Button { text = "交易", variant = "secondary", flexGrow = 1, marginRight = 4, onClick = function() GameUI.ShowPanel("trade") end },
                             UI.Button { text = "排行", variant = "secondary", flexGrow = 1, marginRight = 4, onClick = function() GameUI.ShowPanel("leaderboard") end },
                             UI.Button { text = "聊天", variant = "secondary", flexGrow = 1, onClick = function() GameUI.ShowPanel("chat") end },
                         },
@@ -384,6 +386,9 @@ function GameUI.ShowPanel(panelType)
     elseif panelType == "realm" then
         if not RealmUI then RealmUI = require("UI.RealmUI") end
         RealmUI.Render(mainContent_)
+    elseif panelType == "trade" then
+        if not TradeUI then TradeUI = require("UI.TradeUI") end
+        TradeUI.Render(mainContent_)
     elseif panelType == "giftpack" then
         GameUI.RenderGiftPackPanel()
     elseif panelType == "leaderboard" then
