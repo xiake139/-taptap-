@@ -1728,6 +1728,15 @@ end
 -- 道具类型选项
 local ITEM_TYPES = { "攻击", "防御", "生命上限", "恢复血量", "恢复灵力", "经验倍率", "货币倍率", "材料" }
 
+--- 物品类型英文→中文（兼容旧数据）
+local ITEM_TYPE_EN_TO_CN = {
+    material = "材料", consumable = "恢复血量", attack = "攻击",
+    defense = "防御", hp = "生命上限", mp = "恢复灵力",
+    exp = "经验倍率", gold = "货币倍率", recover_hp = "恢复血量",
+    recover_mp = "恢复灵力", exp_boost = "经验倍率", gold_boost = "货币倍率",
+    currency_boost = "货币倍率", max_hp = "生命上限",
+}
+
 --- 创建道具类型选择器
 ---@param currentType string
 ---@param disabled boolean
@@ -1739,6 +1748,8 @@ local function CreateTypeSelector(currentType, disabled)
         for t in currentType:gmatch("[^|]+") do
             local trimmed = t:match("^%s*(.-)%s*$")
             if trimmed ~= "" then
+                -- 英文类型自动转中文
+                trimmed = ITEM_TYPE_EN_TO_CN[trimmed] or trimmed
                 selectedSet[trimmed] = true
             end
         end
@@ -1979,9 +1990,11 @@ RenderItems = function()
     ShowMsg("共 " .. count .. " 种物品")
 
     for id, data in pairs(DataManager.items) do
-        if not MatchSearch(data.name or id) and not MatchSearch(data.type) then goto continue_items end
+        local typeCN = ITEM_TYPE_EN_TO_CN[data.type] or data.type
+        if not MatchSearch(data.name or id) and not MatchSearch(data.type) and not MatchSearch(typeCN) then goto continue_items end
         idx = idx + 1
         local typeStr = data.type or "材料"
+        typeStr = ITEM_TYPE_EN_TO_CN[typeStr] or typeStr
         local row = CreateListRow(
             (data.name or id) .. "  [" .. typeStr .. "]",
             "数值:" .. tostring(data.value or 0),

@@ -2189,13 +2189,25 @@ function DataManager.SyncLeaderboardScores(callback)
                 DataManager.rankingData = IniParser.Parse(raw)
             end
 
-            -- 合并当前玩家数据
+            -- 合并当前玩家数据（含装备+buff+境界+战魂加成）
+            local StatusUI = require("UI.StatusUI")
+            local BagUI = require("UI.BagUI")
+            local eAtk, eDef, eHp = StatusUI.GetEquipBonus()
+            local buffAtk = BagUI.GetBuffValue(pd, "攻击")
+            local buffDef = BagUI.GetBuffValue(pd, "防御")
+            local buffHp = BagUI.GetBuffValue(pd, "生命上限")
+            local rAtk, rDef, rHp = DataManager.GetRealmBonus()
+            local soulBonus = DataManager.GetBattleSoulBonus(pd.status.battle_soul_level)
+            local totalAtk = BigNum.add(BigNum.add(BigNum.add(BigNum.add(pd.status.atk or "5", tostring(eAtk)), tostring(buffAtk)), rAtk), soulBonus.atk)
+            local totalDef = BigNum.add(BigNum.add(BigNum.add(BigNum.add(pd.status.def or "3", tostring(eDef)), tostring(buffDef)), rDef), soulBonus.def)
+            local totalHp = BigNum.add(BigNum.add(BigNum.add(BigNum.add(pd.status.max_hp or "100", tostring(eHp)), tostring(buffHp)), rHp), soulBonus.max_hp)
+
             DataManager.rankingData[charName] = {
                 ["等级"] = NumFormat.Int(pd.status.level or 1),
                 ["金币"] = NumFormat.Int(pd.status.gold or 0),
-                ["攻击力"] = NumFormat.Int(pd.status.atk or 0),
-                ["防御力"] = NumFormat.Int(pd.status.def or 0),
-                ["生命上限"] = NumFormat.Int(pd.status.max_hp or 100),
+                ["攻击力"] = NumFormat.Int(totalAtk),
+                ["防御力"] = NumFormat.Int(totalDef),
+                ["生命上限"] = NumFormat.Int(totalHp),
             }
 
             -- 清理无效条目
@@ -2221,13 +2233,25 @@ function DataManager.SyncLeaderboardScores(callback)
         end,
         error = function(_, r)
             print("[DataManager] 排行榜读取失败，尝试直接写入: " .. tostring(r))
-            -- 读取失败时仍尝试写入本地数据
+            -- 读取失败时仍尝试写入本地数据（含装备+buff+境界+战魂加成）
+            local StatusUI2 = require("UI.StatusUI")
+            local BagUI2 = require("UI.BagUI")
+            local eAtk2, eDef2, eHp2 = StatusUI2.GetEquipBonus()
+            local buffAtk2 = BagUI2.GetBuffValue(pd, "攻击")
+            local buffDef2 = BagUI2.GetBuffValue(pd, "防御")
+            local buffHp2 = BagUI2.GetBuffValue(pd, "生命上限")
+            local rAtk2, rDef2, rHp2 = DataManager.GetRealmBonus()
+            local soulBonus2 = DataManager.GetBattleSoulBonus(pd.status.battle_soul_level)
+            local totalAtk2 = BigNum.add(BigNum.add(BigNum.add(BigNum.add(pd.status.atk or "5", tostring(eAtk2)), tostring(buffAtk2)), rAtk2), soulBonus2.atk)
+            local totalDef2 = BigNum.add(BigNum.add(BigNum.add(BigNum.add(pd.status.def or "3", tostring(eDef2)), tostring(buffDef2)), rDef2), soulBonus2.def)
+            local totalHp2 = BigNum.add(BigNum.add(BigNum.add(BigNum.add(pd.status.max_hp or "100", tostring(eHp2)), tostring(buffHp2)), rHp2), soulBonus2.max_hp)
+
             DataManager.rankingData[charName] = {
                 ["等级"] = NumFormat.Int(pd.status.level or 1),
                 ["金币"] = NumFormat.Int(pd.status.gold or 0),
-                ["攻击力"] = NumFormat.Int(pd.status.atk or 0),
-                ["防御力"] = NumFormat.Int(pd.status.def or 0),
-                ["生命上限"] = NumFormat.Int(pd.status.max_hp or 100),
+                ["攻击力"] = NumFormat.Int(totalAtk2),
+                ["防御力"] = NumFormat.Int(totalDef2),
+                ["生命上限"] = NumFormat.Int(totalHp2),
             }
             local content = IniParser.Serialize(DataManager.rankingData)
             cloud_:Set("系统配置/ranking_data.ini", content, {

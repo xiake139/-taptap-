@@ -40,8 +40,9 @@ local function SerializeListings(list, incomeList)
         table.insert(lines, "seller=" .. (entry.seller or ""))
         table.insert(lines, "item_name=" .. (entry.item_name or ""))
         table.insert(lines, "item_count=" .. tostring(entry.item_count or 1))
-        table.insert(lines, "price_type=" .. (entry.price_type or "gold"))  -- "gold" or "item"
+        table.insert(lines, "price_type=" .. (entry.price_type or "currency"))  -- "currency" or "item"
         table.insert(lines, "price_gold=" .. (entry.price_gold or "0"))
+        table.insert(lines, "price_currency_name=" .. (entry.price_currency_name or "金币"))
         table.insert(lines, "price_item=" .. (entry.price_item or ""))
         table.insert(lines, "price_item_count=" .. tostring(entry.price_item_count or 0))
         table.insert(lines, "timestamp=" .. tostring(entry.timestamp or 0))
@@ -51,7 +52,8 @@ local function SerializeListings(list, incomeList)
     for i, entry in ipairs(incomeList or {}) do
         table.insert(lines, "[income_" .. i .. "]")
         table.insert(lines, "recipient=" .. (entry.recipient or ""))
-        table.insert(lines, "type=" .. (entry.type or "gold"))
+        table.insert(lines, "type=" .. (entry.type or "currency"))
+        table.insert(lines, "currency_name=" .. (entry.currency_name or "金币"))
         table.insert(lines, "gold=" .. (entry.gold or "0"))
         table.insert(lines, "item_name=" .. (entry.item_name or ""))
         table.insert(lines, "item_count=" .. tostring(entry.item_count or 0))
@@ -72,20 +74,27 @@ local function DeserializeListings(str)
     local incomeList = {}
     for sectionName, data in pairs(sections) do
         if sectionName:find("^listing_") then
+            local ptype = data["price_type"] or "gold"
+            -- 兼容旧数据："gold" 视为 "currency" + 金币
+            if ptype == "gold" then ptype = "currency" end
             table.insert(list, {
                 seller = data["seller"] or "",
                 item_name = data["item_name"] or "",
                 item_count = tonumber(data["item_count"]) or 1,
-                price_type = data["price_type"] or "gold",
+                price_type = ptype,
                 price_gold = data["price_gold"] or "0",
+                price_currency_name = data["price_currency_name"] or "金币",
                 price_item = data["price_item"] or "",
                 price_item_count = tonumber(data["price_item_count"]) or 0,
                 timestamp = tonumber(data["timestamp"]) or 0,
             })
         elseif sectionName:find("^income_") then
+            local itype = data["type"] or "gold"
+            if itype == "gold" then itype = "currency" end
             table.insert(incomeList, {
                 recipient = data["recipient"] or "",
-                type = data["type"] or "gold",
+                type = itype,
+                currency_name = data["currency_name"] or "金币",
                 gold = data["gold"] or "0",
                 item_name = data["item_name"] or "",
                 item_count = tonumber(data["item_count"]) or 0,
@@ -183,12 +192,13 @@ local function CollectPendingIncome()
 
     -- 发放收入到玩家数据
     for _, entry in ipairs(collected) do
-        if entry.type == "gold" then
-            -- 增加金币
-            local curGold = BigNum.new(player.status.gold)
-            local addGold = BigNum.new(entry.gold)
-            player.status.gold = BigNum.add(curGold, addGold)
-            TradeUI.ShowMsg("收到交易收入：" .. NumFormat.Short(entry.gold) .. " 金币（" .. (entry.from_buyer or "?") .. " 购买了你的 " .. (entry.item_sold or "?") .. "）")
+        if entry.type == "currency" or entry.type == "gold" then
+            -- 增加对应货币
+            local currName = entry.currency_name or "金币"
+            local curBal = DataManager.GetPlayerCurrency(player, currName)
+            local newBal = BigNum.add(curBal, entry.gold)
+            DataManager.SetPlayerCurrency(player, currName, newBal)
+            TradeUI.ShowMsg("收到交易收入：" .. NumFormat.Short(entry.gold) .. " " .. currName .. "（" .. (entry.from_buyer or "?") .. " 购买了你的 " .. (entry.item_sold or "?") .. "）")
         else
             -- 增加物品
             local addedToBag = false
@@ -261,10 +271,16 @@ function TradeUI.Refresh()
         marginTop = 8,
     })
 
-    -- 玩家金币显示
+    -- 玩家货币余额显示（所有自定义货币）
+    local currencies = DataManager.GetCurrencyList()
+    local currTexts = {}
+    for _, cname in ipairs(currencies) do
+        local bal = DataManager.GetPlayerCurrency(player, cname)
+        table.insert(currTexts, cname .. "：" .. NumFormat.Short(bal))
+    end
     parentRef_:AddChild(UI.Label {
-        text = "金币：" .. NumFormat.Short(player.status.gold),
-        fontSize = 14,
+        text = table.concat(currTexts, "  "),
+        fontSize = 13,
         fontColor = { 255, 215, 0, 255 },
         textAlign = "center",
         marginBottom = 4,
@@ -395,8 +411,9 @@ end
 function TradeUI.RenderListingRow(entry, index, currentUser)
     local isMine = (entry.seller == currentUser)
     local priceText = ""
-    if entry.price_type == "gold" then
-        priceText = NumFormat.Short(entry.price_gold) .. " 金币"
+    if entry.price_type == "currency" or entry.price_type == "gold" then
+        local currName = entry.price_currency_name or "金币"
+        priceText = NumFormat.Short(entry.price_gold) .. " " .. currName
     else
         priceText = (entry.price_item or "?") .. " x" .. tostring(entry.price_item_count or 1)
     end
@@ -538,7 +555,9 @@ function TradeUI.ShowPriceDialog(bagItem)
     CloseDialog()  -- 关闭之前的弹窗
 
     local sellCount = 1
-    local priceType = "gold"  -- "gold" or "item"
+    local priceType = "currency"  -- "currency" or "item"
+    local currencies = DataManager.GetCurrencyList()
+    local selectedCurrency = currencies[1] or "金币"
     local priceGold = "100"
     local priceItemName = ""
     local priceItemCount = 1
@@ -582,12 +601,12 @@ function TradeUI.ShowPriceDialog(bagItem)
             marginTop = 8,
             children = {
                 UI.Button {
-                    text = "金币定价",
-                    variant = priceType == "gold" and "primary" or "secondary",
+                    text = "货币定价",
+                    variant = priceType == "currency" and "primary" or "secondary",
                     flexGrow = 1,
                     height = 30,
                     onClick = function()
-                        priceType = "gold"
+                        priceType = "currency"
                         RenderPriceContent()
                     end,
                 },
@@ -605,7 +624,32 @@ function TradeUI.ShowPriceDialog(bagItem)
         })
 
         -- 根据定价方式显示不同输入
-        if priceType == "gold" then
+        if priceType == "currency" then
+            -- 货币选择按钮行
+            if #currencies > 1 then
+                local currBtns = {}
+                for _, cname in ipairs(currencies) do
+                    table.insert(currBtns, UI.Button {
+                        text = cname,
+                        variant = selectedCurrency == cname and "primary" or "secondary",
+                        height = 26,
+                        paddingLeft = 8, paddingRight = 8,
+                        onClick = function()
+                            selectedCurrency = cname
+                            RenderPriceContent()
+                        end,
+                    })
+                end
+                contentArea:AddChild(UI.Panel {
+                    flexDirection = "row",
+                    width = "100%",
+                    gap = 4,
+                    marginTop = 8,
+                    flexWrap = "wrap",
+                    children = currBtns,
+                })
+            end
+
             contentArea:AddChild(UI.Panel {
                 flexDirection = "row",
                 alignItems = "center",
@@ -613,7 +657,7 @@ function TradeUI.ShowPriceDialog(bagItem)
                 gap = 6,
                 marginTop = 8,
                 children = {
-                    UI.Label { text = "售价金币：", fontSize = 13, fontColor = { 255, 215, 0, 255 } },
+                    UI.Label { text = "售价" .. selectedCurrency .. "：", fontSize = 13, fontColor = { 255, 215, 0, 255 } },
                     UI.TextField {
                         value = priceGold,
                         width = 120,
@@ -712,7 +756,7 @@ function TradeUI.ShowPriceDialog(bagItem)
                                 variant = "primary",
                                 flexGrow = 1,
                                 onClick = function()
-                                    TradeUI.ConfirmSell(bagItem, sellCount, priceType, priceGold, priceItemName, priceItemCount)
+                                    TradeUI.ConfirmSell(bagItem, sellCount, priceType, priceGold, priceItemName, priceItemCount, selectedCurrency)
                                 end,
                             },
                             UI.Button {
@@ -740,7 +784,7 @@ end
 -- =============== 交易逻辑 ===============
 
 --- 确认挂售
-function TradeUI.ConfirmSell(bagItem, sellCount, priceType, priceGold, priceItemName, priceItemCount)
+function TradeUI.ConfirmSell(bagItem, sellCount, priceType, priceGold, priceItemName, priceItemCount, selectedCurrency)
     if not GameUI then GameUI = require("UI.GameUI") end
     local player = DataManager.playerData
     if not player then return end
@@ -765,10 +809,10 @@ function TradeUI.ConfirmSell(bagItem, sellCount, priceType, priceGold, priceItem
     end
 
     -- 校验定价
-    if priceType == "gold" then
+    if priceType == "currency" then
         local gold = tonumber(priceGold)
         if not gold or gold <= 0 then
-            TradeUI.ShowMsg("请输入有效的金币价格")
+            TradeUI.ShowMsg("请输入有效的" .. (selectedCurrency or "货币") .. "价格")
             return
         end
     else
@@ -808,7 +852,8 @@ function TradeUI.ConfirmSell(bagItem, sellCount, priceType, priceGold, priceItem
         item_name = bagItem.name,
         item_count = sellCount,
         price_type = priceType,
-        price_gold = priceType == "gold" and priceGold or "0",
+        price_gold = priceType == "currency" and priceGold or "0",
+        price_currency_name = selectedCurrency or "金币",
         price_item = priceType == "item" and priceItemName or "",
         price_item_count = priceType == "item" and priceItemCount or 0,
         timestamp = os.time(),
@@ -851,15 +896,16 @@ function TradeUI.BuyListing(index)
     end
 
     -- 检查支付能力
-    if entry.price_type == "gold" then
-        local gold = BigNum.new(player.status.gold)
+    if entry.price_type == "currency" or entry.price_type == "gold" then
+        local currName = entry.price_currency_name or "金币"
+        local bal = DataManager.GetPlayerCurrency(player, currName)
         local price = BigNum.new(entry.price_gold)
-        if BigNum.lt(gold, price) then
-            TradeUI.ShowMsg("金币不足，需要 " .. NumFormat.Short(entry.price_gold) .. " 金币")
+        if BigNum.lt(bal, price) then
+            TradeUI.ShowMsg(currName .. "不足，需要 " .. NumFormat.Short(entry.price_gold) .. " " .. currName)
             return
         end
-        -- 扣除金币
-        player.status.gold = BigNum.sub(gold, price)
+        -- 扣除对应货币
+        DataManager.SetPlayerCurrency(player, currName, BigNum.sub(bal, price))
     else
         -- 检查背包中是否有足够的交换物品
         local found = false
@@ -911,9 +957,12 @@ function TradeUI.BuyListing(index)
         sender = currentUser,
         timestamp = os.time(),
     }
-    if entry.price_type == "gold" then
+    if entry.price_type == "currency" or entry.price_type == "gold" then
+        local currName = entry.price_currency_name or "金币"
         mailData.content = currentUser .. " 购买了你的 " .. entry.item_name .. " x" .. tostring(entry.item_count)
-        mailData.gold = entry.price_gold
+        -- 使用邮箱的多货币字段
+        mailData.gold = "0"
+        mailData.currencies = { [currName] = entry.price_gold }
         mailData.items = ""
     else
         mailData.content = currentUser .. " 用 " .. entry.price_item .. " x" .. tostring(entry.price_item_count) .. " 换购了你的 " .. entry.item_name .. " x" .. tostring(entry.item_count)
