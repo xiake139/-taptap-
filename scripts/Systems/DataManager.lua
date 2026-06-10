@@ -45,6 +45,30 @@ DataManager.admins = {}  -- 管理员列表 { [username] = true }
 DataManager.leaderboards = {}
 DataManager.rankingData = {}  -- 所有玩家的排行数据 { [玩家名] = { 名称=xx, 等级=xx, ... } }
 DataManager.chatMessages = {} -- 聊天记录列表 { {sender=xx, content=xx, time=xx}, ... }
+DataManager.petConfig = {    -- 宠物成长配置（公式化）
+    -- 升星消耗公式：数量 = star_cost_base + star_cost_growth × 当前星级
+    star_cost_material = "升星石",
+    star_cost_base = 100,       -- 0星→1星消耗
+    star_cost_growth = 100,     -- 每级递增
+    star_max_level = 10,        -- 升星上限（后台可配置）
+    -- 进阶消耗公式：数量 = adv_cost_base + adv_cost_growth × 当前阶数（最高10阶）
+    adv_cost_material = "进阶丹",
+    adv_cost_base = 30,         -- 0阶→1阶消耗
+    adv_cost_growth = 20,       -- 每级递增
+    adv_max_level = 10,         -- 进阶上限（固定10阶）
+    -- 品质消耗（品质有上限：白→绿→...→神，共10级）
+    quality_cost = {
+        ["白"] = "品质精华:200", ["绿"] = "品质精华:400", ["蓝"] = "品质精华:600",
+        ["紫"] = "品质精华:800", ["橙"] = "品质精华:1000", ["红"] = "品质精华:2000",
+        ["金"] = "品质精华:2000", ["圣"] = "品质精华:3000", ["仙"] = "品质精华:3000", ["神"] = "品质精华:5000",
+    },
+    -- 属性加成公式（递增）：第N级加成 = base + growth × (N-1)
+    -- 例: base=10, growth=5 → 第1级+10, 第2级+15, 第3级+20 ...
+    star_bonus = { atk = 10, def = 6, hp = 50, atk_g = 5, def_g = 3, hp_g = 25 },
+    advance_bonus = { atk = 20, def = 12, hp = 100, atk_g = 10, def_g = 6, hp_g = 50 },
+    quality_bonus = { atk = 15, def = 8, hp = 60, atk_g = 8, def_g = 4, hp_g = 30 },
+}
+DataManager.petTypes = {}    -- 宠物种类配置 { [id] = { name, desc, atk, def, max_hp, quality, skill } }
 DataManager.gameConfig = {}
 
 -- 当前玩家数据
@@ -163,6 +187,11 @@ local function ParseItems(sections)
             duration = durVal > 0 and tostring(durVal) or nil,
             desc = data["描述"] or "",
         }
+        -- 宠物装备额外字段
+        if data["宠物部位"] then entry.pet_slot = data["宠物部位"] end
+        if data["宠物攻击"] then entry.pet_atk = data["宠物攻击"] end
+        if data["宠物防御"] then entry.pet_def = data["宠物防御"] end
+        if data["宠物生命"] then entry.pet_hp = data["宠物生命"] end
         items[sectionName] = entry
     end
     return items
@@ -351,6 +380,25 @@ local function InjectRealmPillsToItems()
     end
 end
 
+
+
+--- 解析 pet_types.ini → petTypes 表
+local function ParsePetTypes(sections)
+    local types = {}
+    for id, data in pairs(sections) do
+        types[id] = {
+            name = data["名称"] or id,
+            desc = data["描述"] or "",
+            atk = data["攻击"] or "10",
+            def = data["防御"] or "5",
+            max_hp = data["生命"] or "100",
+            quality = data["品质"] or "白",
+            skill = data["技能"] or "",
+        }
+    end
+    return types
+end
+
 --- 解析 leaderboards.ini → leaderboards 表
 local function ParseLeaderboards(sections)
     local boards = {}
@@ -461,6 +509,7 @@ local SYSTEM_CLOUD_KEYS = {
     "系统配置/giftpacks.ini",
     "系统配置/realms.ini",
     "系统配置/realm_pills.ini",
+    "系统配置/pet_types.ini",
 }
 
 --- 延迟加载的键（打开对应面板时才拉取，减少启动压力）
@@ -576,6 +625,13 @@ function DataManager.LoadSystemData(callback)
             if v and v ~= "" then
                 DataManager.realmPills = ParseRealmPills(IniParser.Parse(v))
                 InjectRealmPillsToItems()
+                hasCloud = true
+            end
+            -- pet_config: 已固定写死在 DataManager.petConfig，不再从云端加载
+            -- pet_types
+            v = values["系统配置/pet_types.ini"]
+            if v and v ~= "" then
+                DataManager.petTypes = ParsePetTypes(IniParser.Parse(v))
                 hasCloud = true
             end
             -- leaderboards/ranking_data/chat_messages 改为按需加载，不在启动时拉取
@@ -830,6 +886,33 @@ function DataManager.PlayerDataToFiles(playerData)
     end
     files["礼包兑换记录.ini"] = IniParser.Serialize(giftSections)
 
+    -- 宠物数据.ini
+    local petSections = {}
+    petSections["宠物列表"] = {}
+    local pets = playerData.pets or {}
+    petSections["宠物列表"]["数量"] = tostring(#pets)
+    for i, pet in ipairs(pets) do
+        -- 格式: 名称|等级|经验|星级|阶|品质|出战|基础攻|基础防|基础血
+        local deployed = pet.deployed and "1" or "0"
+        local base = (pet.name or "") .. "|" .. (pet.level or "1") .. "|" .. (pet.exp or "0") .. "|"
+            .. (pet.star or "0") .. "|" .. (pet.stage or "0") .. "|" .. (pet.quality or "白") .. "|"
+            .. deployed .. "|" .. (pet.atk or "10") .. "|" .. (pet.def or "5") .. "|" .. (pet.max_hp or "100")
+        petSections["宠物列表"]["宠物_" .. i] = base
+        -- 宠物装备：宠物_i_装备 = 项圈:装备名,护甲:装备名,...
+        local equipParts = {}
+        if pet.equip then
+            for slot, eName in pairs(pet.equip) do
+                if eName and eName ~= "" then
+                    table.insert(equipParts, slot .. ":" .. eName)
+                end
+            end
+        end
+        if #equipParts > 0 then
+            petSections["宠物列表"]["宠物_" .. i .. "_装备"] = table.concat(equipParts, ",")
+        end
+    end
+    files["宠物数据.ini"] = IniParser.Serialize(petSections)
+
     return files
 end
 
@@ -1002,12 +1085,58 @@ function DataManager.FilesToPlayerData(fileMap)
         end
     end
 
+    -- 解析 宠物数据.ini
+    playerData.pets = {}
+    if fileMap["宠物数据.ini"] then
+        local sections = IniParser.Parse(fileMap["宠物数据.ini"])
+        local petSection = sections["宠物列表"]
+        if petSection then
+            local count = tonumber(petSection["数量"]) or 0
+            for i = 1, count do
+                local raw = petSection["宠物_" .. i]
+                if raw then
+                    -- 格式: 名称|等级|经验|星级|阶|品质|出战|基础攻|基础防|基础血
+                    local parts = {}
+                    for part in raw:gmatch("[^|]+") do
+                        table.insert(parts, part)
+                    end
+                    if #parts >= 6 then
+                        local pet = {
+                            name = parts[1],
+                            level = parts[2] or "1",
+                            exp = parts[3] or "0",
+                            star = parts[4] or "0",
+                            stage = parts[5] or "0",
+                            quality = parts[6] or "白",
+                            deployed = (parts[7] == "1"),
+                            atk = parts[8] or "10",
+                            def = parts[9] or "5",
+                            max_hp = parts[10] or "100",
+                            equip = {},
+                        }
+                        -- 解析宠物装备
+                        local equipRaw = petSection["宠物_" .. i .. "_装备"]
+                        if equipRaw and equipRaw ~= "" then
+                            for entry in equipRaw:gmatch("[^,]+") do
+                                local slot, eName = entry:match("^(.+):(.+)$")
+                                if slot and eName then
+                                    pet.equip[slot] = eName
+                                end
+                            end
+                        end
+                        table.insert(playerData.pets, pet)
+                    end
+                end
+            end
+        end
+    end
+
     return playerData
 end
 
 --- 云端文件名列表
 --- 玩家游戏数据文件列表（不含账号配置，账号集中存储）
-DataManager.CLOUD_FILES = { "状态数据.ini", "背包数据.ini", "装备数据.ini", "任务数据.ini", "Buff数据.ini", "礼包兑换记录.ini" }
+DataManager.CLOUD_FILES = { "状态数据.ini", "背包数据.ini", "装备数据.ini", "任务数据.ini", "Buff数据.ini", "礼包兑换记录.ini", "宠物数据.ini" }
 
 --- 集中式账号配置云端键（所有玩家账号密码存在这一个文件里）
 DataManager.ACCOUNT_REGISTRY_KEY = "账号配置.ini"

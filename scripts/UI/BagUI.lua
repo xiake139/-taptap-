@@ -127,14 +127,16 @@ function BagUI.Refresh()
         local sellPrice = itemData and (itemData.price_sell or "0") or "0"
 
         local itemType = itemData and itemData.type or "材料"
-        local isConsumable = itemData and itemType ~= "材料" and not itemData.slot
-        local isEquip = itemData and itemData.slot
+        local isPetEquip = itemType:find("宠物装备") ~= nil
+        local isPet = (not isPetEquip) and (itemType == "宠物" or DataManager.petTypes[item.name] ~= nil)
+        local isConsumable = itemData and itemType ~= "材料" and not itemData.slot and not isPetEquip and not isPet
+        local isEquip = itemData and itemData.slot and not isPetEquip
         -- 宝箱判断：type含"宝箱"，或物品名匹配宝箱配置缓存
-        local isChest = (itemType:find("宝箱")) or BagUI.IsChest(item.name)
+        local isChest = (not isPetEquip and not isPet) and ((itemType:find("宝箱")) or BagUI.IsChest(item.name))
 
         local btnChildren = {}
 
-        -- 装备类物品显示详情按钮
+        -- 装备类物品显示详情按钮（宠物装备不走人物装备流程）
         if isEquip then
             table.insert(btnChildren, UI.Button {
                 text = "详情",
@@ -147,7 +149,15 @@ function BagUI.Refresh()
             })
         end
 
-        if isChest then
+        if isPet then
+            -- 宠物物品：激活按钮
+            table.insert(btnChildren, UI.Button {
+                text = "激活",
+                variant = "success",
+                height = 26,
+                onClick = function() BagUI.ActivatePet(i, item.name) end,
+            })
+        elseif isChest then
             table.insert(btnChildren, UI.Button {
                 text = "打开",
                 variant = "success",
@@ -491,6 +501,48 @@ function BagUI.EquipItem(index)
     DataManager.SaveToCloud(player)
     BagUI.Refresh()
     BagUI.ShowTip("已装备: " .. equipedName)
+end
+
+--- 激活宠物（从背包中消耗宠物物品，添加到宠物列表）
+---@param index number
+---@param petName string
+function BagUI.ActivatePet(index, petName)
+    local player = DataManager.playerData
+    if not player then BagUI.ShowTip("数据异常"); return end
+
+    local item = player.bag[index]
+    if not item then BagUI.ShowTip("物品不存在"); return end
+
+    if not player.pets then player.pets = {} end
+
+    -- 从 petTypes 配置获取基础属性
+    local petData = DataManager.petTypes[petName]
+    local newPet = {
+        name = petName,
+        level = "1",
+        exp = "0",
+        star = "0",
+        stage = "0",
+        quality = petData and petData.quality or "白",
+        deployed = false,
+        atk = petData and petData.atk or "10",
+        def = petData and petData.def or "5",
+        max_hp = petData and petData.max_hp or "100",
+        equip = {},
+    }
+
+    table.insert(player.pets, newPet)
+
+    -- 消耗背包物品
+    item.count = BigNum.sub(item.count or "1", "1")
+    if BigNum.lte(item.count, "0") then
+        table.remove(player.bag, index)
+    end
+
+    print("[BagUI] 激活宠物: " .. petName)
+    DataManager.SaveToCloud(player)
+    BagUI.Refresh()
+    BagUI.ShowTip("获得宠物: " .. petName .. "！")
 end
 
 --- 出售物品

@@ -21,6 +21,9 @@ local monsterAtk_ = "0"
 local monsterDef_ = "0"
 local inCombat_ = false
 
+-- 出战宠物战斗状态
+local combatPets_ = {}  -- { {name, atk, def, hp, maxHp, alive} }
+
 --- 开始战斗
 ---@param monsterName string
 ---@param parent Widget
@@ -41,6 +44,26 @@ function CombatUI.Start(monsterName, parent, onFinish)
     monsterHp_ = monsterMaxHp_
     monsterAtk_ = BigNum.new(mData.atk or "5")
     monsterDef_ = BigNum.new(mData.def or "3")
+
+    -- 初始化出战宠物战斗数据
+    combatPets_ = {}
+    local player = DataManager.playerData
+    if player and player.pets then
+        for _, pet in ipairs(player.pets) do
+            if pet.deployed then
+                local petMaxHp = BigNum.new(pet.max_hp or "100")
+                table.insert(combatPets_, {
+                    name = pet.name or "宠物",
+                    atk = BigNum.new(pet.atk or "10"),
+                    def = BigNum.new(pet.def or "5"),
+                    hp = petMaxHp,
+                    maxHp = petMaxHp,
+                    alive = true,
+                })
+                print("[CombatUI] 出战宠物: " .. (pet.name or "?") .. " ATK=" .. (pet.atk or "10") .. " DEF=" .. (pet.def or "5") .. " HP=" .. (pet.max_hp or "100"))
+            end
+        end
+    end
 
     CombatUI.Render()
 end
@@ -111,6 +134,9 @@ function CombatUI.Render()
 
             UI.Label { text = "VS", fontSize = 14, fontColor = { 200, 200, 200, 255 }, textAlign = "center" },
 
+            -- 出战宠物信息
+            CombatUI.RenderPetPanel(),
+
             -- 玩家信息
             UI.Panel {
                 width = "100%",
@@ -153,6 +179,45 @@ function CombatUI.Render()
     })
 end
 
+--- 渲染出战宠物面板
+function CombatUI.RenderPetPanel()
+    if #combatPets_ == 0 then
+        return UI.Panel { height = 0 }
+    end
+
+    local petChildren = {}
+    for _, pet in ipairs(combatPets_) do
+        local nameColor = pet.alive and { 180, 255, 180, 255 } or { 120, 120, 120, 255 }
+        local hpColor = pet.alive and { 100, 220, 100, 255 } or { 120, 120, 120, 255 }
+        local statusText = pet.alive
+            and ("HP:" .. NumFormat.Short(pet.hp) .. "/" .. NumFormat.Short(pet.maxHp) .. "  攻:" .. NumFormat.Short(pet.atk))
+            or "已阵亡"
+        table.insert(petChildren, UI.Panel {
+            width = "100%",
+            flexDirection = "row",
+            justifyContent = "space-between",
+            alignItems = "center",
+            children = {
+                UI.Label { text = "🐾 " .. pet.name, fontSize = 12, fontColor = nameColor },
+                UI.Label { text = statusText, fontSize = 11, fontColor = hpColor },
+            },
+        })
+    end
+
+    return UI.Panel {
+        width = "100%",
+        flexDirection = "column",
+        backgroundColor = { 20, 40, 20, 200 },
+        borderRadius = 6,
+        padding = 6,
+        gap = 3,
+        children = {
+            UI.Label { text = "出战宠物", fontSize = 12, fontColor = { 150, 255, 150, 255 }, textAlign = "center" },
+            table.unpack(petChildren),
+        },
+    }
+end
+
 --- 执行攻击
 function CombatUI.DoAttack()
     if not inCombat_ then return end
@@ -174,6 +239,15 @@ function CombatUI.DoAttack()
     monsterHp_ = BigNum.sub(monsterHp_, dmgToMonster)
     CombatUI.AddCombatLog("你对" .. monsterName_ .. "造成了 " .. NumFormat.Short(dmgToMonster) .. " 点伤害")
 
+    -- 出战宠物攻击怪物
+    for _, pet in ipairs(combatPets_) do
+        if pet.alive then
+            local petDmg = BigNum.max("1", BigNum.add(BigNum.sub(pet.atk, monsterDef_), tostring(math.random(-1, 2))))
+            monsterHp_ = BigNum.sub(monsterHp_, petDmg)
+            CombatUI.AddCombatLog("宠物【" .. pet.name .. "】攻击，造成 " .. NumFormat.Short(petDmg) .. " 点伤害")
+        end
+    end
+
     -- 检查怪物是否死亡
     if BigNum.lte(monsterHp_, "0") then
         monsterHp_ = "0"
@@ -181,16 +255,38 @@ function CombatUI.DoAttack()
         return
     end
 
-    -- 怪物攻击玩家
-    local dmgToPlayer = BigNum.max("1", BigNum.add(BigNum.sub(monsterAtk_, playerDef), tostring(math.random(-2, 3))))
-    player.status.hp = BigNum.sub(BigNum.new(player.status.hp or "100"), dmgToPlayer)
-    CombatUI.AddCombatLog(monsterName_ .. "对你造成了 " .. NumFormat.Short(dmgToPlayer) .. " 点伤害")
+    -- 怪物攻击：优先攻击存活的宠物，宠物全部阵亡后攻击玩家
+    local targetPet = nil
+    for _, pet in ipairs(combatPets_) do
+        if pet.alive then
+            targetPet = pet
+            break
+        end
+    end
 
-    -- 检查玩家是否死亡
-    if BigNum.lte(player.status.hp, "0") then
-        player.status.hp = "0"
-        CombatUI.Defeat()
-        return
+    if targetPet then
+        -- 怪物攻击宠物
+        local dmgToPet = BigNum.max("1", BigNum.add(BigNum.sub(monsterAtk_, targetPet.def), tostring(math.random(-2, 3))))
+        targetPet.hp = BigNum.sub(targetPet.hp, dmgToPet)
+        CombatUI.AddCombatLog(monsterName_ .. "攻击宠物【" .. targetPet.name .. "】，造成 " .. NumFormat.Short(dmgToPet) .. " 点伤害")
+
+        if BigNum.lte(targetPet.hp, "0") then
+            targetPet.hp = "0"
+            targetPet.alive = false
+            CombatUI.AddCombatLog("宠物【" .. targetPet.name .. "】已阵亡！")
+        end
+    else
+        -- 无存活宠物，怪物攻击玩家
+        local dmgToPlayer = BigNum.max("1", BigNum.add(BigNum.sub(monsterAtk_, playerDef), tostring(math.random(-2, 3))))
+        player.status.hp = BigNum.sub(BigNum.new(player.status.hp or "100"), dmgToPlayer)
+        CombatUI.AddCombatLog(monsterName_ .. "对你造成了 " .. NumFormat.Short(dmgToPlayer) .. " 点伤害")
+
+        -- 检查玩家是否死亡
+        if BigNum.lte(player.status.hp, "0") then
+            player.status.hp = "0"
+            CombatUI.Defeat()
+            return
+        end
     end
 
     -- 刷新界面
@@ -217,21 +313,40 @@ function CombatUI.UsePotion()
 
             CombatUI.AddCombatLog("使用了" .. item.name .. "，恢复" .. NumFormat.Short(healValue) .. "生命")
 
-            -- 怪物趁机攻击
-            local StatusUI = require("UI.StatusUI")
-            local BagUI = require("UI.BagUI")
-            local _, eDef, _ = StatusUI.GetEquipBonus()
-            local buffDef = BagUI.GetBuffValue(player, "防御")
-            local _, rDef3, _ = DataManager.GetRealmBonus()
-            local playerDef = BigNum.add(BigNum.add(BigNum.add(player.status.def or "3", tostring(eDef)), tostring(buffDef)), rDef3)
-            local dmg = BigNum.max("1", BigNum.add(BigNum.sub(monsterAtk_, playerDef), tostring(math.random(-1, 2))))
-            player.status.hp = BigNum.sub(BigNum.new(player.status.hp or "100"), dmg)
-            CombatUI.AddCombatLog(monsterName_ .. "趁机攻击，造成 " .. NumFormat.Short(dmg) .. " 伤害")
+            -- 怪物趁机攻击：优先攻击宠物
+            local potionTargetPet = nil
+            for _, pet in ipairs(combatPets_) do
+                if pet.alive then
+                    potionTargetPet = pet
+                    break
+                end
+            end
 
-            if BigNum.lte(player.status.hp, "0") then
-                player.status.hp = "0"
-                CombatUI.Defeat()
-                return
+            if potionTargetPet then
+                local dmg = BigNum.max("1", BigNum.add(BigNum.sub(monsterAtk_, potionTargetPet.def), tostring(math.random(-1, 2))))
+                potionTargetPet.hp = BigNum.sub(potionTargetPet.hp, dmg)
+                CombatUI.AddCombatLog(monsterName_ .. "趁机攻击宠物【" .. potionTargetPet.name .. "】，造成 " .. NumFormat.Short(dmg) .. " 伤害")
+                if BigNum.lte(potionTargetPet.hp, "0") then
+                    potionTargetPet.hp = "0"
+                    potionTargetPet.alive = false
+                    CombatUI.AddCombatLog("宠物【" .. potionTargetPet.name .. "】已阵亡！")
+                end
+            else
+                local StatusUI = require("UI.StatusUI")
+                local BagUI = require("UI.BagUI")
+                local _, eDef, _ = StatusUI.GetEquipBonus()
+                local buffDef = BagUI.GetBuffValue(player, "防御")
+                local _, rDef3, _ = DataManager.GetRealmBonus()
+                local playerDef = BigNum.add(BigNum.add(BigNum.add(player.status.def or "3", tostring(eDef)), tostring(buffDef)), rDef3)
+                local dmg = BigNum.max("1", BigNum.add(BigNum.sub(monsterAtk_, playerDef), tostring(math.random(-1, 2))))
+                player.status.hp = BigNum.sub(BigNum.new(player.status.hp or "100"), dmg)
+                CombatUI.AddCombatLog(monsterName_ .. "趁机攻击，造成 " .. NumFormat.Short(dmg) .. " 伤害")
+
+                if BigNum.lte(player.status.hp, "0") then
+                    player.status.hp = "0"
+                    CombatUI.Defeat()
+                    return
+                end
             end
 
             CombatUI.Render()
@@ -339,6 +454,32 @@ function CombatUI.Victory()
         end
     end
 
+    -- 出战宠物获得经验（与玩家相同的基础经验）
+    local petExpGainList = {}
+    if player.pets then
+        for _, pet in ipairs(player.pets) do
+            if pet.deployed then
+                local petExpGain = expGain
+                pet.exp = BigNum.add(pet.exp or "0", petExpGain)
+                table.insert(petExpGainList, pet.name)
+                -- 自动升级检测
+                local petLv = tonumber(pet.level) or 1
+                local needExp = tostring(math.floor(50 * petLv * (1 + petLv * 0.2)))
+                while BigNum.gte(pet.exp, needExp) do
+                    pet.exp = BigNum.sub(pet.exp, needExp)
+                    pet.level = BigNum.add(pet.level or "1", "1")
+                    -- 升级属性成长
+                    pet.atk = BigNum.add(pet.atk or "10", tostring(math.floor(2 + petLv * 0.5)))
+                    pet.def = BigNum.add(pet.def or "5", tostring(math.floor(1 + petLv * 0.3)))
+                    pet.max_hp = BigNum.add(pet.max_hp or "100", tostring(math.floor(10 + petLv * 2)))
+                    petLv = tonumber(pet.level) or 1
+                    needExp = tostring(math.floor(50 * petLv * (1 + petLv * 0.2)))
+                    print("[Combat] 宠物 " .. pet.name .. " 升级到 Lv." .. pet.level)
+                end
+            end
+        end
+    end
+
     -- 检查击杀/收集类任务
     CombatUI.CheckKillQuest(monsterName_)
     CombatUI.CheckCollectQuest(drops)
@@ -361,6 +502,10 @@ function CombatUI.Victory()
         goldLogStr = goldLogStr .. " (货币倍率×" .. goldRate .. ")"
     end
     GameUI.AddLog(goldLogStr)
+    -- 宠物经验日志
+    if #petExpGainList > 0 then
+        GameUI.AddLog("宠物获得经验 +" .. NumFormat.Short(expGain) .. "：" .. table.concat(petExpGainList, "、"))
+    end
     -- 掉落物品日志
     if #drops > 0 then
         GameUI.AddLog("掉落物品：" .. table.concat(drops, "、"))
@@ -380,6 +525,11 @@ function CombatUI.Victory()
                 UI.Label { text = "击败了【" .. monsterName_ .. "】", fontSize = 14, fontColor = { 200, 200, 220, 255 } },
                 UI.Label { text = "获得经验：" .. NumFormat.Short(expGain), fontSize = 13, fontColor = { 100, 255, 100, 255 } },
                 UI.Label { text = "获得金币：" .. NumFormat.Short(goldGain), fontSize = 13, fontColor = { 255, 215, 0, 255 } },
+                #petExpGainList > 0 and UI.Label {
+                    text = "宠物经验：+" .. NumFormat.Short(expGain) .. "（" .. table.concat(petExpGainList, "、") .. "）",
+                    fontSize = 13,
+                    fontColor = { 180, 255, 180, 255 },
+                } or UI.Panel { height = 0 },
                 #drops > 0 and UI.Label {
                     text = "掉落物品：" .. table.concat(drops, "、"),
                     fontSize = 13,

@@ -38,6 +38,7 @@ local DialogUI = nil
 local RealmUI = nil
 local TradeUI = nil
 local MailboxUI = nil
+local PetUI = nil
 
 --- 创建主游戏界面
 ---@return Widget
@@ -176,6 +177,7 @@ function GameUI.Create()
                     { text = "任务", panel = "quest", variant = "secondary" },
                     { text = "礼包", panel = "giftpack", variant = "secondary" },
                     { text = "交易", panel = "trade", variant = "secondary" },
+                    { text = "宠物", panel = "pet", variant = "secondary" },
                     { text = "邮箱", panel = "mailbox", variant = "secondary" },
                     { text = "排行", panel = "leaderboard", variant = "secondary" },
                     { text = "聊天", panel = "chat", variant = "secondary" },
@@ -402,6 +404,9 @@ function GameUI.ShowPanel(panelType)
     elseif panelType == "trade" then
         if not TradeUI then TradeUI = require("UI.TradeUI") end
         TradeUI.Render(mainContent_)
+    elseif panelType == "pet" then
+        if not PetUI then PetUI = require("UI.PetUI") end
+        PetUI.Render(mainContent_)
     elseif panelType == "mailbox" then
         if not MailboxUI then MailboxUI = require("UI.MailboxUI") end
         MailboxUI.Render(mainContent_)

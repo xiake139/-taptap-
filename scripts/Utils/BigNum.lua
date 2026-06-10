@@ -313,7 +313,7 @@ end
 --- 比较：返回 -1, 0, 1
 ---@param a string|number|nil
 ---@param b string|number|nil
----@return integer
+---@return number
 function BigNum.compare(a, b)
     a = normalize(a)
     b = normalize(b)

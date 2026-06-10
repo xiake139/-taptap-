@@ -40,8 +40,15 @@ local CATEGORIES = {
     { id = "realms", name = "境界管理" },
     { id = "distribute", name = "发放物品" },
     { id = "chests", name = "宝箱管理" },
+    { id = "pets", name = "宠物管理" },
+    { id = "pet_equip", name = "宠物装备" },
+    { id = "pet_bonus", name = "宠物属性加成" },
+
     { id = "generator", name = "一键生成" },
 }
+
+-- =============== 前向声明 ===============
+local CreateButtonSelector  -- 定义在后面，ShowEditDialog 中需要引用
 
 -- =============== 工具函数 ===============
 
@@ -156,7 +163,7 @@ end
 
 --- 将 DataManager 中的数据序列化为 INI 并保存
 ---@param category string
-local function SaveCategoryToCloud(category)
+local function SaveCategoryToCloud(category, onDoneExtra)
     local content = ""
     if category == "maps" then
         local sections = {}
@@ -208,6 +215,11 @@ local function SaveCategoryToCloud(category)
             if data.duration and tonumber(data.duration) and tonumber(data.duration) > 0 then
                 sec["持续时间"] = tostring(data.duration)
             end
+            -- 宠物装备额外字段
+            if data.pet_slot and data.pet_slot ~= "" then sec["宠物部位"] = data.pet_slot end
+            if data.pet_atk and data.pet_atk ~= "" and data.pet_atk ~= "0" then sec["宠物攻击"] = tostring(data.pet_atk) end
+            if data.pet_def and data.pet_def ~= "" and data.pet_def ~= "0" then sec["宠物防御"] = tostring(data.pet_def) end
+            if data.pet_hp and data.pet_hp ~= "" and data.pet_hp ~= "0" then sec["宠物生命"] = tostring(data.pet_hp) end
             sections[id] = sec
         end
         content = IniParser.Serialize(sections)
@@ -418,6 +430,23 @@ local function SaveCategoryToCloud(category)
         SaveConfigToCloud("系统配置/admins.txt", content, function(ok)
             ShowMsg(ok and "管理员列表已保存到云端" or "保存失败")
         end)
+    elseif category == "pet_types" then
+        local sections = {}
+        for id, data in pairs(DataManager.petTypes) do
+            sections[id] = {
+                ["名称"] = data.name or id,
+                ["描述"] = data.desc or "",
+                ["攻击"] = tostring(data.atk or "10"),
+                ["防御"] = tostring(data.def or "5"),
+                ["生命"] = tostring(data.max_hp or "100"),
+                ["品质"] = data.quality or "白",
+                ["技能"] = data.skill or "",
+            }
+        end
+        content = IniParser.Serialize(sections)
+        SaveConfigToCloud("系统配置/pet_types.ini", content, function(ok)
+            ShowMsg(ok and "宠物种类配置已保存到云端" or "保存失败")
+        end)
     end
 end
 
@@ -614,9 +643,17 @@ local function ShowEditDialog(title, fields, onSave)
     })
 
     for _, f in ipairs(fields) do
-        local panel, field = CreateFormField(f.label, f.value, f.opts)
-        fieldWidgets[f.key] = field
-        table.insert(formChildren, panel)
+        if f.type == "selector" and f.opts and f.opts.options then
+            -- 选择器类型：使用按钮选择组件
+            local selectorPanel, getSelected = CreateButtonSelector(f.opts.options, f.value or f.opts.options[1], f.label, false)
+            -- 包装成与 TextField 兼容的接口（有 GetValue 方法）
+            fieldWidgets[f.key] = { GetValue = getSelected }
+            table.insert(formChildren, selectorPanel)
+        else
+            local panel, field = CreateFormField(f.label, f.value, f.opts)
+            fieldWidgets[f.key] = field
+            table.insert(formChildren, panel)
+        end
     end
 
     local dialogMsg = UI.Label {
@@ -1844,7 +1881,7 @@ end
 ---@param label string 标签文字
 ---@param disabled boolean
 ---@return Widget panel, fun():string getSelected
-local function CreateButtonSelector(options, currentValue, label, disabled)
+CreateButtonSelector = function(options, currentValue, label, disabled)
     local selected = currentValue or options[1]
     local btnList = {}
 
@@ -4221,6 +4258,551 @@ local function RenderChests()
     })
 end
 
+--- 宠物品质选项（从品质消耗配置动态获取）
+local function GetPetQualityOptions()
+    local pc = DataManager.petConfig or {}
+    local qCost = pc.quality_cost or {}
+    -- 品质升级链：key=源品质，value 的下一级也需要加入可选列表
+    local qualNextMap = { ["白"] = "绿", ["绿"] = "蓝", ["蓝"] = "紫", ["紫"] = "橙", ["橙"] = "红", ["红"] = "金", ["金"] = "圣", ["圣"] = "仙", ["仙"] = "神" }
+    -- 收集所有品质（key + 每个 key 的下一级目标）
+    local qualSet = {}
+    local qualList = {}
+    for qName, _ in pairs(qCost) do
+        if not qualSet[qName] then
+            qualSet[qName] = true
+            table.insert(qualList, qName)
+        end
+        -- 把目标品质也加入
+        local nextQ = qualNextMap[qName]
+        if nextQ and not qualSet[nextQ] then
+            qualSet[nextQ] = true
+            table.insert(qualList, nextQ)
+        end
+    end
+    -- 如果配置为空，使用默认
+    if #qualList == 0 then
+        return { "白", "绿", "蓝", "紫", "橙", "红", "金" }
+    end
+    -- 从固定顺序中筛选存在的品质
+    local ORDER = { "白", "绿", "蓝", "紫", "橙", "红", "金", "圣", "仙", "神" }
+    local sorted = {}
+    local sortedSet = {}
+    for _, q in ipairs(ORDER) do
+        if qualSet[q] then
+            table.insert(sorted, q)
+            sortedSet[q] = true
+        end
+    end
+    -- 补充配置中有但不在 ORDER 里的自定义品质
+    for _, q in ipairs(qualList) do
+        if not sortedSet[q] then
+            table.insert(sorted, q)
+        end
+    end
+    return sorted
+end
+
+--- 渲染宠物管理面板（宠物种类CRUD）
+local function RenderPets()
+    ClearContent()
+    contentPanel_:AddChild(CreateSearchBar("搜索宠物名...", function() RenderPets() end))
+    local count = 0
+    local idx = 0
+    for _ in pairs(DataManager.petTypes) do count = count + 1 end
+    ShowMsg("共 " .. count .. " 种宠物")
+
+    for id, data in pairs(DataManager.petTypes) do
+        if not MatchSearch(data.name or id) then goto continue_pets end
+        idx = idx + 1
+        local qualTag = data.quality and ("[" .. data.quality .. "] ") or ""
+        local row = CreateListRow(
+            qualTag .. (data.name or id),
+            "攻:" .. (data.atk or 0) .. " 防:" .. (data.def or 0) .. " 血:" .. (data.max_hp or 0) .. (data.skill ~= "" and (" 技能:" .. data.skill) or ""),
+            function()
+                ShowEditDialog("编辑宠物 - " .. (data.name or id), {
+                    { label = "名称", key = "name", value = data.name or id },
+                    { label = "品质", key = "quality", value = data.quality or "白", type = "selector", opts = { options = GetPetQualityOptions() } },
+                    { label = "描述", key = "desc", value = data.desc or "", opts = { width = 220 } },
+                    { label = "基础攻击", key = "atk", value = data.atk or "10" },
+                    { label = "基础防御", key = "def", value = data.def or "5" },
+                    { label = "基础生命", key = "max_hp", value = data.max_hp or "100" },
+                    { label = "技能", key = "skill", value = data.skill or "", opts = { width = 220, placeholder = "技能名称（可空）" } },
+                }, function(v)
+                    DataManager.petTypes[id] = {
+                        name = v.name or id,
+                        desc = v.desc or "",
+                        atk = v.atk or "10",
+                        def = v.def or "5",
+                        max_hp = v.max_hp or "100",
+                        quality = v.quality or "白",
+                        skill = v.skill or "",
+                    }
+                    SaveCategoryToCloud("pet_types")
+                    CloseDialog()
+                    RenderPets()
+                end)
+            end, idx, function()
+                DataManager.petTypes[id] = nil
+                SaveCategoryToCloud("pet_types")
+                RenderPets()
+            end)
+        contentPanel_:AddChild(row)
+        ::continue_pets::
+    end
+
+    contentPanel_:AddChild(UI.Button {
+        text = "+ 添加宠物",
+        variant = "primary", width = 120, marginTop = 8, marginLeft = 12,
+        onClick = function()
+            ShowEditDialog("添加新宠物", {
+                { label = "ID(唯一标识)", key = "id", value = "", opts = { placeholder = "如：小火龙" } },
+                { label = "名称", key = "name", value = "" },
+                { label = "品质", key = "quality", value = "白", type = "selector", opts = { options = GetPetQualityOptions() } },
+                { label = "描述", key = "desc", value = "", opts = { width = 220 } },
+                { label = "基础攻击", key = "atk", value = "10" },
+                { label = "基础防御", key = "def", value = "5" },
+                { label = "基础生命", key = "max_hp", value = "100" },
+                { label = "技能", key = "skill", value = "", opts = { width = 220, placeholder = "技能名称（可空）" } },
+            }, function(v)
+                if not v.id or v.id == "" then return end
+                DataManager.petTypes[v.id] = {
+                    name = v.name ~= "" and v.name or v.id,
+                    desc = v.desc or "",
+                    atk = v.atk or "10",
+                    def = v.def or "5",
+                    max_hp = v.max_hp or "100",
+                    quality = v.quality or "白",
+                    skill = v.skill or "",
+                }
+                SaveCategoryToCloud("pet_types")
+                CloseDialog()
+                RenderPets()
+            end)
+        end,
+    })
+end
+
+--- 宠物装备部位选项
+local PET_EQUIP_SLOT_OPTIONS = { "项圈", "护甲", "爪套", "铃铛" }
+
+--- 渲染宠物装备管理面板
+local function RenderPetEquip()
+    ClearContent()
+    contentPanel_:AddChild(CreateSearchBar("搜索宠物装备...", function() RenderPetEquip() end))
+
+    -- 从物品表中筛选出宠物装备
+    local petEquips = {}
+    for id, data in pairs(DataManager.items) do
+        if data.type and data.type:find("宠物装备") then
+            table.insert(petEquips, { id = id, data = data })
+        end
+    end
+    table.sort(petEquips, function(a, b) return a.id < b.id end)
+
+    ShowMsg("共 " .. #petEquips .. " 件宠物装备")
+
+    local idx = 0
+    for _, item in ipairs(petEquips) do
+        local id = item.id
+        local data = item.data
+        if not MatchSearch(data.name or id) then goto continue_pe end
+        idx = idx + 1
+        local statsStr = "部位:" .. (data.pet_slot or "未设") .. " 攻+" .. (data.pet_atk or 0) .. " 防+" .. (data.pet_def or 0) .. " 血+" .. (data.pet_hp or 0)
+        local row = CreateListRow(
+            (data.name or id),
+            statsStr,
+            function()
+                -- 编辑宠物装备弹窗
+                CloseDialog()
+                local fieldWidgets = {}
+                local formChildren = {}
+
+                table.insert(formChildren, UI.Label {
+                    text = "编辑宠物装备 - " .. (data.name or id),
+                    fontSize = 16, fontColor = { 255, 200, 100, 255 },
+                    textAlign = "center", marginBottom = 8,
+                })
+
+                local namePanel, nameField = CreateFormField("名称", data.name or id, { width = 180 })
+                fieldWidgets["name"] = nameField
+                table.insert(formChildren, namePanel)
+
+                local slotPanel, getSlot = CreateButtonSelector(PET_EQUIP_SLOT_OPTIONS, data.pet_slot or "项圈", "部位", false)
+                table.insert(formChildren, slotPanel)
+
+                local descPanel, descField = CreateFormField("描述", data.desc or "", { width = 220 })
+                fieldWidgets["desc"] = descField
+                table.insert(formChildren, descPanel)
+
+                local atkPanel, atkField = CreateFormField("宠物攻击", tostring(data.pet_atk or "10"), { width = 120 })
+                fieldWidgets["pet_atk"] = atkField
+                table.insert(formChildren, atkPanel)
+
+                local defPanel, defField = CreateFormField("宠物防御", tostring(data.pet_def or "5"), { width = 120 })
+                fieldWidgets["pet_def"] = defField
+                table.insert(formChildren, defPanel)
+
+                local hpPanel, hpField = CreateFormField("宠物生命", tostring(data.pet_hp or "20"), { width = 120 })
+                fieldWidgets["pet_hp"] = hpField
+                table.insert(formChildren, hpPanel)
+
+                local dialogMsg = UI.Label { text = "", fontSize = 11, fontColor = { 100, 255, 100, 255 }, textAlign = "center", height = 16 }
+                table.insert(formChildren, dialogMsg)
+
+                table.insert(formChildren, UI.Panel {
+                    flexDirection = "row", gap = 12, marginTop = 8, justifyContent = "center",
+                    children = {
+                        UI.Button {
+                            text = "保存", variant = "primary", width = 80,
+                            onClick = function()
+                                DataManager.items[id] = {
+                                    name = fieldWidgets["name"]:GetValue() or id,
+                                    type = "宠物装备",
+                                    value = "0",
+                                    desc = fieldWidgets["desc"]:GetValue() or "",
+                                    pet_slot = getSlot(),
+                                    pet_atk = fieldWidgets["pet_atk"]:GetValue() or "10",
+                                    pet_def = fieldWidgets["pet_def"]:GetValue() or "5",
+                                    pet_hp = fieldWidgets["pet_hp"]:GetValue() or "20",
+                                }
+                                SaveCategoryToCloud("items")
+                                dialogMsg:SetText("已保存")
+                                CloseDialog()
+                                RenderPetEquip()
+                            end,
+                        },
+                        UI.Button { text = "关闭", variant = "secondary", width = 80, onClick = function() CloseDialog() end },
+                    },
+                })
+
+                editDialog_ = UI.Panel {
+                    width = "100%", height = "100%", position = "absolute",
+                    justifyContent = "center", alignItems = "center", backgroundColor = { 0, 0, 0, 180 },
+                    children = {
+                        UI.ScrollView {
+                            width = 380, maxHeight = 500, backgroundColor = { 30, 25, 55, 250 },
+                            borderRadius = 12, padding = 16,
+                            children = { UI.Panel { width = "100%", flexDirection = "column", gap = 4, children = formChildren } },
+                        },
+                    },
+                }
+                if rootPanel_ then rootPanel_:AddChild(editDialog_) end
+            end, idx, function()
+                DataManager.items[id] = nil
+                SaveCategoryToCloud("items")
+                RenderPetEquip()
+            end)
+        contentPanel_:AddChild(row)
+        ::continue_pe::
+    end
+
+    -- 添加新宠物装备
+    contentPanel_:AddChild(UI.Button {
+        text = "+ 添加宠物装备",
+        variant = "primary", width = 140, marginTop = 8, marginLeft = 12,
+        onClick = function()
+            CloseDialog()
+            local fieldWidgets = {}
+            local formChildren = {}
+
+            table.insert(formChildren, UI.Label {
+                text = "添加新宠物装备",
+                fontSize = 16, fontColor = { 255, 200, 100, 255 },
+                textAlign = "center", marginBottom = 8,
+            })
+
+            local idPanel, idField = CreateFormField("装备ID", "", { width = 180, placeholder = "唯一标识" })
+            fieldWidgets["id"] = idField
+            table.insert(formChildren, idPanel)
+
+            local namePanel, nameField = CreateFormField("名称", "", { width = 180 })
+            fieldWidgets["name"] = nameField
+            table.insert(formChildren, namePanel)
+
+            local slotPanel, getSlot = CreateButtonSelector(PET_EQUIP_SLOT_OPTIONS, "项圈", "部位", false)
+            table.insert(formChildren, slotPanel)
+
+            local descPanel, descField = CreateFormField("描述", "", { width = 220 })
+            fieldWidgets["desc"] = descField
+            table.insert(formChildren, descPanel)
+
+            local atkPanel, atkField = CreateFormField("宠物攻击", "10", { width = 120 })
+            fieldWidgets["pet_atk"] = atkField
+            table.insert(formChildren, atkPanel)
+
+            local defPanel, defField = CreateFormField("宠物防御", "5", { width = 120 })
+            fieldWidgets["pet_def"] = defField
+            table.insert(formChildren, defPanel)
+
+            local hpPanel, hpField = CreateFormField("宠物生命", "20", { width = 120 })
+            fieldWidgets["pet_hp"] = hpField
+            table.insert(formChildren, hpPanel)
+
+            local dialogMsg = UI.Label { text = "", fontSize = 11, fontColor = { 100, 255, 100, 255 }, textAlign = "center", height = 16 }
+            table.insert(formChildren, dialogMsg)
+
+            table.insert(formChildren, UI.Panel {
+                flexDirection = "row", gap = 12, marginTop = 8, justifyContent = "center",
+                children = {
+                    UI.Button {
+                        text = "保存", variant = "primary", width = 80,
+                        onClick = function()
+                            local newId = fieldWidgets["id"]:GetValue() or ""
+                            if newId == "" then
+                                dialogMsg:SetText("请输入装备ID")
+                                return
+                            end
+                            local name = fieldWidgets["name"]:GetValue() or ""
+                            if name == "" then name = newId end
+                            DataManager.items[newId] = {
+                                name = name,
+                                type = "宠物装备",
+                                value = "0",
+                                desc = fieldWidgets["desc"]:GetValue() or "",
+                                pet_slot = getSlot(),
+                                pet_atk = fieldWidgets["pet_atk"]:GetValue() or "10",
+                                pet_def = fieldWidgets["pet_def"]:GetValue() or "5",
+                                pet_hp = fieldWidgets["pet_hp"]:GetValue() or "20",
+                            }
+                            SaveCategoryToCloud("items")
+                            dialogMsg:SetText("已保存")
+                            CloseDialog()
+                            RenderPetEquip()
+                        end,
+                    },
+                    UI.Button { text = "关闭", variant = "secondary", width = 80, onClick = function() CloseDialog() end },
+                },
+            })
+
+            editDialog_ = UI.Panel {
+                width = "100%", height = "100%", position = "absolute",
+                justifyContent = "center", alignItems = "center", backgroundColor = { 0, 0, 0, 180 },
+                children = {
+                    UI.ScrollView {
+                        width = 380, maxHeight = 500, backgroundColor = { 30, 25, 55, 250 },
+                        borderRadius = 12, padding = 16,
+                        children = { UI.Panel { width = "100%", flexDirection = "column", gap = 4, children = formChildren } },
+                    },
+                },
+            }
+            if rootPanel_ then rootPanel_:AddChild(editDialog_) end
+        end,
+    })
+end
+--- 渲染宠物属性加成设置面板（公式模式）
+local function RenderPetBonus()
+    ClearContent()
+    ShowMsg("宠物属性加成 - 递增公式")
+
+    local config = DataManager.petConfig
+    local formChildren = {}
+
+    -- 标题
+    table.insert(formChildren, UI.Label {
+        text = "宠物属性加成公式设置", fontSize = 16, fontColor = { 255, 200, 100, 255 },
+        textAlign = "center", marginBottom = 4,
+    })
+    table.insert(formChildren, UI.Label {
+        text = "公式：第N级加成 = 基础值 + 递增 × (N-1)", fontSize = 11, fontColor = { 180, 180, 180, 255 },
+        textAlign = "center", marginBottom = 4,
+    })
+    table.insert(formChildren, UI.Label {
+        text = "例: 基础=10, 递增=5 → 1星+10, 2星+15, 3星+20 ...", fontSize = 10, fontColor = { 140, 140, 160, 255 },
+        textAlign = "center", marginBottom = 12,
+    })
+
+    --- 创建一组配置（标题 + 基础值 + 递增值 输入框）
+    local function CreateBonusGroup(title, titleColor, bonus)
+        local fields = {}
+        local _, atkF = CreateFormField("攻基础", tostring(bonus.atk or 0), { width = 55, height = 28 })
+        local _, atkGF = CreateFormField("攻递增", tostring(bonus.atk_g or 0), { width = 55, height = 28 })
+        local _, defF = CreateFormField("防基础", tostring(bonus.def or 0), { width = 55, height = 28 })
+        local _, defGF = CreateFormField("防递增", tostring(bonus.def_g or 0), { width = 55, height = 28 })
+        local _, hpF = CreateFormField("血基础", tostring(bonus.hp or 0), { width = 55, height = 28 })
+        local _, hpGF = CreateFormField("血递增", tostring(bonus.hp_g or 0), { width = 55, height = 28 })
+        fields.atk = atkF; fields.atk_g = atkGF
+        fields.def = defF; fields.def_g = defGF
+        fields.hp = hpF; fields.hp_g = hpGF
+
+        local row = UI.Panel {
+            flexDirection = "column", marginBottom = 10, padding = 8,
+            backgroundColor = { 40, 35, 60, 200 }, borderRadius = 6,
+            children = {
+                UI.Label { text = title, fontSize = 13, fontColor = titleColor, marginBottom = 6 },
+                UI.Panel {
+                    flexDirection = "row", gap = 4, alignItems = "center", flexWrap = "wrap",
+                    children = {
+                        UI.Label { text = "攻:", fontSize = 11, width = 22 }, atkF,
+                        UI.Label { text = "+", fontSize = 11, width = 12 }, atkGF,
+                        UI.Label { text = "防:", fontSize = 11, width = 22 }, defF,
+                        UI.Label { text = "+", fontSize = 11, width = 12 }, defGF,
+                        UI.Label { text = "血:", fontSize = 11, width = 22 }, hpF,
+                        UI.Label { text = "+", fontSize = 11, width = 12 }, hpGF,
+                    },
+                },
+            },
+        }
+        return row, fields
+    end
+
+    -- 升星
+    local sb = config.star_bonus or { atk = 10, def = 6, hp = 50, atk_g = 5, def_g = 3, hp_g = 25 }
+    local starRow, starFields = CreateBonusGroup(
+        "▶ 升星属性（基础 + 每级递增）", { 150, 220, 255, 255 }, sb
+    )
+    table.insert(formChildren, starRow)
+
+    -- 进阶
+    local ab = config.advance_bonus or { atk = 20, def = 12, hp = 100, atk_g = 10, def_g = 6, hp_g = 50 }
+    local advRow, advFields = CreateBonusGroup(
+        "▶ 进阶属性（基础 + 每级递增）", { 150, 255, 180, 255 }, ab
+    )
+    table.insert(formChildren, advRow)
+
+    -- 品质
+    local qb = config.quality_bonus or { atk = 15, def = 8, hp = 60, atk_g = 8, def_g = 4, hp_g = 30 }
+    local qualRow, qualFields = CreateBonusGroup(
+        "▶ 品质属性（基础 + 每级递增）", { 255, 200, 150, 255 }, qb
+    )
+    table.insert(formChildren, qualRow)
+
+    -- 预览示例（用递增公式计算）
+    local function previewSum(base, growth, n)
+        if n <= 0 then return 0 end
+        return math.floor(n * base + growth * n * (n - 1) / 2)
+    end
+    table.insert(formChildren, UI.Panel {
+        padding = 6, backgroundColor = { 25, 30, 50, 200 }, borderRadius = 4, marginTop = 4,
+        children = {
+            UI.Label {
+                text = "预览：3星攻+" .. previewSum(sb.atk, sb.atk_g or 0, 3) .. " 5阶攻+" .. previewSum(ab.atk, ab.atk_g or 0, 5) .. " 橙品(4级)攻+" .. previewSum(qb.atk, qb.atk_g or 0, 4),
+                fontSize = 10, fontColor = { 180, 220, 255, 255 },
+            },
+            UI.Label {
+                text = "（总加成 = 1级+2级+...+N级 的累加）",
+                fontSize = 9, fontColor = { 130, 130, 150, 255 }, marginTop = 2,
+            },
+        },
+    })
+
+    -- ========== 消耗公式配置区域 ==========
+    table.insert(formChildren, UI.Label {
+        text = "── 升级消耗公式 ──", fontSize = 14, fontColor = { 255, 180, 100, 255 },
+        textAlign = "center", marginTop = 12, marginBottom = 4,
+    })
+    table.insert(formChildren, UI.Label {
+        text = "消耗公式：数量 = 基础 + 递增 × 当前等级（无上限）", fontSize = 10, fontColor = { 160, 160, 180, 255 },
+        textAlign = "center", marginBottom = 8,
+    })
+
+    -- 升星消耗
+    local _, starMatField = CreateFormField("升星材料名", config.star_cost_material or "升星石", { width = 80, height = 28 })
+    local _, starCostBaseField = CreateFormField("基础消耗", tostring(config.star_cost_base or 100), { width = 60, height = 28 })
+    local _, starCostGrowthField = CreateFormField("每级递增", tostring(config.star_cost_growth or 100), { width = 60, height = 28 })
+    local _, starMaxLevelField = CreateFormField("升星上限", tostring(config.star_max_level or 30), { width = 50, height = 28 })
+    table.insert(formChildren, UI.Panel {
+        flexDirection = "column", marginBottom = 8, padding = 8,
+        backgroundColor = { 40, 35, 60, 200 }, borderRadius = 6,
+        children = {
+            UI.Label { text = "▶ 升星消耗", fontSize = 13, fontColor = { 150, 220, 255, 255 }, marginBottom = 6 },
+            UI.Panel {
+                flexDirection = "row", gap = 4, alignItems = "center", flexWrap = "wrap",
+                children = {
+                    UI.Label { text = "材料:", fontSize = 11, width = 32 }, starMatField,
+                    UI.Label { text = "基础:", fontSize = 11, width = 32 }, starCostBaseField,
+                    UI.Label { text = "递增:", fontSize = 11, width = 32 }, starCostGrowthField,
+                    UI.Label { text = "上限:", fontSize = 11, width = 32 }, starMaxLevelField,
+                },
+            },
+            UI.Label {
+                text = "例: 基础100,递增100 → 0→1星需100, 5→6星需600; 上限=30则最高30星",
+                fontSize = 9, fontColor = { 130, 130, 150, 255 }, marginTop = 4,
+            },
+        },
+    })
+
+    -- 进阶消耗
+    local _, advMatField = CreateFormField("进阶材料名", config.adv_cost_material or "进阶丹", { width = 80, height = 28 })
+    local _, advCostBaseField = CreateFormField("基础消耗", tostring(config.adv_cost_base or 30), { width = 60, height = 28 })
+    local _, advCostGrowthField = CreateFormField("每级递增", tostring(config.adv_cost_growth or 20), { width = 60, height = 28 })
+    local _, advMaxLevelField = CreateFormField("进阶上限", tostring(config.adv_max_level or 10), { width = 50, height = 28 })
+    table.insert(formChildren, UI.Panel {
+        flexDirection = "column", marginBottom = 8, padding = 8,
+        backgroundColor = { 40, 35, 60, 200 }, borderRadius = 6,
+        children = {
+            UI.Label { text = "▶ 进阶消耗", fontSize = 13, fontColor = { 150, 255, 180, 255 }, marginBottom = 6 },
+            UI.Panel {
+                flexDirection = "row", gap = 4, alignItems = "center", flexWrap = "wrap",
+                children = {
+                    UI.Label { text = "材料:", fontSize = 11, width = 32 }, advMatField,
+                    UI.Label { text = "基础:", fontSize = 11, width = 32 }, advCostBaseField,
+                    UI.Label { text = "递增:", fontSize = 11, width = 32 }, advCostGrowthField,
+                    UI.Label { text = "上限:", fontSize = 11, width = 32 }, advMaxLevelField,
+                },
+            },
+            UI.Label {
+                text = "例: 基础30,递增20 → 0→1阶需30, 5→6阶需130; 上限=10则最高10阶",
+                fontSize = 9, fontColor = { 130, 130, 150, 255 }, marginTop = 4,
+            },
+        },
+    })
+
+    -- 保存按钮
+    local saveMsg = UI.Label { text = "", fontSize = 11, fontColor = { 100, 255, 100, 255 }, textAlign = "center", height = 18, marginTop = 10 }
+    table.insert(formChildren, saveMsg)
+
+    table.insert(formChildren, UI.Panel {
+        flexDirection = "row", justifyContent = "center", gap = 12, marginTop = 4,
+        children = {
+            UI.Button {
+                text = "保存", variant = "primary", width = 100,
+                onClick = function()
+                    -- 属性加成
+                    config.star_bonus = {
+                        atk = tonumber(starFields.atk:GetValue()) or 10,
+                        def = tonumber(starFields.def:GetValue()) or 6,
+                        hp = tonumber(starFields.hp:GetValue()) or 50,
+                        atk_g = tonumber(starFields.atk_g:GetValue()) or 5,
+                        def_g = tonumber(starFields.def_g:GetValue()) or 3,
+                        hp_g = tonumber(starFields.hp_g:GetValue()) or 25,
+                    }
+                    config.advance_bonus = {
+                        atk = tonumber(advFields.atk:GetValue()) or 20,
+                        def = tonumber(advFields.def:GetValue()) or 12,
+                        hp = tonumber(advFields.hp:GetValue()) or 100,
+                        atk_g = tonumber(advFields.atk_g:GetValue()) or 10,
+                        def_g = tonumber(advFields.def_g:GetValue()) or 6,
+                        hp_g = tonumber(advFields.hp_g:GetValue()) or 50,
+                    }
+                    config.quality_bonus = {
+                        atk = tonumber(qualFields.atk:GetValue()) or 15,
+                        def = tonumber(qualFields.def:GetValue()) or 8,
+                        hp = tonumber(qualFields.hp:GetValue()) or 60,
+                        atk_g = tonumber(qualFields.atk_g:GetValue()) or 8,
+                        def_g = tonumber(qualFields.def_g:GetValue()) or 4,
+                        hp_g = tonumber(qualFields.hp_g:GetValue()) or 30,
+                    }
+                    -- 消耗公式
+                    config.star_cost_material = starMatField:GetValue() or "升星石"
+                    config.star_cost_base = tonumber(starCostBaseField:GetValue()) or 100
+                    config.star_cost_growth = tonumber(starCostGrowthField:GetValue()) or 100
+                    config.star_max_level = tonumber(starMaxLevelField:GetValue()) or 30
+                    config.adv_cost_material = advMatField:GetValue() or "进阶丹"
+                    config.adv_cost_base = tonumber(advCostBaseField:GetValue()) or 30
+                    config.adv_cost_growth = tonumber(advCostGrowthField:GetValue()) or 20
+                    config.adv_max_level = tonumber(advMaxLevelField:GetValue()) or 10
+                    saveMsg:SetText("已保存（运行时生效）")
+                end,
+            },
+        },
+    })
+
+    contentPanel_:AddChild(UI.ScrollView {
+        width = "100%", height = "100%",
+        children = { UI.Panel { width = "100%", flexDirection = "column", gap = 2, padding = 12, children = formChildren } },
+    })
+end
+
 --- 渲染一键生成面板
 local function RenderGenerator()
     ClearContent()
@@ -4734,6 +5316,9 @@ local function RenderCategory(catId)
     elseif catId == "realms" then RenderRealms()
     elseif catId == "distribute" then RenderDistribute()
     elseif catId == "chests" then RenderChests()
+    elseif catId == "pets" then RenderPets()
+    elseif catId == "pet_equip" then RenderPetEquip()
+    elseif catId == "pet_bonus" then RenderPetBonus()
     elseif catId == "generator" then RenderGenerator()
     end
 end
