@@ -11,7 +11,6 @@ local CombatUI = {}
 
 local parentRef_ = nil
 local callback_ = nil
-local combatLog_ = nil
 
 -- 战斗状态
 local monsterName_ = ""
@@ -23,6 +22,20 @@ local inCombat_ = false
 
 -- 出战宠物战斗状态
 local combatPets_ = {}  -- { {name, atk, def, hp, maxHp, alive} }
+
+--- 计算玩家实际生命上限（含装备+buff+境界+战魂加成）
+---@return string 完整的max_hp值
+local function CalcPlayerMaxHp()
+    local player = DataManager.playerData
+    if not player then return "100" end
+    local StatusUI = require("UI.StatusUI")
+    local BagUI = require("UI.BagUI")
+    local _, _, eHp = StatusUI.GetEquipBonus()
+    local buffHp = BagUI.GetBuffValue(player, "生命上限")
+    local _, _, rHp = DataManager.GetRealmBonus()
+    local soulBonus = DataManager.GetBattleSoulBonus(player.status.battle_soul_level)
+    return BigNum.add(BigNum.add(BigNum.add(BigNum.add(player.status.max_hp or "100", tostring(eHp)), tostring(buffHp)), rHp), soulBonus.max_hp)
+end
 
 --- 开始战斗
 ---@param monsterName string
@@ -45,22 +58,23 @@ function CombatUI.Start(monsterName, parent, onFinish)
     monsterAtk_ = BigNum.new(mData.atk or "5")
     monsterDef_ = BigNum.new(mData.def or "3")
 
-    -- 初始化出战宠物战斗数据
+    -- 初始化出战宠物战斗数据（使用完整属性计算，含等级/升星/进阶/品质/装备加成）
     combatPets_ = {}
+    local PetUI = require("UI.PetUI")
     local player = DataManager.playerData
     if player and player.pets then
         for _, pet in ipairs(player.pets) do
             if pet.deployed then
-                local petMaxHp = BigNum.new(pet.max_hp or "100")
+                local petAtk, petDef, petHp = PetUI.CalcPetPower(pet)
                 table.insert(combatPets_, {
                     name = pet.name or "宠物",
-                    atk = BigNum.new(pet.atk or "10"),
-                    def = BigNum.new(pet.def or "5"),
-                    hp = petMaxHp,
-                    maxHp = petMaxHp,
+                    atk = petAtk,
+                    def = petDef,
+                    hp = petHp,
+                    maxHp = petHp,
                     alive = true,
                 })
-                print("[CombatUI] 出战宠物: " .. (pet.name or "?") .. " ATK=" .. (pet.atk or "10") .. " DEF=" .. (pet.def or "5") .. " HP=" .. (pet.max_hp or "100"))
+                print("[CombatUI] 出战宠物: " .. (pet.name or "?") .. " ATK=" .. petAtk .. " DEF=" .. petDef .. " HP=" .. petHp)
             end
         end
     end
@@ -79,27 +93,17 @@ function CombatUI.Render()
     -- 计算玩家总属性（含装备加成 + buff加成 + 境界加成）
     local StatusUI = require("UI.StatusUI")
     local BagUI = require("UI.BagUI")
-    local eAtk, eDef, eHp = StatusUI.GetEquipBonus()
+    local eAtk, eDef, _ = StatusUI.GetEquipBonus()
     local buffAtk = BagUI.GetBuffValue(player, "攻击")
     local buffDef = BagUI.GetBuffValue(player, "防御")
-    local buffHp = BagUI.GetBuffValue(player, "生命上限")
-    local rAtk, rDef, rHp = DataManager.GetRealmBonus()
-    local playerAtk = BigNum.add(BigNum.add(BigNum.add(player.status.atk or "5", tostring(eAtk)), tostring(buffAtk)), rAtk)
-    local playerDef = BigNum.add(BigNum.add(BigNum.add(player.status.def or "3", tostring(eDef)), tostring(buffDef)), rDef)
+    local rAtk, rDef, _ = DataManager.GetRealmBonus()
+    local soulBonus = DataManager.GetBattleSoulBonus(player.status.battle_soul_level)
+    local playerAtk = BigNum.add(BigNum.add(BigNum.add(BigNum.add(player.status.atk or "5", tostring(eAtk)), tostring(buffAtk)), rAtk), soulBonus.atk)
+    local playerDef = BigNum.add(BigNum.add(BigNum.add(BigNum.add(player.status.def or "3", tostring(eDef)), tostring(buffDef)), rDef), soulBonus.def)
     local playerHp = BigNum.new(player.status.hp or "100")
-    local playerMaxHp = BigNum.add(BigNum.add(BigNum.add(player.status.max_hp or "100", tostring(eHp)), tostring(buffHp)), rHp)
+    local playerMaxHp = CalcPlayerMaxHp()
 
-    -- 战斗日志
-    combatLog_ = UI.Panel {
-        id = "combatLog",
-        width = "100%",
-        flexDirection = "column",
-        gap = 2,
-        padding = 8,
-        backgroundColor = { 20, 15, 35, 200 },
-        borderRadius = 6,
-        minHeight = 80,
-    }
+
 
     parentRef_:AddChild(UI.Panel {
         width = "100%",
@@ -173,8 +177,7 @@ function CombatUI.Render()
                 },
             },
 
-            -- 战斗日志
-            combatLog_,
+
         },
     })
 end
@@ -231,8 +234,9 @@ function CombatUI.DoAttack()
     local buffAtk = BagUI.GetBuffValue(player, "攻击")
     local buffDef = BagUI.GetBuffValue(player, "防御")
     local rAtk2, rDef2, _ = DataManager.GetRealmBonus()
-    local playerAtk = BigNum.add(BigNum.add(BigNum.add(player.status.atk or "5", tostring(eAtk)), tostring(buffAtk)), rAtk2)
-    local playerDef = BigNum.add(BigNum.add(BigNum.add(player.status.def or "3", tostring(eDef)), tostring(buffDef)), rDef2)
+    local soulBonus2 = DataManager.GetBattleSoulBonus(player.status.battle_soul_level)
+    local playerAtk = BigNum.add(BigNum.add(BigNum.add(BigNum.add(player.status.atk or "5", tostring(eAtk)), tostring(buffAtk)), rAtk2), soulBonus2.atk)
+    local playerDef = BigNum.add(BigNum.add(BigNum.add(BigNum.add(player.status.def or "3", tostring(eDef)), tostring(buffDef)), rDef2), soulBonus2.def)
 
     -- 玩家攻击怪物
     local dmgToMonster = BigNum.max("1", BigNum.add(BigNum.sub(playerAtk, monsterDef_), tostring(math.random(-2, 3))))
@@ -303,7 +307,7 @@ function CombatUI.UsePotion()
         local itemData = DataManager.GetItem(item.name)
         if itemData and itemData.effect == "heal" then
             local healValue = BigNum.new(itemData.value or "0")
-            local maxHp = BigNum.new(player.status.max_hp or "100")
+            local maxHp = CalcPlayerMaxHp()
             player.status.hp = BigNum.min(BigNum.add(player.status.hp or "0", healValue), maxHp)
 
             item.count = BigNum.sub(item.count or "1", "1")
@@ -337,7 +341,8 @@ function CombatUI.UsePotion()
                 local _, eDef, _ = StatusUI.GetEquipBonus()
                 local buffDef = BagUI.GetBuffValue(player, "防御")
                 local _, rDef3, _ = DataManager.GetRealmBonus()
-                local playerDef = BigNum.add(BigNum.add(BigNum.add(player.status.def or "3", tostring(eDef)), tostring(buffDef)), rDef3)
+                local soulBonus3 = DataManager.GetBattleSoulBonus(player.status.battle_soul_level)
+                local playerDef = BigNum.add(BigNum.add(BigNum.add(BigNum.add(player.status.def or "3", tostring(eDef)), tostring(buffDef)), rDef3), soulBonus3.def)
                 local dmg = BigNum.max("1", BigNum.add(BigNum.sub(monsterAtk_, playerDef), tostring(math.random(-1, 2))))
                 player.status.hp = BigNum.sub(BigNum.new(player.status.hp or "100"), dmg)
                 CombatUI.AddCombatLog(monsterName_ .. "趁机攻击，造成 " .. NumFormat.Short(dmg) .. " 伤害")
@@ -406,6 +411,26 @@ function CombatUI.Victory()
     -- 发放奖励
     player.status.exp = BigNum.add(player.status.exp or "0", expGain)
     player.status.gold = BigNum.add(player.status.gold or "0", goldGain)
+
+    -- 战魂奖励
+    local soulMin, soulMax = DataManager.GetBattleSoulRange(monsterName_)
+    local soulGain = tostring(math.random(soulMin, math.max(soulMin, soulMax)))
+    player.status.battle_soul_exp = BigNum.add(player.status.battle_soul_exp or "0", soulGain)
+    -- 战魂自动升级检测
+    local soulLeveledUp = false
+    local curSoulLv = tonumber(player.status.battle_soul_level) or 0
+    local needSoulExp = DataManager.GetBattleSoulExpNeeded(curSoulLv)
+    while BigNum.gte(player.status.battle_soul_exp, needSoulExp) do
+        player.status.battle_soul_exp = BigNum.sub(player.status.battle_soul_exp, needSoulExp)
+        curSoulLv = curSoulLv + 1
+        player.status.battle_soul_level = tostring(curSoulLv)
+        soulLeveledUp = true
+        needSoulExp = DataManager.GetBattleSoulExpNeeded(curSoulLv)
+    end
+    -- 战魂升级后回满生命（使用完整计算的生命上限）
+    if soulLeveledUp then
+        player.status.hp = CalcPlayerMaxHp()
+    end
 
     -- 掉落物品
     local drops = {}
@@ -502,6 +527,11 @@ function CombatUI.Victory()
         goldLogStr = goldLogStr .. " (货币倍率×" .. goldRate .. ")"
     end
     GameUI.AddLog(goldLogStr)
+    -- 战魂日志
+    GameUI.AddLog("获得战魂 +" .. NumFormat.Short(soulGain))
+    if soulLeveledUp then
+        GameUI.AddLog("战魂升级！当前等级：" .. player.status.battle_soul_level)
+    end
     -- 宠物经验日志
     if #petExpGainList > 0 then
         GameUI.AddLog("宠物获得经验 +" .. NumFormat.Short(expGain) .. "：" .. table.concat(petExpGainList, "、"))
@@ -525,6 +555,7 @@ function CombatUI.Victory()
                 UI.Label { text = "击败了【" .. monsterName_ .. "】", fontSize = 14, fontColor = { 200, 200, 220, 255 } },
                 UI.Label { text = "获得经验：" .. NumFormat.Short(expGain), fontSize = 13, fontColor = { 100, 255, 100, 255 } },
                 UI.Label { text = "获得金币：" .. NumFormat.Short(goldGain), fontSize = 13, fontColor = { 255, 215, 0, 255 } },
+                UI.Label { text = "获得战魂：+" .. NumFormat.Short(soulGain) .. (soulLeveledUp and "  (战魂升级！Lv." .. player.status.battle_soul_level .. ")" or ""), fontSize = 13, fontColor = { 200, 150, 255, 255 } },
                 #petExpGainList > 0 and UI.Label {
                     text = "宠物经验：+" .. NumFormat.Short(expGain) .. "（" .. table.concat(petExpGainList, "、") .. "）",
                     fontSize = 13,
@@ -553,7 +584,7 @@ function CombatUI.Defeat()
     -- 死亡惩罚：恢复到满血，扣少量金币（10%）
     local goldLoss = BigNum.div(BigNum.new(player.status.gold or "0"), "10")
     player.status.gold = BigNum.sub(BigNum.new(player.status.gold or "0"), goldLoss)
-    player.status.hp = player.status.max_hp
+    player.status.hp = CalcPlayerMaxHp()
 
     if parentRef_ then
         parentRef_:ClearChildren()
@@ -576,16 +607,9 @@ function CombatUI.Defeat()
     if callback_ then callback_("defeat") end
 end
 
---- 添加战斗日志（同时写入底部游戏日志栏）
+--- 添加战斗日志（以弹窗形式显示）
 ---@param msg string
 function CombatUI.AddCombatLog(msg)
-    if combatLog_ then
-        combatLog_:AddChild(UI.Label {
-            text = "> " .. msg,
-            fontSize = 11,
-            fontColor = { 180, 180, 200, 255 },
-        })
-    end
     local GameUI = require("UI.GameUI")
     if GameUI.AddLog then GameUI.AddLog(msg) end
     print("[Combat] " .. msg)

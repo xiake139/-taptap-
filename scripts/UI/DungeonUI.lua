@@ -16,7 +16,7 @@ local currentDungeon_ = nil   -- 当前副本数据
 local currentWave_ = 0        -- 当前波次
 local waveMonsters_ = {}      -- 当前波次怪物列表
 local waveIndex_ = 0          -- 当前波次第几只怪
-local combatLog_ = {}         -- 战斗日志
+
 
 --- 渲染副本列表
 ---@param parent Widget
@@ -356,27 +356,11 @@ function DungeonUI.ShowCombatResult(monsterName, won, log, expGain, isBoss)
         })
     end
 
-    -- 战斗日志（滚动区域）
-    local logChildren = {}
-    -- 只显示最后 10 条日志避免太长
-    local startIdx = math.max(1, #log - 9)
-    for i = startIdx, #log do
-        table.insert(logChildren, UI.Label {
-            text = "> " .. log[i],
-            fontSize = 11,
-            fontColor = { 180, 180, 200, 255 },
-        })
+    -- 战斗结果以一体式弹窗显示
+    local GameUI = require("UI.GameUI")
+    for i = math.max(1, #log - 3), #log do
+        GameUI.AddLog(log[i])
     end
-
-    parentRef_:AddChild(UI.ScrollView {
-        width = "100%",
-        maxHeight = 150,
-        backgroundColor = { 15, 12, 30, 200 },
-        borderRadius = 4,
-        padding = 6,
-        marginBottom = 6,
-        children = logChildren,
-    })
 
     -- 经验获取
     if won and not BigNum.isZero(expGain) then

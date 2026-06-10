@@ -43,6 +43,8 @@ local CATEGORIES = {
     { id = "pets", name = "宠物管理" },
     { id = "pet_equip", name = "宠物装备" },
     { id = "pet_bonus", name = "宠物属性加成" },
+    { id = "system_shops", name = "系统商店" },
+    { id = "battle_soul", name = "战魂管理" },
 
     { id = "generator", name = "一键生成" },
 }
@@ -283,6 +285,24 @@ local function SaveCategoryToCloud(category, onDoneExtra)
         SaveConfigToCloud("系统配置/shops.ini", content, function(ok)
             ShowMsg(ok and "商店配置已保存到云端" or "保存失败")
         end)
+    elseif category == "system_shops" then
+        local sections = {}
+        for id, data in pairs(DataManager.systemShops) do
+            local sec = {
+                ["名称"] = data.name or id,
+                ["货币"] = data.currency or "金币",
+                ["描述"] = data.desc or "",
+                ["商品数量"] = tostring(#(data.items or {})),
+            }
+            for i, item in ipairs(data.items or {}) do
+                sec["商品_" .. i] = (item.name or "") .. ":" .. tostring(item.price or 0) .. ":" .. (item.desc or "")
+            end
+            sections[id] = sec
+        end
+        content = IniParser.Serialize(sections)
+        SaveConfigToCloud("系统配置/system_shops.ini", content, function(ok)
+            ShowMsg(ok and "系统商店配置已保存到云端" or "保存失败")
+        end)
     elseif category == "dungeons" then
         local sections = {}
         for id, data in pairs(DataManager.dungeons) do
@@ -416,6 +436,13 @@ local function SaveCategoryToCloud(category, onDoneExtra)
             ["每级防御"] = NumFormat.Int(lvlSec.def_per_level or 2),
             ["最高等级"] = NumFormat.Int(lvlSec.max_level or 100),
         }
+        -- 货币配置
+        local currList = gc["currencies"] or { "金币" }
+        local currSec = { ["货币数量"] = tostring(#currList) }
+        for i, name in ipairs(currList) do
+            currSec["货币_" .. i] = name
+        end
+        sections["货币配置"] = currSec
         content = IniParser.Serialize(sections)
         SaveConfigToCloud("系统配置/game_config.ini", content, function(ok)
             ShowMsg(ok and "游戏设置已保存到云端" or "保存失败")
@@ -446,6 +473,32 @@ local function SaveCategoryToCloud(category, onDoneExtra)
         content = IniParser.Serialize(sections)
         SaveConfigToCloud("系统配置/pet_types.ini", content, function(ok)
             ShowMsg(ok and "宠物种类配置已保存到云端" or "保存失败")
+        end)
+    elseif category == "battle_soul" then
+        local sections = {}
+        -- 升级公式
+        local formula = DataManager.battleSoulConfig.level_formula
+        sections["升级公式"] = {
+            ["基础值"] = formula.base or "100",
+            ["成长值"] = formula.growth or "50",
+            ["幂次"] = formula.power or "1.5",
+        }
+        -- 每级属性加成
+        local bonus = DataManager.battleSoulConfig.level_bonus
+        sections["每级属性加成"] = {
+            ["攻击力"] = bonus.atk or "5",
+            ["防御力"] = bonus.def or "3",
+            ["生命上限"] = bonus.max_hp or "20",
+        }
+        -- 怪物战魂
+        local monsterSoul = {}
+        for typeName, range in pairs(DataManager.battleSoulConfig.monster_soul) do
+            monsterSoul[typeName] = range.min .. "-" .. range.max
+        end
+        sections["怪物战魂"] = monsterSoul
+        content = IniParser.Serialize(sections)
+        SaveConfigToCloud("系统配置/battle_soul.ini", content, function(ok)
+            ShowMsg(ok and "战魂配置已保存到云端" or "保存失败")
         end)
     end
 end
@@ -732,6 +785,7 @@ end
 local RenderPlayers
 local RenderItems
 local RenderShops
+local RenderSystemShops
 
 --- 显示玩家详细数据弹窗（查看+修改）
 ---@param username string
@@ -1378,6 +1432,139 @@ local function RenderGameConfig()
             end)
         end, 3))
 
+    -- 货币管理
+    local currList = gc["currencies"] or { "金币" }
+    local currSummary = table.concat(currList, ", ")
+    contentPanel_:AddChild(CreateListRow("货币管理",
+        "当前货币: " .. currSummary,
+        function()
+            -- 打开货币编辑对话框
+            CloseDialog()
+            local formChildren = {}
+            table.insert(formChildren, UI.Label {
+                text = "货币管理",
+                fontSize = 16,
+                fontColor = { 200, 170, 100, 255 },
+                textAlign = "center",
+                marginBottom = 8,
+            })
+            table.insert(formChildren, UI.Label {
+                text = "添加或删除游戏中使用的货币类型",
+                fontSize = 11,
+                fontColor = { 140, 140, 160, 255 },
+                textAlign = "center",
+                marginBottom = 8,
+            })
+
+            local editCurrencies = {}
+            for _, c in ipairs(currList) do
+                table.insert(editCurrencies, c)
+            end
+
+            local listPanel = UI.Panel { width = "100%", flexDirection = "column", gap = 4 }
+
+            local function RebuildCurrencyList()
+                listPanel:ClearChildren()
+                for i, name in ipairs(editCurrencies) do
+                    listPanel:AddChild(UI.Panel {
+                        flexDirection = "row",
+                        width = "100%",
+                        gap = 6,
+                        alignItems = "center",
+                        children = {
+                            UI.Label { text = i .. ".", fontSize = 12, fontColor = { 160, 160, 180, 255 }, width = 20 },
+                            UI.Label { text = name, fontSize = 14, fontColor = { 220, 220, 240, 255 }, flexGrow = 1 },
+                            UI.Button {
+                                text = "×",
+                                variant = "danger",
+                                width = 24, height = 24, fontSize = 12,
+                                onClick = function()
+                                    if #editCurrencies <= 1 then return end  -- 至少保留一个
+                                    table.remove(editCurrencies, i)
+                                    RebuildCurrencyList()
+                                end,
+                            },
+                        },
+                    })
+                end
+            end
+            RebuildCurrencyList()
+            table.insert(formChildren, listPanel)
+
+            -- 添加新货币
+            local newCurrField = UI.TextField { placeholder = "输入新货币名称", width = "60%", height = 30 }
+            table.insert(formChildren, UI.Panel {
+                flexDirection = "row",
+                width = "100%",
+                gap = 6,
+                marginTop = 8,
+                alignItems = "center",
+                children = {
+                    newCurrField,
+                    UI.Button {
+                        text = "+ 添加",
+                        variant = "outline",
+                        height = 28,
+                        onClick = function()
+                            local val = newCurrField:GetValue() or ""
+                            if val ~= "" then
+                                -- 检查重复
+                                for _, c in ipairs(editCurrencies) do
+                                    if c == val then return end
+                                end
+                                table.insert(editCurrencies, val)
+                                newCurrField:SetText("")
+                                RebuildCurrencyList()
+                            end
+                        end,
+                    },
+                },
+            })
+
+            local dialogMsg = UI.Label { text = "", fontSize = 11, fontColor = { 100, 255, 100, 255 }, textAlign = "center", height = 16 }
+            table.insert(formChildren, dialogMsg)
+
+            -- 保存/关闭按钮
+            table.insert(formChildren, UI.Panel {
+                flexDirection = "row", gap = 12, marginTop = 8, justifyContent = "center",
+                children = {
+                    UI.Button {
+                        text = "保存", variant = "primary", width = 80,
+                        onClick = function()
+                            if #editCurrencies == 0 then
+                                table.insert(editCurrencies, "金币")
+                            end
+                            gc["currencies"] = editCurrencies
+                            SaveCategoryToCloud("game_config")
+                            dialogMsg:SetText("已保存")
+                            CloseDialog()
+                            RenderGameConfig()
+                        end,
+                    },
+                    UI.Button {
+                        text = "关闭", variant = "secondary", width = 80,
+                        onClick = function() CloseDialog() end,
+                    },
+                },
+            })
+
+            editDialog_ = UI.Panel {
+                width = "100%", height = "100%", position = "absolute",
+                justifyContent = "center", alignItems = "center",
+                backgroundColor = { 0, 0, 0, 180 },
+                children = {
+                    UI.Panel {
+                        width = 340,
+                        backgroundColor = { 30, 25, 55, 250 },
+                        borderRadius = 12, padding = 16,
+                        flexDirection = "column", gap = 4,
+                        children = formChildren,
+                    },
+                },
+            }
+            if rootPanel_ then rootPanel_:AddChild(editDialog_) end
+        end, 4))
+
 end
 
 -- =============== 通用列表配置管理 ===============
@@ -1481,7 +1668,6 @@ local function RenderMonsters()
             function()
                 ShowEditDialog("编辑怪物 - " .. id, {
                     { label = "名称", key = "name", value = data.name },
-                    { label = "类型", key = "type", value = data.type or "普通怪", opts = { placeholder = "普通怪/精英怪/BOSS/帝级/仙级/神级/创世级" } },
                     { label = "描述", key = "desc", value = data.desc, opts = { width = 220 } },
                     { label = "生命值", key = "hp", value = data.hp },
                     { label = "攻击力", key = "atk", value = data.atk },
@@ -1491,7 +1677,7 @@ local function RenderMonsters()
                     { label = "掉落", key = "drops", value = data.drops, opts = { width = 220, placeholder = "物品:概率,..." } },
                 }, function(v)
                     DataManager.monsters[id] = {
-                        name = v.name, type = v.type or "普通怪", desc = v.desc,
+                        name = v.name, type = DataManager.ClassifyMonsterType(v.hp or "20"), desc = v.desc,
                         hp = v.hp or "20", atk = v.atk or "3",
                         def = v.def or "1", exp = v.exp or "5",
                         gold = v.gold or "2", drops = v.drops,
@@ -1515,7 +1701,6 @@ local function RenderMonsters()
         onClick = function()
             ShowEditDialog("添加怪物", {
                 { label = "ID(名称)", key = "id", value = "", opts = { placeholder = "如：火焰鸟" } },
-                { label = "类型", key = "type", value = "普通怪", opts = { placeholder = "普通怪/精英怪/BOSS/帝级/仙级/神级/创世级" } },
                 { label = "描述", key = "desc", value = "", opts = { width = 220 } },
                 { label = "生命值", key = "hp", value = "50" },
                 { label = "攻击力", key = "atk", value = "10" },
@@ -1526,7 +1711,7 @@ local function RenderMonsters()
             }, function(v)
                 if v.id == "" then return end
                 DataManager.monsters[v.id] = {
-                    name = v.id, type = v.type or "普通怪", desc = v.desc,
+                    name = v.id, type = DataManager.ClassifyMonsterType(v.hp or "50"), desc = v.desc,
                     hp = v.hp or "50", atk = v.atk or "10",
                     def = v.def or "5", exp = v.exp or "15",
                     gold = v.gold or "8", drops = v.drops,
@@ -2566,6 +2751,242 @@ RenderShops = function()
         variant = "primary", width = 120, marginTop = 8, marginLeft = 12,
         onClick = function()
             ShowShopEditDialog("添加新商店", nil, nil, true)
+        end,
+    })
+end
+
+-- =============== 系统商店管理 ===============
+
+--- 显示系统商店编辑对话框
+---@param title string
+---@param data table|nil
+---@param shopId string|nil
+---@param isNew boolean
+local function ShowSystemShopEditDialog(title, data, shopId, isNew)
+    CloseDialog()
+    data = data or { name = "", currency = "金币", desc = "", items = {} }
+
+    local formChildren = {}
+    local fieldWidgets = {}
+
+    -- 标题
+    table.insert(formChildren, UI.Label {
+        text = title,
+        fontSize = 16,
+        fontColor = { 200, 170, 100, 255 },
+        textAlign = "center",
+        marginBottom = 8,
+    })
+
+    -- ID字段（仅新建时可编辑）
+    if isNew then
+        table.insert(formChildren, UI.Label { text = "商店ID:", fontSize = 12, fontColor = { 160, 160, 180, 255 } })
+        fieldWidgets["id"] = UI.TextField { placeholder = "唯一ID，如 shop_gem", width = "100%", height = 32 }
+        table.insert(formChildren, fieldWidgets["id"])
+    end
+
+    -- 名称
+    table.insert(formChildren, UI.Label { text = "商店名称:", fontSize = 12, fontColor = { 160, 160, 180, 255 } })
+    fieldWidgets["name"] = UI.TextField { value = data.name or "", placeholder = "商店名称", width = "100%", height = 32 }
+    table.insert(formChildren, fieldWidgets["name"])
+
+    -- 货币
+    table.insert(formChildren, UI.Label { text = "使用货币:", fontSize = 12, fontColor = { 160, 160, 180, 255 } })
+    fieldWidgets["currency"] = UI.TextField { value = data.currency or "金币", placeholder = "如：金币、钻石、积分", width = "100%", height = 32 }
+    table.insert(formChildren, fieldWidgets["currency"])
+
+    -- 描述
+    table.insert(formChildren, UI.Label { text = "描述:", fontSize = 12, fontColor = { 160, 160, 180, 255 } })
+    fieldWidgets["desc"] = UI.TextField { value = data.desc or "", placeholder = "商店描述(可选)", width = "100%", height = 32 }
+    table.insert(formChildren, fieldWidgets["desc"])
+
+    -- 商品列表
+    table.insert(formChildren, UI.Label { text = "— 商品列表 —", fontSize = 13, fontColor = { 180, 150, 100, 255 }, textAlign = "center", marginTop = 8 })
+
+    local editItems = {}
+    for _, item in ipairs(data.items or {}) do
+        table.insert(editItems, { name = item.name, price = item.price, desc = item.desc })
+    end
+
+    local itemListPanel = UI.Panel { width = "100%", flexDirection = "column", gap = 4 }
+
+    local function RebuildItemList()
+        itemListPanel:ClearChildren()
+        for i, item in ipairs(editItems) do
+            local nameField = UI.TextField { value = item.name or "", placeholder = "物品名", width = "45%", height = 28, fontSize = 11 }
+            local priceField = UI.TextField { value = tostring(item.price or "0"), placeholder = "价格", width = "25%", height = 28, fontSize = 11 }
+            local descField = UI.TextField { value = item.desc or "", placeholder = "描述", width = "25%", height = 28, fontSize = 11 }
+            item._nameField = nameField
+            item._priceField = priceField
+            item._descField = descField
+
+            itemListPanel:AddChild(UI.Panel {
+                flexDirection = "row",
+                width = "100%",
+                gap = 3,
+                alignItems = "center",
+                children = {
+                    nameField,
+                    priceField,
+                    descField,
+                    UI.Button {
+                        text = "×", variant = "danger", width = 24, height = 24, fontSize = 12,
+                        onClick = function()
+                            table.remove(editItems, i)
+                            RebuildItemList()
+                        end,
+                    },
+                },
+            })
+        end
+    end
+
+    RebuildItemList()
+    table.insert(formChildren, itemListPanel)
+
+    table.insert(formChildren, UI.Button {
+        text = "+ 添加商品", variant = "outline", width = 100, height = 26, fontSize = 11, marginTop = 4,
+        onClick = function()
+            table.insert(editItems, { name = "", price = "0", desc = "" })
+            RebuildItemList()
+        end,
+    })
+
+    -- 状态消息
+    local dialogMsg = UI.Label {
+        text = "",
+        fontSize = 11,
+        fontColor = { 100, 255, 100, 255 },
+        textAlign = "center",
+        height = 16,
+    }
+    table.insert(formChildren, dialogMsg)
+
+    -- 按钮
+    table.insert(formChildren, UI.Panel {
+        flexDirection = "row",
+        gap = 12,
+        marginTop = 8,
+        justifyContent = "center",
+        children = {
+            UI.Button {
+                text = "保存",
+                variant = "primary",
+                width = 80,
+                onClick = function()
+                    local id = isNew and (fieldWidgets["id"]:GetValue() or "") or shopId
+                    if isNew and id == "" then
+                        dialogMsg:SetText("请输入商店ID")
+                        return
+                    end
+                    local name = fieldWidgets["name"]:GetValue() or ""
+                    if name == "" then name = id end
+                    local currency = fieldWidgets["currency"]:GetValue() or "金币"
+                    if currency == "" then currency = "金币" end
+
+                    -- 收集商品行数据
+                    local finalItems = {}
+                    for _, item in ipairs(editItems) do
+                        local n = item._nameField and item._nameField:GetValue() or item.name or ""
+                        local p = item._priceField and item._priceField:GetValue() or item.price or "0"
+                        local d = item._descField and item._descField:GetValue() or item.desc or ""
+                        if n ~= "" then
+                            table.insert(finalItems, { name = n, price = p, desc = d })
+                        end
+                    end
+
+                    DataManager.systemShops[id] = {
+                        name = name,
+                        currency = currency,
+                        desc = fieldWidgets["desc"]:GetValue() or "",
+                        items = finalItems,
+                    }
+                    SaveCategoryToCloud("system_shops")
+                    dialogMsg:SetText("已保存")
+                    CloseDialog()
+                    RenderSystemShops()
+                end,
+            },
+            UI.Button {
+                text = "关闭",
+                variant = "secondary",
+                width = 80,
+                onClick = function() CloseDialog() end,
+            },
+        },
+    })
+
+    editDialog_ = UI.Panel {
+        width = "100%",
+        height = "100%",
+        position = "absolute",
+        justifyContent = "center",
+        alignItems = "center",
+        backgroundColor = { 0, 0, 0, 180 },
+        children = {
+            UI.ScrollView {
+                width = 400,
+                maxHeight = 520,
+                backgroundColor = { 30, 25, 55, 250 },
+                borderRadius = 12,
+                padding = 16,
+                children = {
+                    UI.Panel {
+                        width = "100%",
+                        flexDirection = "column",
+                        gap = 4,
+                        children = formChildren,
+                    },
+                },
+            },
+        },
+    }
+    if rootPanel_ then
+        rootPanel_:AddChild(editDialog_)
+    end
+end
+
+--- 渲染系统商店列表
+RenderSystemShops = function()
+    ClearContent()
+    contentPanel_:AddChild(CreateSearchBar("搜索系统商店名...", function() RenderSystemShops() end))
+    local count = 0
+    local idx = 0
+    for _ in pairs(DataManager.systemShops) do count = count + 1 end
+    ShowMsg("共 " .. count .. " 家系统商店")
+
+    for id, data in pairs(DataManager.systemShops) do
+        if not MatchSearch(data.name or id) then goto continue_sys_shops end
+        idx = idx + 1
+        local itemCount = #(data.items or {})
+        local currency = data.currency or "金币"
+        local itemSummary = "货币:" .. currency .. " | "
+        for i, item in ipairs(data.items or {}) do
+            if i > 3 then itemSummary = itemSummary .. "..."; break end
+            if i > 1 then itemSummary = itemSummary .. ", " end
+            itemSummary = itemSummary .. item.name .. "(" .. item.price .. currency .. ")"
+        end
+        if itemCount == 0 then itemSummary = "货币:" .. currency .. " | 无商品" end
+
+        local row = CreateListRow(
+            (data.name or id) .. "  [" .. itemCount .. "种商品]",
+            itemSummary,
+            function()
+                ShowSystemShopEditDialog("编辑系统商店 - " .. (data.name or id), data, id, false)
+            end, idx, function()
+                DataManager.systemShops[id] = nil
+                SaveCategoryToCloud("system_shops")
+                RenderSystemShops()
+            end)
+        contentPanel_:AddChild(row)
+        ::continue_sys_shops::
+    end
+
+    contentPanel_:AddChild(UI.Button {
+        text = "+ 添加系统商店",
+        variant = "primary", width = 140, marginTop = 8, marginLeft = 12,
+        onClick = function()
+            ShowSystemShopEditDialog("添加新系统商店", nil, nil, true)
         end,
     })
 end
@@ -3883,8 +4304,15 @@ local function RenderDistribute()
     local targetPanel, targetField = CreateFormField("目标玩家", "", { placeholder = "输入玩家账号", width = 160 })
     targetPanel:SetVisible(false)
 
-    -- 发放内容表单
-    local goldPanel, goldField = CreateFormField("金币数量", "0", { placeholder = "0", width = 120 })
+    -- 发放内容表单 - 自定义货币字段
+    local currList = DataManager.GetCurrencyList()
+    local currFields = {}  -- { name = field } 映射
+    local currPanels = {}  -- 面板列表用于 children
+    for _, cname in ipairs(currList) do
+        local p, f = CreateFormField(cname .. "数量", "0", { placeholder = "0", width = 120 })
+        currFields[cname] = f
+        table.insert(currPanels, p)
+    end
     local itemsPanel, itemsField = CreateFormField("物品列表", "", { placeholder = "物品:数量,物品2:数量", width = 220 })
     local titlePanel, titleField = CreateFormField("邮件标题", "系统发放", { placeholder = "邮件标题", width = 180 })
     local contentPanel, contentField = CreateFormField("邮件内容", "管理员发放奖励", { placeholder = "邮件内容", width = 220 })
@@ -3897,114 +4325,130 @@ local function RenderDistribute()
         whiteSpace = "normal",
     }
 
+    -- 构建 children（避免 table.unpack 不在末尾的陷阱）
+    local distChildren = {
+        UI.Label { text = "发放物品/货币", fontSize = 16, fontColor = { 255, 200, 100, 255 }, marginBottom = 8 },
+        -- 模式切换
+        UI.Panel {
+            flexDirection = "row",
+            gap = 8,
+            marginBottom = 4,
+            children = {
+                UI.Button {
+                    text = "全服发放",
+                    variant = "primary",
+                    height = 30,
+                    onClick = function()
+                        isGlobal = true
+                        modeLabel:SetText("当前模式：全服发放")
+                        targetPanel:SetVisible(false)
+                    end,
+                },
+                UI.Button {
+                    text = "指定玩家",
+                    variant = "secondary",
+                    height = 30,
+                    onClick = function()
+                        isGlobal = false
+                        modeLabel:SetText("当前模式：指定玩家发放")
+                        targetPanel:SetVisible(true)
+                    end,
+                },
+            },
+        },
+        modeLabel,
+        targetPanel,
+        UI.Panel { width = "100%", height = 1, backgroundColor = { 50, 40, 70, 255 }, marginTop = 4, marginBottom = 4 },
+    }
+    -- 插入每种货币的输入面板
+    for _, p in ipairs(currPanels) do
+        table.insert(distChildren, p)
+    end
+    table.insert(distChildren, itemsPanel)
+    table.insert(distChildren, titlePanel)
+    table.insert(distChildren, contentPanel)
+    table.insert(distChildren, UI.Button {
+        text = "确认发放",
+        variant = "danger",
+        width = "100%",
+        height = 36,
+        marginTop = 8,
+        onClick = function()
+            -- 收集所有货币数值
+            local currencies = {}
+            local hasCurrency = false
+            for _, cname in ipairs(currList) do
+                local val = currFields[cname]:GetValue() or "0"
+                if val ~= "" and val ~= "0" then
+                    currencies[cname] = val
+                    hasCurrency = true
+                end
+            end
+            local items = itemsField:GetValue() or ""
+            local title = titleField:GetValue() or "系统发放"
+            local mailContent = contentField:GetValue() or ""
+
+            if not hasCurrency and items == "" then
+                resultLabel:SetText("请填写货币或物品")
+                resultLabel:SetFontColor({ 255, 100, 100, 255 })
+                return
+            end
+
+            local MailboxUI = require("UI.MailboxUI")
+            local mailData = {
+                type = "admin",
+                title = title,
+                content = mailContent,
+                gold = currencies["金币"] or "0",
+                currencies = currencies,
+                items = items,
+                sender = "管理员",
+            }
+
+            if isGlobal then
+                -- 全服发放
+                resultLabel:SetText("正在发放中...")
+                resultLabel:SetFontColor({ 255, 200, 100, 255 })
+                DataManager.GetAllPlayers(function(players)
+                    local accounts = {}
+                    for _, p in ipairs(players) do
+                        table.insert(accounts, p.username)
+                    end
+                    MailboxUI.SendMailBatch(accounts, mailData, function(okCount, failCount)
+                        resultLabel:SetText("全服发放完成！成功 " .. okCount .. " 人，失败 " .. failCount .. " 人")
+                        resultLabel:SetFontColor({ 100, 255, 100, 255 })
+                    end)
+                end)
+            else
+                -- 指定玩家
+                local target = targetField:GetValue() or ""
+                if target == "" then
+                    resultLabel:SetText("请输入目标玩家账号")
+                    resultLabel:SetFontColor({ 255, 100, 100, 255 })
+                    return
+                end
+                resultLabel:SetText("正在发放...")
+                resultLabel:SetFontColor({ 255, 200, 100, 255 })
+                MailboxUI.SendMail(target, mailData, function(ok)
+                    if ok then
+                        resultLabel:SetText("发放成功！已发送邮件给 " .. target)
+                        resultLabel:SetFontColor({ 100, 255, 100, 255 })
+                    else
+                        resultLabel:SetText("发放失败，请检查玩家账号")
+                        resultLabel:SetFontColor({ 255, 100, 100, 255 })
+                    end
+                end)
+            end
+        end,
+    })
+    table.insert(distChildren, resultLabel)
+
     contentPanel_:AddChild(UI.Panel {
         width = "100%",
         flexDirection = "column",
         padding = 8,
         gap = 6,
-        children = {
-            UI.Label { text = "发放物品/货币", fontSize = 16, fontColor = { 255, 200, 100, 255 }, marginBottom = 8 },
-            -- 模式切换
-            UI.Panel {
-                flexDirection = "row",
-                gap = 8,
-                marginBottom = 4,
-                children = {
-                    UI.Button {
-                        text = "全服发放",
-                        variant = "primary",
-                        height = 30,
-                        onClick = function()
-                            isGlobal = true
-                            modeLabel:SetText("当前模式：全服发放")
-                            targetPanel:SetVisible(false)
-                        end,
-                    },
-                    UI.Button {
-                        text = "指定玩家",
-                        variant = "secondary",
-                        height = 30,
-                        onClick = function()
-                            isGlobal = false
-                            modeLabel:SetText("当前模式：指定玩家发放")
-                            targetPanel:SetVisible(true)
-                        end,
-                    },
-                },
-            },
-            modeLabel,
-            targetPanel,
-            UI.Panel { width = "100%", height = 1, backgroundColor = { 50, 40, 70, 255 }, marginTop = 4, marginBottom = 4 },
-            goldPanel,
-            itemsPanel,
-            titlePanel,
-            contentPanel,
-            UI.Button {
-                text = "确认发放",
-                variant = "danger",
-                width = "100%",
-                height = 36,
-                marginTop = 8,
-                onClick = function()
-                    local gold = goldField:GetValue() or "0"
-                    local items = itemsField:GetValue() or ""
-                    local title = titleField:GetValue() or "系统发放"
-                    local mailContent = contentField:GetValue() or ""
-
-                    if gold == "0" and items == "" then
-                        resultLabel:SetText("请填写金币或物品")
-                        resultLabel:SetFontColor({ 255, 100, 100, 255 })
-                        return
-                    end
-
-                    local MailboxUI = require("UI.MailboxUI")
-                    local mailData = {
-                        type = "admin",
-                        title = title,
-                        content = mailContent,
-                        gold = gold,
-                        items = items,
-                        sender = "管理员",
-                    }
-
-                    if isGlobal then
-                        -- 全服发放
-                        resultLabel:SetText("正在发放中...")
-                        resultLabel:SetFontColor({ 255, 200, 100, 255 })
-                        DataManager.GetAllPlayers(function(players)
-                            local accounts = {}
-                            for _, p in ipairs(players) do
-                                table.insert(accounts, p.username)
-                            end
-                            MailboxUI.SendMailBatch(accounts, mailData, function(okCount, failCount)
-                                resultLabel:SetText("全服发放完成！成功 " .. okCount .. " 人，失败 " .. failCount .. " 人")
-                                resultLabel:SetFontColor({ 100, 255, 100, 255 })
-                            end)
-                        end)
-                    else
-                        -- 指定玩家
-                        local target = targetField:GetValue() or ""
-                        if target == "" then
-                            resultLabel:SetText("请输入目标玩家账号")
-                            resultLabel:SetFontColor({ 255, 100, 100, 255 })
-                            return
-                        end
-                        resultLabel:SetText("正在发放...")
-                        resultLabel:SetFontColor({ 255, 200, 100, 255 })
-                        MailboxUI.SendMail(target, mailData, function(ok)
-                            if ok then
-                                resultLabel:SetText("发放成功！已发送邮件给 " .. target)
-                                resultLabel:SetFontColor({ 100, 255, 100, 255 })
-                            else
-                                resultLabel:SetText("发放失败，请检查玩家账号")
-                                resultLabel:SetFontColor({ 255, 100, 100, 255 })
-                            end
-                        end)
-                    end
-                end,
-            },
-            resultLabel,
-        },
+        children = distChildren,
     })
 end
 
@@ -4803,6 +5247,169 @@ local function RenderPetBonus()
     })
 end
 
+--- 渲染战魂管理面板
+local function RenderBattleSoul()
+    ClearContent()
+    ShowMsg("战魂管理 - 配置战魂获取与升级")
+
+    local config = DataManager.battleSoulConfig
+    local formChildren = {}
+
+    -- ====== 标题 ======
+    table.insert(formChildren, UI.Label {
+        text = "战魂系统配置", fontSize = 16, fontColor = { 200, 150, 255, 255 },
+        textAlign = "center", marginBottom = 4,
+    })
+    table.insert(formChildren, UI.Label {
+        text = "击杀怪物获得战魂经验，积累升级可增加属性", fontSize = 11, fontColor = { 180, 180, 180, 255 },
+        textAlign = "center", marginBottom = 12,
+    })
+
+    -- ====== 升级公式区 ======
+    table.insert(formChildren, UI.Label {
+        text = "── 升级公式 ──", fontSize = 14, fontColor = { 255, 200, 100, 255 },
+        textAlign = "center", marginBottom = 4,
+    })
+    table.insert(formChildren, UI.Label {
+        text = "所需经验 = 基础值 + 成长值 × (等级 ^ 幂次)", fontSize = 10, fontColor = { 160, 160, 180, 255 },
+        textAlign = "center", marginBottom = 8,
+    })
+
+    local formula = config.level_formula
+    local _, baseField = CreateFormField("基础值", formula.base or "100", { width = 70, height = 28 })
+    local _, growthField = CreateFormField("成长值", formula.growth or "50", { width = 70, height = 28 })
+    local _, powerField = CreateFormField("幂次", formula.power or "1.5", { width = 70, height = 28 })
+
+    table.insert(formChildren, UI.Panel {
+        flexDirection = "column", padding = 8, marginBottom = 10,
+        backgroundColor = { 40, 35, 60, 200 }, borderRadius = 6,
+        children = {
+            UI.Label { text = "▶ 升级公式参数", fontSize = 13, fontColor = { 150, 220, 255, 255 }, marginBottom = 6 },
+            UI.Panel {
+                flexDirection = "row", gap = 6, alignItems = "center", flexWrap = "wrap",
+                children = {
+                    UI.Label { text = "基础:", fontSize = 11, width = 32 }, baseField,
+                    UI.Label { text = "成长:", fontSize = 11, width = 32 }, growthField,
+                    UI.Label { text = "幂次:", fontSize = 11, width = 32 }, powerField,
+                },
+            },
+            UI.Label {
+                text = "预览：Lv1需" .. DataManager.GetBattleSoulExpNeeded(0) .. " Lv5需" .. DataManager.GetBattleSoulExpNeeded(4) .. " Lv10需" .. DataManager.GetBattleSoulExpNeeded(9),
+                fontSize = 10, fontColor = { 180, 220, 255, 255 }, marginTop = 4,
+            },
+        },
+    })
+
+    -- ====== 每级属性加成区 ======
+    table.insert(formChildren, UI.Label {
+        text = "── 每级属性加成 ──", fontSize = 14, fontColor = { 100, 255, 180, 255 },
+        textAlign = "center", marginTop = 8, marginBottom = 4,
+    })
+    table.insert(formChildren, UI.Label {
+        text = "每升一级战魂增加的属性值", fontSize = 10, fontColor = { 160, 160, 180, 255 },
+        textAlign = "center", marginBottom = 8,
+    })
+
+    local bonus = config.level_bonus
+    local _, atkField = CreateFormField("攻击/级", bonus.atk or "5", { width = 60, height = 28 })
+    local _, defField = CreateFormField("防御/级", bonus.def or "3", { width = 60, height = 28 })
+    local _, maxHpField = CreateFormField("生命上限/级", bonus.max_hp or "20", { width = 60, height = 28 })
+
+    table.insert(formChildren, UI.Panel {
+        flexDirection = "column", padding = 8, marginBottom = 10,
+        backgroundColor = { 40, 35, 60, 200 }, borderRadius = 6,
+        children = {
+            UI.Label { text = "▶ 每级加成数值", fontSize = 13, fontColor = { 150, 255, 180, 255 }, marginBottom = 6 },
+            UI.Panel {
+                flexDirection = "row", gap = 4, alignItems = "center", flexWrap = "wrap",
+                children = {
+                    UI.Label { text = "攻:", fontSize = 11, width = 22 }, atkField,
+                    UI.Label { text = "防:", fontSize = 11, width = 22 }, defField,
+                    UI.Label { text = "生命上限:", fontSize = 11, width = 55 }, maxHpField,
+                },
+            },
+            UI.Label {
+                text = "预览Lv10：攻+" .. tostring(10 * (tonumber(bonus.atk) or 5)) .. " 防+" .. tostring(10 * (tonumber(bonus.def) or 3)) .. " 生命上限+" .. tostring(10 * (tonumber(bonus.max_hp) or 20)),
+                fontSize = 10, fontColor = { 180, 255, 200, 255 }, marginTop = 4,
+            },
+        },
+    })
+
+    -- ====== 怪物战魂获取区间 ======
+    table.insert(formChildren, UI.Label {
+        text = "── 怪物战魂获取区间 ──", fontSize = 14, fontColor = { 255, 150, 200, 255 },
+        textAlign = "center", marginTop = 8, marginBottom = 4,
+    })
+    table.insert(formChildren, UI.Label {
+        text = "根据怪物类型设定击杀获得的战魂经验范围", fontSize = 10, fontColor = { 160, 160, 180, 255 },
+        textAlign = "center", marginBottom = 8,
+    })
+
+    -- 获取所有怪物类型
+    local monsterTypes = DataManager.GetMonsterTypes()
+    local monsterSoulFields = {}
+
+    for _, typeName in ipairs(monsterTypes) do
+        local soulCfg = config.monster_soul[typeName]
+        local minVal = soulCfg and soulCfg.min or "1"
+        local maxVal = soulCfg and soulCfg.max or "5"
+
+        local _, minF = CreateFormField("最小", minVal, { width = 55, height = 28, labelWidth = 32 })
+        local _, maxF = CreateFormField("最大", maxVal, { width = 55, height = 28, labelWidth = 32 })
+        monsterSoulFields[typeName] = { minF = minF, maxF = maxF }
+
+        table.insert(formChildren, UI.Panel {
+            flexDirection = "row", padding = 6, marginBottom = 4, gap = 6,
+            backgroundColor = { 45, 40, 65, 200 }, borderRadius = 4, alignItems = "center",
+            children = {
+                UI.Label { text = typeName, fontSize = 12, fontColor = { 220, 180, 255, 255 }, width = 70 },
+                UI.Label { text = "最小:", fontSize = 10, width = 32 }, minF,
+                UI.Label { text = "最大:", fontSize = 10, width = 32 }, maxF,
+            },
+        })
+    end
+
+    -- 如果没有怪物类型，显示提示
+    if #monsterTypes == 0 then
+        table.insert(formChildren, UI.Label {
+            text = "暂无怪物类型，请先在怪物管理中添加怪物", fontSize = 12,
+            fontColor = { 255, 150, 100, 255 }, textAlign = "center", marginTop = 8,
+        })
+    end
+
+    -- ====== 保存按钮 ======
+    table.insert(formChildren, UI.Button {
+        text = "保存战魂配置", variant = "primary", marginTop = 16,
+        onClick = function()
+            -- 收集公式参数
+            config.level_formula.base = baseField:GetText() ~= "" and baseField:GetText() or "100"
+            config.level_formula.growth = growthField:GetText() ~= "" and growthField:GetText() or "50"
+            config.level_formula.power = powerField:GetText() ~= "" and powerField:GetText() or "1.5"
+            -- 收集每级加成
+            config.level_bonus.atk = atkField:GetText() ~= "" and atkField:GetText() or "5"
+            config.level_bonus.def = defField:GetText() ~= "" and defField:GetText() or "3"
+            config.level_bonus.max_hp = maxHpField:GetText() ~= "" and maxHpField:GetText() or "20"
+            -- 收集怪物战魂区间
+            for typeName, fields in pairs(monsterSoulFields) do
+                local minStr = fields.minF:GetText()
+                local maxStr = fields.maxF:GetText()
+                if minStr ~= "" and maxStr ~= "" then
+                    config.monster_soul[typeName] = { min = minStr, max = maxStr }
+                end
+            end
+            DataManager.battleSoulConfig = config
+            SaveCategoryToCloud("battle_soul")
+        end,
+    })
+
+    contentPanel_:AddChild(UI.Panel {
+        width = "100%",
+        flexDirection = "column",
+        padding = 12,
+        children = formChildren,
+    })
+end
+
 --- 渲染一键生成面板
 local function RenderGenerator()
     ClearContent()
@@ -5319,6 +5926,8 @@ local function RenderCategory(catId)
     elseif catId == "pets" then RenderPets()
     elseif catId == "pet_equip" then RenderPetEquip()
     elseif catId == "pet_bonus" then RenderPetBonus()
+    elseif catId == "system_shops" then RenderSystemShops()
+    elseif catId == "battle_soul" then RenderBattleSoul()
     elseif catId == "generator" then RenderGenerator()
     end
 end

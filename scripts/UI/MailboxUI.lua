@@ -38,6 +38,18 @@ local function SerializeMails(list)
         table.insert(lines, "title=" .. (mail.title or ""))
         table.insert(lines, "content=" .. (mail.content or ""))
         table.insert(lines, "gold=" .. (mail.gold or "0"))
+        -- 多货币：格式 "货币名:数量,货币名2:数量"
+        local currStr = ""
+        if mail.currencies then
+            local parts = {}
+            for cname, val in pairs(mail.currencies) do
+                if val ~= "0" and val ~= "" then
+                    table.insert(parts, cname .. ":" .. val)
+                end
+            end
+            currStr = table.concat(parts, ",")
+        end
+        table.insert(lines, "currencies=" .. currStr)
         table.insert(lines, "items=" .. (mail.items or ""))
         table.insert(lines, "sender=" .. (mail.sender or "系统"))
         table.insert(lines, "claimed=" .. (mail.claimed and "1" or "0"))
@@ -56,11 +68,23 @@ local function DeserializeMails(str)
     local list = {}
     for sectionName, data in pairs(sections) do
         if sectionName:find("^mail_") then
+            -- 解析多货币字段
+            local currencies = {}
+            local currRaw = data["currencies"] or ""
+            if currRaw ~= "" then
+                for part in currRaw:gmatch("[^,]+") do
+                    local cname, val = part:match("^(.+):(.+)$")
+                    if cname and val then
+                        currencies[cname] = val
+                    end
+                end
+            end
             table.insert(list, {
                 type = data["type"] or "system",
                 title = data["title"] or "",
                 content = data["content"] or "",
                 gold = data["gold"] or "0",
+                currencies = currencies,
                 items = data["items"] or "",
                 sender = data["sender"] or "系统",
                 claimed = data["claimed"] == "1",
@@ -212,6 +236,7 @@ function MailboxUI.SendMailBatch(accounts, mail, callback)
             title = mail.title or "",
             content = mail.content or "",
             gold = mail.gold or "0",
+            currencies = mail.currencies or {},
             items = mail.items or "",
             sender = mail.sender or "系统",
         }, function(ok)
@@ -277,7 +302,8 @@ function MailboxUI.Refresh()
     -- 一键领取按钮
     local unclaimedCount = 0
     for _, mail in ipairs(mails_) do
-        if not mail.claimed and (mail.gold ~= "0" or mail.items ~= "") then
+        local hasCurr = mail.currencies and next(mail.currencies)
+        if not mail.claimed and (mail.gold ~= "0" or hasCurr or mail.items ~= "") then
             unclaimedCount = unclaimedCount + 1
         end
     end
@@ -306,7 +332,8 @@ function MailboxUI.Refresh()
     end
 
     for i, mail in ipairs(mails_) do
-        local hasAttachment = (mail.gold ~= "0" or mail.items ~= "")
+        local hasCurr = mail.currencies and next(mail.currencies)
+        local hasAttachment = (mail.gold ~= "0" or hasCurr or mail.items ~= "")
         local statusText = ""
         local statusColor = { 150, 150, 150, 255 }
         if hasAttachment then
@@ -321,7 +348,13 @@ function MailboxUI.Refresh()
 
         -- 附件描述
         local attachText = ""
-        if mail.gold ~= "0" then
+        if hasCurr then
+            for cname, val in pairs(mail.currencies) do
+                if val ~= "0" and val ~= "" then
+                    attachText = attachText .. cname .. ":" .. NumFormat.Short(val) .. " "
+                end
+            end
+        elseif mail.gold ~= "0" then
             attachText = attachText .. "金币:" .. NumFormat.Short(mail.gold) .. " "
         end
         if mail.items ~= "" then
@@ -405,8 +438,16 @@ function MailboxUI.ClaimMail(index)
     local player = DataManager.playerData
     if not player then return end
 
-    -- 发放金币
-    if mail.gold ~= "0" then
+    -- 发放多货币
+    if mail.currencies and next(mail.currencies) then
+        for cname, val in pairs(mail.currencies) do
+            if val ~= "0" and val ~= "" then
+                local cur = DataManager.GetPlayerCurrency(player, cname)
+                DataManager.SetPlayerCurrency(player, cname, BigNum.add(cur, val))
+            end
+        end
+    elseif mail.gold ~= "0" then
+        -- 兼容旧格式（只有gold字段）
         player.status.gold = BigNum.add(player.status.gold or "0", mail.gold)
     end
 
@@ -443,9 +484,18 @@ function MailboxUI.ClaimAll()
 
     local claimedCount = 0
     for _, mail in ipairs(mails_) do
-        if not mail.claimed and (mail.gold ~= "0" or mail.items ~= "") then
-            -- 发放金币
-            if mail.gold ~= "0" then
+        local hasCurr = mail.currencies and next(mail.currencies)
+        if not mail.claimed and (mail.gold ~= "0" or hasCurr or mail.items ~= "") then
+            -- 发放多货币
+            if hasCurr then
+                for cname, val in pairs(mail.currencies) do
+                    if val ~= "0" and val ~= "" then
+                        local cur = DataManager.GetPlayerCurrency(player, cname)
+                        DataManager.SetPlayerCurrency(player, cname, BigNum.add(cur, val))
+                    end
+                end
+            elseif mail.gold ~= "0" then
+                -- 兼容旧格式
                 player.status.gold = BigNum.add(player.status.gold or "0", mail.gold)
             end
             -- 发放物品

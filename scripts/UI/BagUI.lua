@@ -340,7 +340,13 @@ function BagUI.UseItem(index)
 
     -- 恢复类：立即生效，无时间限制
     if itemType:find("恢复血量") then
-        local maxHp = BigNum.new(player.status.max_hp or "100")
+        -- 使用完整计算的生命上限（含装备+buff+境界+战魂加成）
+        local StatusUI = require("UI.StatusUI")
+        local _, _, eHp = StatusUI.GetEquipBonus()
+        local bHp = BagUI.GetBuffValue(player, "生命上限")
+        local _, _, rHp = DataManager.GetRealmBonus()
+        local soulBonus = DataManager.GetBattleSoulBonus(player.status.battle_soul_level)
+        local maxHp = BigNum.add(BigNum.add(BigNum.add(BigNum.add(player.status.max_hp or "100", tostring(eHp)), tostring(bHp)), rHp), soulBonus.max_hp)
         player.status.hp = BigNum.min(BigNum.add(player.status.hp or "0", val), maxHp)
         effectMsg = "恢复 " .. BigNum.toShort(val) .. " 生命"
     end

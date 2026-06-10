@@ -262,8 +262,7 @@ function PetUI.ShowList()
         local power = BigNum.add(petAtk, BigNum.add(petDef, BigNum.div(petHp, "5")))
 
         local stateText = pet.deployed and " [出战中]" or ""
-        local starStr = string.rep("★", tonumber(pet.star) or 0)
-        if starStr == "" then starStr = "☆" end
+        local starStr = tostring(tonumber(pet.star) or 0) .. "☆"
 
         parentRef_:AddChild(UI.Panel {
             flexDirection = "row",
@@ -332,8 +331,7 @@ function PetUI.ShowDetail(index)
     })
 
     -- 宠物名称与品质
-    local starStr = string.rep("★", tonumber(pet.star) or 0)
-    if starStr == "" then starStr = "☆" end
+    local starStr = tostring(tonumber(pet.star) or 0) .. "☆"
 
     parentRef_:AddChild(UI.Label {
         text = pet.name,
@@ -639,7 +637,7 @@ function PetUI.StarUp(index)
     print("[PetUI] " .. pet.name .. " 升星到 " .. pet.star .. "星")
     DataManager.SaveToCloud(player)
     PetUI.ShowDetail(index)
-    PetUI.ShowTip(pet.name .. " 升星到 " .. pet.star .. "★！")
+    PetUI.ShowTip(pet.name .. " 升星到 " .. pet.star .. "☆！")
 end
 
 --- 进阶（最高10阶）
@@ -968,5 +966,9 @@ function PetUI.ShowTip(msg)
         })
     end
 end
+
+-- 公开接口：计算单个宠物的完整属性（含等级、升星、进阶、品质、装备加成）
+-- 供战斗系统等外部模块调用
+PetUI.CalcPetPower = CalcPetPower
 
 return PetUI

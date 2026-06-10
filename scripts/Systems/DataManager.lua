@@ -36,6 +36,7 @@ DataManager.items = {}
 DataManager.equipment = {}
 DataManager.quests = {}
 DataManager.shops = {}
+DataManager.systemShops = {}  -- 系统商店（功能按键入口，独立于NPC商店）
 DataManager.dungeons = {}
 DataManager.giftpacks = {}
 DataManager.realms = {}       -- 境界配置列表（按阶段排序）
@@ -69,6 +70,14 @@ DataManager.petConfig = {    -- 宠物成长配置（公式化）
     quality_bonus = { atk = 15, def = 8, hp = 60, atk_g = 8, def_g = 4, hp_g = 30 },
 }
 DataManager.petTypes = {}    -- 宠物种类配置 { [id] = { name, desc, atk, def, max_hp, quality, skill } }
+DataManager.battleSoulConfig = {
+    -- 怪物类型 → 战魂获取区间 { [怪物类型] = { min, max } }
+    monster_soul = {},
+    -- 升级公式: need = base + growth * (level - 1) ^ power
+    level_formula = { base = "100", growth = "50", power = "1.5" },
+    -- 每级属性加成: { atk = "5", def = "3", max_hp = "20" }
+    level_bonus = { atk = "5", def = "3", max_hp = "20" },
+}
 DataManager.gameConfig = {}
 
 -- 当前玩家数据
@@ -132,6 +141,24 @@ local function ParseGameConfig(sections)
             max_level = lvlSec["最高等级"] or "100",
         }
     end
+    -- 货币配置
+    local currSec = sections["货币配置"]
+    if currSec then
+        local list = {}
+        local count = tonumber(currSec["货币数量"]) or 0
+        for i = 1, count do
+            local name = currSec["货币_" .. i]
+            if name and name ~= "" then
+                table.insert(list, name)
+            end
+        end
+        if #list == 0 then
+            table.insert(list, "金币")
+        end
+        config["currencies"] = list
+    else
+        config["currencies"] = { "金币" }
+    end
     return config
 end
 
@@ -155,15 +182,40 @@ local function ParseMaps(sections)
     return maps
 end
 
+--- 怪物类型分类阈值（按HP判断，从高到低匹配）
+local MONSTER_TYPE_THRESHOLDS = {
+    { name = "创世级", min = "60000000000" },
+    { name = "神级",   min = "5000000000" },
+    { name = "仙级",   min = "600000000" },
+    { name = "帝级",   min = "3000000" },
+    { name = "BOSS",   min = "500000" },
+    { name = "精英怪", min = "3000" },
+    { name = "普通怪", min = "0" },
+}
+
+--- 根据怪物HP自动判断怪物类型
+---@param hp string HP值
+---@return string 怪物类型名称
+local function ClassifyMonsterType(hp)
+    local hpStr = tostring(hp or "0")
+    for _, threshold in ipairs(MONSTER_TYPE_THRESHOLDS) do
+        if BigNum.gte(hpStr, threshold.min) then
+            return threshold.name
+        end
+    end
+    return "普通怪"
+end
+
 --- 解析 monsters.ini → monsters 表
 local function ParseMonsters(sections)
     local monsters = {}
     for sectionName, data in pairs(sections) do
+        local hp = data["生命值"] or "20"
         local entry = {
             name = data["名称"] or sectionName,
-            type = data["类型"] or "普通怪",
+            type = ClassifyMonsterType(hp),
             desc = data["描述"] or "",
-            hp = data["生命值"] or "20",
+            hp = hp,
             atk = data["攻击力"] or "3",
             def = data["防御力"] or "1",
             exp = data["经验值"] or "5",
@@ -173,6 +225,43 @@ local function ParseMonsters(sections)
         monsters[sectionName] = entry
     end
     return monsters
+end
+
+--- 解析 battle_soul.ini → battleSoulConfig
+local function ParseBattleSoul(sections)
+    local config = {
+        monster_soul = {},
+        level_formula = { base = "100", growth = "50", power = "1.5" },
+        level_bonus = { atk = "5", def = "3", max_hp = "20" },
+    }
+    -- [升级公式] base=100, growth=50, power=1.5
+    local formulaSec = sections["升级公式"]
+    if formulaSec then
+        config.level_formula.base = formulaSec["基础值"] or "100"
+        config.level_formula.growth = formulaSec["成长值"] or "50"
+        config.level_formula.power = formulaSec["幂次"] or "1.5"
+    end
+    -- [每级属性加成] atk=5, def=3, max_hp=20
+    local bonusSec = sections["每级属性加成"]
+    if bonusSec then
+        config.level_bonus.atk = bonusSec["攻击力"] or "5"
+        config.level_bonus.def = bonusSec["防御力"] or "3"
+        config.level_bonus.max_hp = bonusSec["生命上限"] or "20"
+    end
+    -- [怪物战魂] 每个怪物类型一个键，格式: 类型名=最小值-最大值
+    local monsterSec = sections["怪物战魂"]
+    if monsterSec then
+        for typeName, rangeStr in pairs(monsterSec) do
+            local minVal, maxVal = rangeStr:match("^(%d+)%-(%d+)$")
+            if minVal and maxVal then
+                config.monster_soul[typeName] = { min = minVal, max = maxVal }
+            else
+                -- 单值情况
+                config.monster_soul[typeName] = { min = rangeStr, max = rangeStr }
+            end
+        end
+    end
+    return config
 end
 
 --- 解析 items.ini → items 表
@@ -281,6 +370,39 @@ local function ParseShops(sections)
         shops[sectionName] = entry
     end
     return shops
+end
+
+--- 解析 system_shops.ini → systemShops 表
+--- 格式: [商店ID]  名称=xxx  货币=xxx  商品数量=N  商品_N=物品名:价格:描述
+local function ParseSystemShops(sections)
+    local result = {}
+    for sectionName, data in pairs(sections) do
+        local entry = {
+            name = data["名称"] or sectionName,
+            currency = data["货币"] or "金币",
+            desc = data["描述"] or "",
+            items = {},
+        }
+        local count = tonumber(data["商品数量"]) or 0
+        for i = 1, count do
+            local raw = data["商品_" .. i]
+            if raw then
+                local itemName, price, itemDesc = raw:match("^(.+):(%d+):(.*)$")
+                if not itemName then
+                    itemName, price = raw:match("^(.+):(%d+)$")
+                end
+                if itemName then
+                    table.insert(entry.items, {
+                        name = itemName,
+                        price = price or "0",
+                        desc = itemDesc or "",
+                    })
+                end
+            end
+        end
+        result[sectionName] = entry
+    end
+    return result
 end
 
 --- 解析 dungeons.ini → dungeons 表
@@ -459,6 +581,9 @@ local function LoadLocalDefaults()
     if ConfigData.shops then
         DataManager.shops = ParseShops(IniParser.Parse(ConfigData.shops))
     end
+    if ConfigData.system_shops then
+        DataManager.systemShops = ParseSystemShops(IniParser.Parse(ConfigData.system_shops))
+    end
     if ConfigData.dungeons then
         DataManager.dungeons = ParseDungeons(IniParser.Parse(ConfigData.dungeons))
     end
@@ -504,12 +629,14 @@ local SYSTEM_CLOUD_KEYS = {
     "系统配置/equipment.ini",
     "系统配置/quests.ini",
     "系统配置/shops.ini",
+    "系统配置/system_shops.ini",
     "系统配置/dungeons.ini",
     "系统配置/npcs.ini",
     "系统配置/giftpacks.ini",
     "系统配置/realms.ini",
     "系统配置/realm_pills.ini",
     "系统配置/pet_types.ini",
+    "系统配置/battle_soul.ini",
 }
 
 --- 延迟加载的键（打开对应面板时才拉取，减少启动压力）
@@ -592,6 +719,12 @@ function DataManager.LoadSystemData(callback)
                 DataManager.shops = ParseShops(IniParser.Parse(v))
                 hasCloud = true
             end
+            -- system_shops
+            v = values["系统配置/system_shops.ini"]
+            if v and v ~= "" then
+                DataManager.systemShops = ParseSystemShops(IniParser.Parse(v))
+                hasCloud = true
+            end
             -- dungeons
             v = values["系统配置/dungeons.ini"]
             if v and v ~= "" then
@@ -632,6 +765,12 @@ function DataManager.LoadSystemData(callback)
             v = values["系统配置/pet_types.ini"]
             if v and v ~= "" then
                 DataManager.petTypes = ParsePetTypes(IniParser.Parse(v))
+                hasCloud = true
+            end
+            -- battle_soul
+            v = values["系统配置/battle_soul.ini"]
+            if v and v ~= "" then
+                DataManager.battleSoulConfig = ParseBattleSoul(IniParser.Parse(v))
                 hasCloud = true
             end
             -- leaderboards/ranking_data/chat_messages 改为按需加载，不在启动时拉取
@@ -747,10 +886,13 @@ function DataManager.CreateNewPlayer(username, charName)
             atk = defaults.atk or "5",
             def = defaults.def or "3",
             gold = defaults.gold or "50",
+            currencies = {},  -- 自定义货币余额 { ["金币"]="50", ["钻石"]="0", ... }
             current_map = startMap,
             realm = "1",  -- 当前境界阶段（从1开始，独立于等级）
             realm_layer = "1", -- 当前境界层数（小境界，1-9）
             realm_exp = "0",   -- 当前层修炼经验
+            battle_soul_level = "0",  -- 战魂等级
+            battle_soul_exp = "0",    -- 战魂经验
         },
         bag = {},       -- { {name="物品名", count=数量}, ... }
         equip = {       -- 装备槽（13部位）
@@ -812,6 +954,8 @@ function DataManager.PlayerDataToFiles(playerData)
         realm = "境界",
         realm_layer = "境界层",
         realm_exp = "境界经验",
+        battle_soul_level = "战魂等级",
+        battle_soul_exp = "战魂经验",
     }
     for k, v in pairs(playerData.status) do
         local zhKey = statusMap[k] or k
@@ -954,6 +1098,8 @@ function DataManager.FilesToPlayerData(fileMap)
         ["境界"] = "realm",
         ["境界层"] = "realm_layer",
         ["境界经验"] = "realm_exp",
+        ["战魂等级"] = "battle_soul_level",
+        ["战魂经验"] = "battle_soul_exp",
     }
 
     -- 账号配置已集中存储，从 currentAccount/currentPassword 获取
@@ -1796,6 +1942,128 @@ end
 ---@return table|nil
 function DataManager.GetShop(shopId)
     return DataManager.shops[shopId]
+end
+
+--- 获取系统商店信息
+---@param shopId string
+---@return table|nil
+function DataManager.GetSystemShop(shopId)
+    return DataManager.systemShops[shopId]
+end
+
+--- 获取所有系统商店列表
+---@return table
+function DataManager.GetAllSystemShops()
+    return DataManager.systemShops
+end
+
+--- 获取配置的货币列表
+---@return table 货币名称数组，如 {"金币", "钻石", "积分"}
+function DataManager.GetCurrencyList()
+    return DataManager.gameConfig["currencies"] or { "金币" }
+end
+
+--- 获取玩家某种货币余额（兼容 gold 字段）
+---@param player table
+---@param currencyName string
+---@return string
+function DataManager.GetPlayerCurrency(player, currencyName)
+    if not player or not player.status then return "0" end
+    -- 金币兼容旧字段
+    if currencyName == "金币" then
+        return tostring(player.status.gold or "0")
+    end
+    local currencies = player.status.currencies or {}
+    return tostring(currencies[currencyName] or "0")
+end
+
+--- 设置玩家某种货币余额
+---@param player table
+---@param currencyName string
+---@param value string
+function DataManager.SetPlayerCurrency(player, currencyName, value)
+    if not player or not player.status then return end
+    if currencyName == "金币" then
+        player.status.gold = value
+        return
+    end
+    if not player.status.currencies then
+        player.status.currencies = {}
+    end
+    player.status.currencies[currencyName] = value
+end
+
+-- =============== 战魂系统 ===============
+
+--- 获取击杀某怪物应获得的战魂值区间
+---@param monsterName string
+---@return number min, number max
+function DataManager.GetBattleSoulRange(monsterName)
+    local mData = DataManager.monsters[monsterName]
+    local monsterType = mData and mData.type or "普通怪"
+    local soulCfg = DataManager.battleSoulConfig.monster_soul[monsterType]
+    if soulCfg then
+        return tonumber(soulCfg.min) or 1, tonumber(soulCfg.max) or 5
+    end
+    -- 未配置的类型默认 1-3
+    return 1, 3
+end
+
+--- 计算战魂升级到下一级所需经验
+--- 公式: need = base + growth * (level)^power
+---@param level number|string 当前等级
+---@return string 所需经验(BigNum字符串)
+function DataManager.GetBattleSoulExpNeeded(level)
+    local lv = tonumber(level) or 0
+    local formula = DataManager.battleSoulConfig.level_formula
+    local base = tonumber(formula.base) or 100
+    local growth = tonumber(formula.growth) or 50
+    local power = tonumber(formula.power) or 1.5
+    local need = math.floor(base + growth * (lv ^ power))
+    return tostring(need)
+end
+
+--- 获取战魂等级对玩家的总属性加成
+---@param level number|string
+---@return table { atk=string, def=string, max_hp=string }
+function DataManager.GetBattleSoulBonus(level)
+    local lv = tonumber(level) or 0
+    local bonus = DataManager.battleSoulConfig.level_bonus
+    return {
+        atk = tostring(math.floor(lv * (tonumber(bonus.atk) or 5))),
+        def = tostring(math.floor(lv * (tonumber(bonus.def) or 3))),
+        max_hp = tostring(math.floor(lv * (tonumber(bonus.max_hp) or 20))),
+    }
+end
+
+--- 获取所有怪物类型列表（从怪物配置中提取去重）
+---@return table 类型名列表
+function DataManager.GetMonsterTypes()
+    local typeSet = {}
+    local typeList = {}
+    for _, mData in pairs(DataManager.monsters) do
+        local t = mData.type or "普通怪"
+        if not typeSet[t] then
+            typeSet[t] = true
+            table.insert(typeList, t)
+        end
+    end
+    table.sort(typeList)
+    return typeList
+end
+
+--- 根据HP值自动判断怪物类型
+---@param hp string HP值
+---@return string 怪物类型名称
+function DataManager.ClassifyMonsterType(hp)
+    return ClassifyMonsterType(hp)
+end
+
+--- 重新分类所有怪物类型（根据HP值）
+function DataManager.ReclassifyAllMonsters()
+    for _, mData in pairs(DataManager.monsters) do
+        mData.type = ClassifyMonsterType(mData.hp)
+    end
 end
 
 --- 获取副本信息

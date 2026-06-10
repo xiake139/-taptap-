@@ -22,9 +22,14 @@ local dirBtnFront_ = nil
 local dirBtnBack_ = nil
 local dirBtnLeft_ = nil
 local dirBtnRight_ = nil
-local logPanel_ = nil
-local logScroll_ = nil
+
 local mainContent_ = nil
+
+-- 日志弹窗（模态，手动关闭）
+local logDialog_ = nil      -- 弹窗遮罩层
+local logContent_ = nil     -- 消息内容面板
+local logTexts_ = {}        -- 消息文本队列
+local LOG_MAX = 30          -- 最多保留条数
 
 -- 子面板模块（延迟加载）
 local StatusUI = nil
@@ -85,13 +90,6 @@ function GameUI.Create()
     dirBtnLeft_ = UI.Button { text = "左：---", variant = "secondary", width = "48%", onClick = function() GameUI.Move("left") end }
     dirBtnRight_ = UI.Button { text = "右：---", variant = "secondary", width = "48%", onClick = function() GameUI.Move("right") end }
 
-    -- 游戏日志面板
-    logPanel_ = UI.Panel {
-        id = "logPanel",
-        flexDirection = "column",
-        gap = 2,
-        width = "100%",
-    }
 
     -- 主内容区域
     mainContent_ = UI.Panel {
@@ -151,21 +149,9 @@ function GameUI.Create()
                 },
             },
 
-            -- 底部：日志区（可滚动）
-            (function()
-                logScroll_ = UI.ScrollView {
-                    id = "logScroll",
-                    width = "100%",
-                    height = 100,
-                    backgroundColor = { 20, 15, 35, 255 },
-                    borderRadius = 6,
-                    padding = 6,
-                    children = { logPanel_ },
-                }
-                return logScroll_
-            end)(),
 
-            -- 底部：功能按钮（上下滑动，每排3个）
+
+            -- 底部：可折叠功能按钮
             (function()
                 local buttons = {
                     { text = "状态", panel = "status", variant = "primary" },
@@ -178,6 +164,7 @@ function GameUI.Create()
                     { text = "礼包", panel = "giftpack", variant = "secondary" },
                     { text = "交易", panel = "trade", variant = "secondary" },
                     { text = "宠物", panel = "pet", variant = "secondary" },
+                    { text = "战魂", panel = "battle_soul", variant = "secondary" },
                     { text = "邮箱", panel = "mailbox", variant = "secondary" },
                     { text = "排行", panel = "leaderboard", variant = "secondary" },
                     { text = "聊天", panel = "chat", variant = "secondary" },
@@ -201,14 +188,35 @@ function GameUI.Create()
                         children = rowChildren,
                     })
                 end
-                return UI.ScrollView {
+
+                -- 按钮内容区（默认折叠隐藏，自动适应高度）
+                local btnContent = UI.Panel {
                     width = "100%",
-                    maxHeight = 80,
-                    scrollY = true,
-                    scrollX = false,
                     flexDirection = "column",
                     gap = 4,
                     children = rows,
+                }
+                btnContent:SetVisible(false)
+
+                -- 折叠/展开切换按钮
+                local expanded = false
+                local toggleBtn = UI.Button {
+                    text = "展开功能 ▼",
+                    variant = "outline",
+                    width = "100%",
+                    height = 28,
+                    onClick = function(self)
+                        expanded = not expanded
+                        btnContent:SetVisible(expanded)
+                        self:SetText(expanded and "收起功能 ▲" or "展开功能 ▼")
+                    end,
+                }
+
+                return UI.Panel {
+                    width = "100%",
+                    flexDirection = "column",
+                    gap = 4,
+                    children = { toggleBtn, btnContent },
                 }
             end)(),
         },
@@ -250,8 +258,10 @@ function GameUI.RefreshMap()
         monstersLabel_:AddChild(UI.Label { text = "无", fontSize = 13, fontColor = { 150, 150, 150, 255 } })
     else
         for _, mName in ipairs(monsterList) do
+            local mData = DataManager.monsters[mName]
+            local mType = mData and mData.type or "普通怪"
             monstersLabel_:AddChild(UI.Button {
-                text = "【" .. mName .. "】挑战",
+                text = "【" .. mName .. "】" .. mType,
                 variant = "danger",
                 height = 26,
                 fontSize = 12,
@@ -371,14 +381,7 @@ function GameUI.ShowPanel(panelType)
     GameUI.currentPanel = panelType
     mainContent_:ClearChildren()
 
-    -- 聊天面板时隐藏日志区，腾出空间
-    if logScroll_ then
-        if panelType == "chat" then
-            logScroll_:SetVisible(false)
-        else
-            logScroll_:SetVisible(true)
-        end
-    end
+
 
     if panelType == "status" then
         if not StatusUI then StatusUI = require("UI.StatusUI") end
@@ -407,6 +410,8 @@ function GameUI.ShowPanel(panelType)
     elseif panelType == "pet" then
         if not PetUI then PetUI = require("UI.PetUI") end
         PetUI.Render(mainContent_)
+    elseif panelType == "battle_soul" then
+        GameUI.RenderBattleSoulPanel()
     elseif panelType == "mailbox" then
         if not MailboxUI then MailboxUI = require("UI.MailboxUI") end
         MailboxUI.Render(mainContent_)
@@ -424,6 +429,115 @@ function GameUI.ShowPanel(panelType)
         SwitchState("login")
         return
     end
+end
+
+--- 渲染战魂面板
+function GameUI.RenderBattleSoulPanel()
+    mainContent_:ClearChildren()
+
+    local player = DataManager.playerData
+    if not player then return end
+    local s = player.status
+    local soulLv = tonumber(s.battle_soul_level) or 0
+    local soulExp = s.battle_soul_exp or "0"
+    local needExp = DataManager.GetBattleSoulExpNeeded(soulLv)
+    local bonus = DataManager.GetBattleSoulBonus(s.battle_soul_level)
+
+    -- 经验进度百分比
+    local expNum = tonumber(soulExp) or 0
+    local needNum = tonumber(needExp) or 1
+    local pct = math.min(100, math.floor(expNum / math.max(needNum, 1) * 100))
+
+    mainContent_:AddChild(UI.Panel {
+        width = "100%",
+        flexDirection = "column",
+        padding = 12,
+        gap = 8,
+        children = {
+            UI.Label { text = "— 战魂 —", fontSize = 16, fontColor = { 200, 150, 255, 255 }, textAlign = "center" },
+            UI.Panel { width = "100%", height = 1, backgroundColor = { 60, 40, 80, 255 } },
+
+            -- 等级
+            UI.Panel {
+                flexDirection = "row", width = "100%", justifyContent = "space-between",
+                children = {
+                    UI.Label { text = "战魂等级", fontSize = 14, fontColor = { 180, 160, 220, 255 } },
+                    UI.Label { text = "Lv." .. soulLv, fontSize = 14, fontColor = { 220, 180, 255, 255 } },
+                },
+            },
+
+            -- 经验进度
+            UI.Panel {
+                flexDirection = "column", width = "100%", gap = 4,
+                children = {
+                    UI.Panel {
+                        flexDirection = "row", width = "100%", justifyContent = "space-between",
+                        children = {
+                            UI.Label { text = "战魂经验", fontSize = 13, fontColor = { 160, 160, 180, 255 } },
+                            UI.Label { text = NumFormat.Short(soulExp) .. " / " .. NumFormat.Short(needExp) .. "  (" .. pct .. "%)", fontSize = 13, fontColor = { 200, 180, 255, 255 } },
+                        },
+                    },
+                    -- 进度条
+                    UI.Panel {
+                        width = "100%", height = 8, backgroundColor = { 40, 30, 60, 255 }, borderRadius = 4,
+                        children = {
+                            UI.Panel {
+                                width = pct .. "%", height = "100%",
+                                backgroundColor = { 160, 100, 255, 255 }, borderRadius = 4,
+                            },
+                        },
+                    },
+                },
+            },
+
+            UI.Panel { width = "100%", height = 1, backgroundColor = { 60, 40, 80, 255 } },
+
+            -- 属性加成标题
+            UI.Label { text = "战魂属性加成", fontSize = 14, fontColor = { 150, 255, 200, 255 }, textAlign = "center" },
+
+            -- 属性详情
+            UI.Panel {
+                flexDirection = "column", width = "100%", gap = 4,
+                padding = 8, backgroundColor = { 35, 30, 55, 200 }, borderRadius = 6,
+                children = {
+                    UI.Panel {
+                        flexDirection = "row", width = "100%", justifyContent = "space-between",
+                        children = {
+                            UI.Label { text = "攻击加成", fontSize = 13, fontColor = { 160, 160, 180, 255 } },
+                            UI.Label { text = "+" .. NumFormat.Short(bonus.atk), fontSize = 13, fontColor = { 255, 150, 150, 255 } },
+                        },
+                    },
+                    UI.Panel {
+                        flexDirection = "row", width = "100%", justifyContent = "space-between",
+                        children = {
+                            UI.Label { text = "防御加成", fontSize = 13, fontColor = { 160, 160, 180, 255 } },
+                            UI.Label { text = "+" .. NumFormat.Short(bonus.def), fontSize = 13, fontColor = { 150, 200, 255, 255 } },
+                        },
+                    },
+                    UI.Panel {
+                        flexDirection = "row", width = "100%", justifyContent = "space-between",
+                        children = {
+                            UI.Label { text = "生命上限加成", fontSize = 13, fontColor = { 160, 160, 180, 255 } },
+                            UI.Label { text = "+" .. NumFormat.Short(bonus.max_hp), fontSize = 13, fontColor = { 150, 255, 150, 255 } },
+                        },
+                    },
+                },
+            },
+
+            UI.Panel { width = "100%", height = 1, backgroundColor = { 60, 40, 80, 255 } },
+
+            -- 下一级预览
+            UI.Label {
+                text = "下一级(Lv." .. (soulLv + 1) .. ")属性：攻+" .. tostring((soulLv + 1) * (tonumber(DataManager.battleSoulConfig.level_bonus.atk) or 5)) ..
+                    " 防+" .. tostring((soulLv + 1) * (tonumber(DataManager.battleSoulConfig.level_bonus.def) or 3)) ..
+                    " 生命上限+" .. tostring((soulLv + 1) * (tonumber(DataManager.battleSoulConfig.level_bonus.max_hp) or 20)),
+                fontSize = 11, fontColor = { 180, 180, 200, 255 }, textAlign = "center",
+            },
+            UI.Label {
+                text = "击杀怪物自动获取战魂经验", fontSize = 10, fontColor = { 140, 140, 160, 255 }, textAlign = "center",
+            },
+        },
+    })
 end
 
 --- 渲染礼包兑换面板
@@ -852,30 +966,126 @@ function GameUI.RefreshChatList()
     end
 end
 
---- 添加游戏日志
+--- 添加游戏日志（一体式弹窗显示）
 ---@param msg string
 function GameUI.AddLog(msg)
-    if not logPanel_ then return end
-
-    -- 限制最多20条日志
-    local children = logPanel_:GetChildren()
-    if children and #children >= 20 then
-        logPanel_:RemoveChild(children[1])
+    -- 追加消息到队列
+    table.insert(logTexts_, msg)
+    if #logTexts_ > LOG_MAX then
+        table.remove(logTexts_, 1)
     end
 
-    logPanel_:AddChild(UI.Label {
-        text = "> " .. msg,
-        fontSize = 11,
-        fontColor = { 180, 180, 200, 255 },
-        whiteSpace = "normal",
-    })
-
-    -- 自动滚动到底部
-    if logScroll_ and logScroll_.ScrollToBottom then
-        logScroll_:ScrollToBottom()
+    -- 如果弹窗已打开，追加新消息
+    if logDialog_ and logContent_ then
+        logContent_:AddChild(UI.Label {
+            text = "> " .. msg,
+            fontSize = 12,
+            fontColor = { 220, 220, 240, 255 },
+            whiteSpace = "normal",
+            width = "100%",
+        })
+    else
+        -- 弹窗未打开，自动弹出
+        GameUI.ShowLogDialog()
     end
 
     print("[Log] " .. msg)
+end
+
+--- 显示日志弹窗（模态，手动关闭）
+function GameUI.ShowLogDialog()
+    -- 如果已打开，不重复创建
+    if logDialog_ then return end
+
+    -- 构建历史消息列表
+    local msgChildren = {}
+    for i, text in ipairs(logTexts_) do
+        table.insert(msgChildren, UI.Label {
+            text = "> " .. text,
+            fontSize = 12,
+            fontColor = { 220, 220, 240, 255 },
+            whiteSpace = "normal",
+            width = "100%",
+        })
+    end
+
+    -- 消息内容面板（滚动区域内的子面板）
+    logContent_ = UI.Panel {
+        width = "100%",
+        flexDirection = "column",
+        gap = 4,
+        children = msgChildren,
+    }
+
+    logDialog_ = UI.Panel {
+        id = "logDialogOverlay",
+        position = "absolute",
+        left = 0, top = 0, right = 0, bottom = 0,
+        justifyContent = "center", alignItems = "center",
+        backgroundColor = { 0, 0, 0, 160 },
+        onClick = function()
+            GameUI.HideLogDialog()
+        end,
+        children = {
+            UI.Panel {
+                width = "85%",
+                maxWidth = 340,
+                height = "70%",
+                maxHeight = 420,
+                padding = 14,
+                backgroundColor = { 25, 20, 45, 245 },
+                borderRadius = 12,
+                borderWidth = 1,
+                borderColor = { 100, 80, 160, 200 },
+                flexDirection = "column",
+                alignItems = "center",
+                gap = 8,
+                onClick = function() end,  -- 阻止穿透
+                children = {
+                    -- 标题
+                    UI.Label { text = "游戏日志", fontSize = 16, fontColor = { 200, 180, 255, 255 }, textAlign = "center" },
+                    -- 分隔线
+                    UI.Panel { width = "100%", height = 1, backgroundColor = { 80, 60, 120, 200 } },
+                    -- 消息滚动区域
+                    UI.ScrollView {
+                        width = "100%",
+                        flexGrow = 1,
+                        flexShrink = 1,
+                        children = { logContent_ },
+                    },
+                    -- 关闭按钮
+                    UI.Button {
+                        text = "关  闭",
+                        variant = "secondary",
+                        width = 100,
+                        height = 34,
+                        marginTop = 6,
+                        onClick = function()
+                            GameUI.HideLogDialog()
+                        end,
+                    },
+                },
+            },
+        },
+    }
+
+    -- 添加到根面板
+    local root = GameUI.rootPanel
+    if root then
+        local old = root:FindById("logDialogOverlay")
+        if old then old:Remove() end
+        root:AddChild(logDialog_)
+    end
+end
+
+--- 关闭日志弹窗（同时清空日志）
+function GameUI.HideLogDialog()
+    if logDialog_ then
+        logDialog_:Remove()
+        logDialog_ = nil
+        logContent_ = nil
+    end
+    logTexts_ = {}
 end
 
 --- 检查探索类任务完成

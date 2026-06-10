@@ -6,6 +6,7 @@ local UI = require("urhox-libs/UI")
 local DataManager = require("Systems.DataManager")
 local IniParser = require("Utils.IniParser")
 local BigNum = require("Utils.BigNum")
+local NumFormat = require("Utils.NumFormat")
 
 local DialogUI = {}
 
@@ -66,15 +67,15 @@ function DialogUI.Show(npcName, parent)
     local npcType = npcData.type or "normal"
 
     if npcType == "merchant" or npcType == "商人" then
-        -- 商人：显示商店入口
+        -- 商人：显示NPC专属商店
+        local shopId = npcData.shop_id or ""
         parent:AddChild(UI.Button {
             text = "查看商品",
             variant = "primary",
             width = "100%",
             marginTop = 8,
             onClick = function()
-                local GameUI = require("UI.GameUI")
-                GameUI.ShowPanel("shop")
+                DialogUI.ShowNpcShop(parent, npcName, shopId)
             end,
         })
     end
@@ -218,6 +219,134 @@ function DialogUI.CheckTalkQuest(npcName)
             break
         end
     end
+end
+
+--- NPC专属商店界面
+---@param parent Widget
+---@param npcName string
+---@param shopId string
+function DialogUI.ShowNpcShop(parent, npcName, shopId)
+    if not parent then return end
+    parent:ClearChildren()
+
+    local player = DataManager.playerData
+    if not player then return end
+
+    local shopData = DataManager.GetShop(shopId)
+    if not shopData or #(shopData.items or {}) == 0 then
+        parent:AddChild(UI.Label {
+            text = "【" .. npcName .. "】的商店暂无商品",
+            fontSize = 14, fontColor = { 200, 200, 100, 255 }, textAlign = "center", marginTop = 12,
+        })
+        parent:AddChild(UI.Button {
+            text = "← 返回对话",
+            variant = "outline", width = "100%", marginTop = 8,
+            onClick = function() DialogUI.Show(npcName, parent) end,
+        })
+        return
+    end
+
+    local shopName = shopData.name or npcName .. "的商店"
+    local currency = "金币"
+
+    -- 标题 + 返回
+    parent:AddChild(UI.Panel {
+        flexDirection = "row", alignItems = "center", width = "100%", marginBottom = 4,
+        children = {
+            UI.Button {
+                text = "← 返回",
+                variant = "outline", height = 26, fontSize = 11,
+                onClick = function() DialogUI.Show(npcName, parent) end,
+            },
+            UI.Label {
+                text = "  " .. shopName,
+                fontSize = 15, fontColor = { 100, 220, 100, 255 }, flexGrow = 1,
+            },
+        },
+    })
+
+    -- 玩家金币
+    local goldValue = DataManager.GetPlayerCurrency(player, currency)
+    parent:AddChild(UI.Label {
+        text = currency .. "：" .. NumFormat.Short(goldValue),
+        fontSize = 14, fontColor = { 255, 215, 0, 255 }, textAlign = "center", marginBottom = 6,
+    })
+
+    -- 商品列表
+    for _, shopItem in ipairs(shopData.items) do
+        local itemName = shopItem.name or ""
+        local price = shopItem.price or "0"
+        local desc = shopItem.desc or ""
+        if itemName == "" then goto continue_npc_item end
+
+        parent:AddChild(UI.Panel {
+            flexDirection = "row", alignItems = "center", width = "100%",
+            padding = 6, gap = 6,
+            backgroundColor = { 25, 30, 20, 200 }, borderRadius = 4, marginBottom = 3,
+            children = {
+                UI.Panel {
+                    flexGrow = 1, flexShrink = 1, flexDirection = "column",
+                    children = {
+                        UI.Label { text = itemName, fontSize = 14, fontColor = { 220, 240, 220, 255 } },
+                        desc ~= "" and UI.Label { text = desc, fontSize = 11, fontColor = { 140, 160, 140, 255 }, whiteSpace = "normal" } or nil,
+                    },
+                },
+                UI.Label { text = NumFormat.Short(price) .. currency, fontSize = 13, fontColor = { 255, 215, 0, 255 } },
+                UI.Button {
+                    text = "购买",
+                    variant = "success", height = 28,
+                    onClick = function()
+                        DialogUI.BuyNpcItem(parent, npcName, shopId, itemName, price, currency)
+                    end,
+                },
+            },
+        })
+        ::continue_npc_item::
+    end
+end
+
+--- NPC商店购买物品
+---@param parent Widget
+---@param npcName string
+---@param shopId string
+---@param itemName string
+---@param price string
+---@param currency string
+function DialogUI.BuyNpcItem(parent, npcName, shopId, itemName, price, currency)
+    local player = DataManager.playerData
+    if not player then return end
+
+    local have = BigNum.new(DataManager.GetPlayerCurrency(player, currency))
+    local cost = BigNum.new(tostring(price))
+    if BigNum.lt(have, cost) then
+        local GameUI = require("UI.GameUI")
+        GameUI.AddLog(currency .. "不足，无法购买 " .. itemName)
+        return
+    end
+
+    -- 扣除货币
+    local newVal = BigNum.sub(have, cost)
+    DataManager.SetPlayerCurrency(player, currency, newVal)
+
+    -- 添加到背包
+    local found = false
+    for _, item in ipairs(player.bag) do
+        if item.name == itemName then
+            item.count = BigNum.add(item.count or "0", "1")
+            found = true
+            break
+        end
+    end
+    if not found then
+        table.insert(player.bag, { name = itemName, count = "1" })
+    end
+
+    local GameUI = require("UI.GameUI")
+    GameUI.AddLog("从【" .. npcName .. "】购买了 " .. itemName)
+
+    DataManager.SaveToCloud(player)
+    -- 刷新商店界面
+    DialogUI.ShowNpcShop(parent, npcName, shopId)
 end
 
 return DialogUI

@@ -75,6 +75,7 @@ local buffCheckTimer_ = 0
 local statusRefreshTimer_ = 0
 function HandleUpdate(eventType, eventData)
     local dt = eventData["TimeStep"]:GetFloat()
+    local GameUI = require("UI.GameUI")
     -- 每 5 秒检查一次 buff 过期
     buffCheckTimer_ = buffCheckTimer_ + dt
     if buffCheckTimer_ >= 5.0 then
@@ -83,7 +84,6 @@ function HandleUpdate(eventType, eventData)
         BagUI.CleanExpiredBuffs()
     end
     -- 状态面板打开时每秒更新倒计时文本（不重建面板）
-    local GameUI = require("UI.GameUI")
     if GameUI.currentPanel == "status" then
         statusRefreshTimer_ = statusRefreshTimer_ + dt
         if statusRefreshTimer_ >= 1.0 then
@@ -107,6 +107,8 @@ function InitUI()
         },
         scale = UI.Scale.DEFAULT,
     })
+
+
 end
 
 --- 切换游戏状态
