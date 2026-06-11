@@ -45,6 +45,7 @@ local CATEGORIES = {
     { id = "pet_bonus", name = "宠物属性加成" },
     { id = "system_shops", name = "系统商店" },
     { id = "battle_soul", name = "战魂管理" },
+    { id = "leaderboards", name = "排行榜" },
 
     { id = "generator", name = "一键生成" },
 }
@@ -603,6 +604,22 @@ local function SaveCategoryToCloud(category, onDoneExtra)
         SaveConfigToCloud("系统配置/battle_soul.ini", content, function(ok)
             ShowMsg(ok and "战魂配置已保存到云端" or "保存失败")
         end)
+    elseif category == "leaderboards" then
+        local sections = {}
+        for id, data in pairs(DataManager.leaderboards) do
+            sections[id] = {
+                ["名称"] = data.name or id,
+                ["云端键名"] = data.key or ("rank_" .. id),
+                ["数据来源"] = data.source or "等级",
+                ["排序"] = data.order or "desc",
+                ["显示人数"] = tostring(data.top_count or 10),
+            }
+        end
+        content = IniParser.Serialize(sections)
+        SaveConfigToCloud("系统配置/leaderboards.ini", content, function(ok)
+            ShowMsg(ok and "排行榜配置已保存到云端" or "保存失败")
+            if onDoneExtra then onDoneExtra(ok) end
+        end)
     end
 end
 
@@ -778,6 +795,125 @@ local function CreateListRow(text, subtext, onEdit, index, onDelete)
             },
         },
     }
+end
+
+--- 虚拟列表行高度常量
+local VLIST_ITEM_HEIGHT = 52
+local VLIST_ITEM_GAP = 2
+
+--- 创建虚拟数据列表（替代逐条 AddChild 的方式，性能恒定）
+--- @param dataArray table[] 每项 {text=string, subtext=string, onEdit=fun(), onDelete=fun()|nil}
+--- @return Widget virtualListContainer
+local function CreateVirtualDataList(dataArray)
+    local container = UI.Panel {
+        width = "100%",
+        flexGrow = 1,
+        flexBasis = 0,
+        overflow = "hidden",
+        marginTop = 4,
+    }
+
+    if #dataArray == 0 then
+        container:AddChild(UI.Label {
+            text = "（无数据）",
+            fontSize = 12,
+            fontColor = { 140, 140, 160, 255 },
+            textAlign = "center",
+            marginTop = 20,
+        })
+        return container
+    end
+
+    local vList = UI.VirtualList {
+        width = "100%",
+        height = "100%",
+        viewportHeight = (UI.GetHeight and UI.GetHeight() or 500) - 80,
+        data = dataArray,
+        itemHeight = VLIST_ITEM_HEIGHT,
+        itemGap = VLIST_ITEM_GAP,
+        poolBuffer = 5,
+        createItem = function()
+            local row = UI.Panel {
+                width = "100%",
+                height = VLIST_ITEM_HEIGHT,
+                flexDirection = "row",
+                alignItems = "center",
+                paddingLeft = 12,
+                paddingRight = 12,
+                paddingTop = 4,
+                paddingBottom = 4,
+                backgroundColor = { 20, 15, 35, 200 },
+            }
+            local infoCol = UI.Panel {
+                flexDirection = "column",
+                flexGrow = 1,
+                flexShrink = 1,
+            }
+            local titleLabel = UI.Label {
+                id = "title",
+                text = "",
+                fontSize = 13,
+                fontColor = { 220, 220, 240, 255 },
+                maxLines = 1,
+            }
+            local subLabel = UI.Label {
+                id = "sub",
+                text = "",
+                fontSize = 11,
+                fontColor = { 140, 140, 160, 255 },
+                maxLines = 1,
+            }
+            infoCol:AddChild(titleLabel)
+            infoCol:AddChild(subLabel)
+            row:AddChild(infoCol)
+
+            local btnPanel = UI.Panel {
+                flexDirection = "row",
+                gap = 4,
+            }
+            local editBtn = UI.Button {
+                id = "editBtn",
+                text = "编辑",
+                fontSize = 11,
+                width = 50,
+                height = 26,
+                variant = "secondary",
+            }
+            local delBtn = UI.Button {
+                id = "delBtn",
+                text = "删除",
+                fontSize = 11,
+                width = 50,
+                height = 26,
+                variant = "danger",
+            }
+            btnPanel:AddChild(editBtn)
+            btnPanel:AddChild(delBtn)
+            row:AddChild(btnPanel)
+
+            row._titleLabel = titleLabel
+            row._subLabel = subLabel
+            row._editBtn = editBtn
+            row._delBtn = delBtn
+            row._btnPanel = btnPanel
+            return row
+        end,
+        bindItem = function(widget, data, index)
+            widget._titleLabel:SetText(data.text or "")
+            widget._subLabel:SetText(data.subtext or "")
+            widget.props.backgroundColor = (index % 2 == 0) and { 25, 20, 45, 200 } or { 20, 15, 35, 200 }
+            -- 绑定按钮回调
+            widget._editBtn.props.onClick = data.onEdit
+            if data.onDelete then
+                widget._delBtn:SetVisible(true)
+                widget._delBtn.props.onClick = data.onDelete
+            else
+                widget._delBtn:SetVisible(false)
+            end
+        end,
+    }
+    container:AddChild(vList)
+    return container
 end
 
 --- 通用编辑弹窗
@@ -1759,17 +1895,16 @@ local function RenderMaps()
     ClearContent()
     contentPanel_:AddChild(CreateSearchBar("搜索地图名...", function() RenderMaps() end))
     local count = 0
-    local idx = 0
     for _ in pairs(DataManager.maps) do count = count + 1 end
     ShowMsg("共 " .. count .. " 张地图")
 
+    local dataArray = {}
     for id, data in pairs(DataManager.maps) do
         if not MatchSearch(data.name or id) then goto continue_maps end
-        idx = idx + 1
-        local row = CreateListRow(
-            data.name or id,
-            "等级需求:" .. (data.level_req or 0) .. " 怪物:" .. (data.monsters or ""),
-            function()
+        table.insert(dataArray, {
+            text = data.name or id,
+            subtext = "等级需求:" .. (data.level_req or 0) .. " 怪物:" .. (data.monsters or ""),
+            onEdit = function()
                 ShowEditDialog("编辑地图 - " .. id, {
                     { label = "名称", key = "name", value = data.name },
                     { label = "描述", key = "desc", value = data.desc, opts = { width = 220 } },
@@ -1790,14 +1925,16 @@ local function RenderMaps()
                     CloseDialog()
                     RenderMaps()
                 end)
-            end, idx, function()
+            end,
+            onDelete = function()
                 DataManager.maps[id] = nil
                 SaveCategoryToCloud("maps")
                 RenderMaps()
-            end)
-        contentPanel_:AddChild(row)
+            end,
+        })
         ::continue_maps::
     end
+    contentPanel_:AddChild(CreateVirtualDataList(dataArray))
 
     -- 添加按钮
     contentPanel_:AddChild(UI.Button {
@@ -1839,13 +1976,12 @@ local function RenderMonsters()
     ClearContent()
     contentPanel_:AddChild(CreateSearchBar("搜索怪物名...", function() RenderMonsters() end))
     local count = 0
-    local idx = 0
     for _ in pairs(DataManager.monsters) do count = count + 1 end
     ShowMsg("共 " .. count .. " 种怪物")
 
+    local dataArray = {}
     for id, data in pairs(DataManager.monsters) do
         if not MatchSearch(data.name or id) then goto continue_monsters end
-        idx = idx + 1
         local typeTag = data.type and ("[" .. data.type .. "] ") or ""
         -- 动态构建编辑字段（含多货币）
         local editFields = {
@@ -1863,10 +1999,10 @@ local function RenderMonsters()
         end
         table.insert(editFields, { label = "掉落", key = "drops", value = data.drops, opts = { width = 220, placeholder = "物品:概率,..." } })
 
-        local row = CreateListRow(
-            typeTag .. (data.name or id),
-            "血量:" .. (data.hp or 0) .. " 攻击:" .. (data.atk or 0) .. " 经验:" .. (data.exp or 0),
-            function()
+        table.insert(dataArray, {
+            text = typeTag .. (data.name or id),
+            subtext = "血量:" .. (data.hp or 0) .. " 攻击:" .. (data.atk or 0) .. " 经验:" .. (data.exp or 0),
+            onEdit = function()
                 ShowEditDialog("编辑怪物 - " .. id, editFields, function(v)
                     local currDrops = {}
                     local cs = DataManager.gameConfig["currencies"] or { "金币" }
@@ -1884,14 +2020,16 @@ local function RenderMonsters()
                     CloseDialog()
                     RenderMonsters()
                 end)
-            end, idx, function()
+            end,
+            onDelete = function()
                 DataManager.monsters[id] = nil
                 SaveCategoryToCloud("monsters")
                 RenderMonsters()
-            end)
-        contentPanel_:AddChild(row)
+            end,
+        })
         ::continue_monsters::
     end
+    contentPanel_:AddChild(CreateVirtualDataList(dataArray))
 
     contentPanel_:AddChild(UI.Button {
         text = "+ 添加怪物",
@@ -2193,29 +2331,30 @@ RenderItems = function()
     ClearContent()
     contentPanel_:AddChild(CreateSearchBar("搜索物品名/类型...", function() RenderItems() end))
     local count = 0
-    local idx = 0
     for _ in pairs(DataManager.items) do count = count + 1 end
     ShowMsg("共 " .. count .. " 种物品")
 
+    local dataArray = {}
     for id, data in pairs(DataManager.items) do
         local typeCN = ITEM_TYPE_EN_TO_CN[data.type] or data.type
         if not MatchSearch(data.name or id) and not MatchSearch(data.type) and not MatchSearch(typeCN) then goto continue_items end
-        idx = idx + 1
         local typeStr = data.type or "材料"
         typeStr = ITEM_TYPE_EN_TO_CN[typeStr] or typeStr
-        local row = CreateListRow(
-            (data.name or id) .. "  [" .. typeStr .. "]",
-            "数值:" .. tostring(data.value or 0),
-            function()
+        table.insert(dataArray, {
+            text = (data.name or id) .. "  [" .. typeStr .. "]",
+            subtext = "数值:" .. tostring(data.value or 0),
+            onEdit = function()
                 ShowItemEditDialog("编辑物品 - " .. (data.name or id), data, id, false)
-            end, idx, function()
+            end,
+            onDelete = function()
                 DataManager.items[id] = nil
                 SaveCategoryToCloud("items")
                 RenderItems()
-            end)
-        contentPanel_:AddChild(row)
+            end,
+        })
         ::continue_items::
     end
+    contentPanel_:AddChild(CreateVirtualDataList(dataArray))
 
     contentPanel_:AddChild(UI.Button {
         text = "+ 添加物品",
@@ -2349,17 +2488,16 @@ local function RenderEquipment()
     ClearContent()
     contentPanel_:AddChild(CreateSearchBar("搜索装备名...", function() RenderEquipment() end))
     local count = 0
-    local idx = 0
     for _ in pairs(DataManager.equipment) do count = count + 1 end
     ShowMsg("共 " .. count .. " 件装备")
 
+    local dataArray = {}
     for id, data in pairs(DataManager.equipment) do
         if not MatchSearch(data.name or id) then goto continue_equip end
-        idx = idx + 1
-        local row = CreateListRow(
-            (data.name or id) .. "  [" .. SlotToCN(data.slot or "武器") .. "]",
-            "品质:" .. QualityToCN(data.quality or "白色") .. " 攻击:" .. (data.atk or 0) .. " 防御:" .. (data.def or 0) .. " 生命:" .. (data.hp or 0),
-            function()
+        table.insert(dataArray, {
+            text = (data.name or id) .. "  [" .. SlotToCN(data.slot or "武器") .. "]",
+            subtext = "品质:" .. QualityToCN(data.quality or "白色") .. " 攻击:" .. (data.atk or 0) .. " 防御:" .. (data.def or 0) .. " 生命:" .. (data.hp or 0),
+            onEdit = function()
                 -- 使用自定义弹窗（含选择器）
                 CloseDialog()
                 local fieldWidgets = {}
@@ -2458,14 +2596,16 @@ local function RenderEquipment()
                     },
                 }
                 if rootPanel_ then rootPanel_:AddChild(editDialog_) end
-            end, idx, function()
+            end,
+            onDelete = function()
                 DataManager.equipment[id] = nil
                 SaveCategoryToCloud("equipment")
                 RenderEquipment()
-            end)
-        contentPanel_:AddChild(row)
+            end,
+        })
         ::continue_equip::
     end
+    contentPanel_:AddChild(CreateVirtualDataList(dataArray))
 
     contentPanel_:AddChild(UI.Button {
         text = "+ 添加装备",
@@ -2579,17 +2719,16 @@ local function RenderQuests()
     ClearContent()
     contentPanel_:AddChild(CreateSearchBar("搜索任务名...", function() RenderQuests() end))
     local count = 0
-    local idx = 0
     for _ in pairs(DataManager.quests) do count = count + 1 end
     ShowMsg("共 " .. count .. " 个任务")
 
+    local dataArray = {}
     for id, data in pairs(DataManager.quests) do
         if not MatchSearch(data.name or id) then goto continue_quests end
-        idx = idx + 1
-        local row = CreateListRow(
-            "[" .. QuestTypeToCN(data.type or "支线") .. "] " .. (data.name or id),
-            "目标:" .. TargetTypeToCN(data.target_type or "击杀") .. " " .. (data.target_name or "") .. "x" .. (data.target_count or 1) .. " 经验:" .. (data.reward_exp or 0),
-            function()
+        table.insert(dataArray, {
+            text = "[" .. QuestTypeToCN(data.type or "支线") .. "] " .. (data.name or id),
+            subtext = "目标:" .. TargetTypeToCN(data.target_type or "击杀") .. " " .. (data.target_name or "") .. "x" .. (data.target_count or 1) .. " 经验:" .. (data.reward_exp or 0),
+            onEdit = function()
                 ShowEditDialog("编辑任务 - " .. id, {
                     { label = "名称", key = "name", value = data.name },
                     { label = "类型", key = "type", value = data.type, opts = { placeholder = "主线/支线" } },
@@ -2613,14 +2752,16 @@ local function RenderQuests()
                     CloseDialog()
                     RenderQuests()
                 end)
-            end, idx, function()
+            end,
+            onDelete = function()
                 DataManager.quests[id] = nil
                 SaveCategoryToCloud("quests")
                 RenderQuests()
-            end)
-        contentPanel_:AddChild(row)
+            end,
+        })
         ::continue_quests::
     end
+    contentPanel_:AddChild(CreateVirtualDataList(dataArray))
 
     contentPanel_:AddChild(UI.Button {
         text = "+ 添加任务",
@@ -2937,13 +3078,12 @@ RenderShops = function()
     ClearContent()
     contentPanel_:AddChild(CreateSearchBar("搜索商店名...", function() RenderShops() end))
     local count = 0
-    local idx = 0
     for _ in pairs(DataManager.shops) do count = count + 1 end
     ShowMsg("共 " .. count .. " 家商店")
 
+    local dataArray = {}
     for id, data in pairs(DataManager.shops) do
         if not MatchSearch(data.name or id) then goto continue_shops end
-        idx = idx + 1
         local itemCount = #(data.items or {})
         local itemSummary = ""
         for i, item in ipairs(data.items or {}) do
@@ -2953,19 +3093,21 @@ RenderShops = function()
         end
         if itemSummary == "" then itemSummary = "无商品" end
 
-        local row = CreateListRow(
-            (data.name or id) .. "  [" .. itemCount .. "种商品]",
-            itemSummary,
-            function()
+        table.insert(dataArray, {
+            text = (data.name or id) .. "  [" .. itemCount .. "种商品]",
+            subtext = itemSummary,
+            onEdit = function()
                 ShowShopEditDialog("编辑商店 - " .. (data.name or id), data, id, false)
-            end, idx, function()
+            end,
+            onDelete = function()
                 DataManager.shops[id] = nil
                 SaveCategoryToCloud("shops")
                 RenderShops()
-            end)
-        contentPanel_:AddChild(row)
+            end,
+        })
         ::continue_shops::
     end
+    contentPanel_:AddChild(CreateVirtualDataList(dataArray))
 
     contentPanel_:AddChild(UI.Button {
         text = "+ 添加商店",
@@ -3172,13 +3314,12 @@ RenderSystemShops = function()
     ClearContent()
     contentPanel_:AddChild(CreateSearchBar("搜索系统商店名...", function() RenderSystemShops() end))
     local count = 0
-    local idx = 0
     for _ in pairs(DataManager.systemShops) do count = count + 1 end
     ShowMsg("共 " .. count .. " 家系统商店")
 
+    local dataArray = {}
     for id, data in pairs(DataManager.systemShops) do
         if not MatchSearch(data.name or id) then goto continue_sys_shops end
-        idx = idx + 1
         local itemCount = #(data.items or {})
         local currency = data.currency or "金币"
         local itemSummary = "货币:" .. currency .. " | "
@@ -3189,19 +3330,21 @@ RenderSystemShops = function()
         end
         if itemCount == 0 then itemSummary = "货币:" .. currency .. " | 无商品" end
 
-        local row = CreateListRow(
-            (data.name or id) .. "  [" .. itemCount .. "种商品]",
-            itemSummary,
-            function()
+        table.insert(dataArray, {
+            text = (data.name or id) .. "  [" .. itemCount .. "种商品]",
+            subtext = itemSummary,
+            onEdit = function()
                 ShowSystemShopEditDialog("编辑系统商店 - " .. (data.name or id), data, id, false)
-            end, idx, function()
+            end,
+            onDelete = function()
                 DataManager.systemShops[id] = nil
                 SaveCategoryToCloud("system_shops")
                 RenderSystemShops()
-            end)
-        contentPanel_:AddChild(row)
+            end,
+        })
         ::continue_sys_shops::
     end
+    contentPanel_:AddChild(CreateVirtualDataList(dataArray))
 
     contentPanel_:AddChild(UI.Button {
         text = "+ 添加系统商店",
@@ -3217,17 +3360,16 @@ local function RenderDungeons()
     ClearContent()
     contentPanel_:AddChild(CreateSearchBar("搜索副本名...", function() RenderDungeons() end))
     local count = 0
-    local idx = 0
     for _ in pairs(DataManager.dungeons) do count = count + 1 end
     ShowMsg("共 " .. count .. " 个副本")
 
+    local dataArray = {}
     for id, data in pairs(DataManager.dungeons) do
         if not MatchSearch(data.name or id) then goto continue_dungeons end
-        idx = idx + 1
-        local row = CreateListRow(
-            data.name or id,
-            "等级:" .. (data.level_req or 0) .. " 波数:" .. (data.waves or 0) .. " 首领:" .. (data.boss or "无"),
-            function()
+        table.insert(dataArray, {
+            text = data.name or id,
+            subtext = "等级:" .. (data.level_req or 0) .. " 波数:" .. (data.waves or 0) .. " 首领:" .. (data.boss or "无"),
+            onEdit = function()
                 local fields = {
                     { label = "名称", key = "name", value = data.name },
                     { label = "描述", key = "desc", value = data.desc, opts = { width = 220 } },
@@ -3257,14 +3399,16 @@ local function RenderDungeons()
                     CloseDialog()
                     RenderDungeons()
                 end)
-            end, idx, function()
+            end,
+            onDelete = function()
                 DataManager.dungeons[id] = nil
                 SaveCategoryToCloud("dungeons")
                 RenderDungeons()
-            end)
-        contentPanel_:AddChild(row)
+            end,
+        })
         ::continue_dungeons::
     end
+    contentPanel_:AddChild(CreateVirtualDataList(dataArray))
 
     contentPanel_:AddChild(UI.Button {
         text = "+ 添加副本",
@@ -3309,17 +3453,16 @@ local function RenderNPCs()
     ClearContent()
     contentPanel_:AddChild(CreateSearchBar("搜索NPC名...", function() RenderNPCs() end))
     local count = 0
-    local idx = 0
     for _ in pairs(DataManager.npcs) do count = count + 1 end
     ShowMsg("共 " .. count .. " 个NPC")
 
+    local dataArray = {}
     for id, data in pairs(DataManager.npcs) do
         if not MatchSearch(data.name or id) then goto continue_npcs end
-        idx = idx + 1
-        local row = CreateListRow(
-            data.name or id,
-            "类型:" .. NpcTypeToCN(data.type or "任务") .. " 地点:" .. (data.location or ""),
-            function()
+        table.insert(dataArray, {
+            text = data.name or id,
+            subtext = "类型:" .. NpcTypeToCN(data.type or "任务") .. " 地点:" .. (data.location or ""),
+            onEdit = function()
                 local fields = {
                     { label = "名称", key = "name", value = data.name },
                     { label = "类型", key = "type", value = data.type, opts = { placeholder = "任务/商人/师傅" } },
@@ -3345,14 +3488,16 @@ local function RenderNPCs()
                     CloseDialog()
                     RenderNPCs()
                 end)
-            end, idx, function()
+            end,
+            onDelete = function()
                 DataManager.npcs[id] = nil
                 SaveCategoryToCloud("npcs")
                 RenderNPCs()
-            end)
-        contentPanel_:AddChild(row)
+            end,
+        })
         ::continue_npcs::
     end
+    contentPanel_:AddChild(CreateVirtualDataList(dataArray))
 
     contentPanel_:AddChild(UI.Button {
         text = "+ 添加NPC",
@@ -3390,20 +3535,19 @@ local function RenderGiftPacks()
     ClearContent()
     contentPanel_:AddChild(CreateSearchBar("搜索礼包名/兑换码...", function() RenderGiftPacks() end))
     local count = 0
-    local idx = 0
     for _ in pairs(DataManager.giftpacks) do count = count + 1 end
     ShowMsg("共 " .. count .. " 个礼包（兑换码即为礼包ID）")
 
+    local dataArray = {}
     for id, data in pairs(DataManager.giftpacks) do
         if not MatchSearch(data.name or id) and not MatchSearch(id) then goto continue_giftpacks end
-        idx = idx + 1
         local usesText = BigNum.gt(data.max_uses or "0", "0")
             and ("已用" .. (data.used_count or "0") .. "/" .. data.max_uses)
             or ("已用" .. (data.used_count or "0") .. "/无限")
-        local row = CreateListRow(
-            data.name or id,
-            "兑换码:" .. id .. " " .. usesText,
-            function()
+        table.insert(dataArray, {
+            text = data.name or id,
+            subtext = "兑换码:" .. id .. " " .. usesText,
+            onEdit = function()
                 ShowEditDialog("编辑礼包 - " .. id, {
                     { label = "名称", key = "name", value = data.name },
                     { label = "描述", key = "desc", value = data.desc, opts = { width = 220 } },
@@ -3425,14 +3569,16 @@ local function RenderGiftPacks()
                     CloseDialog()
                     RenderGiftPacks()
                 end)
-            end, idx, function()
+            end,
+            onDelete = function()
                 DataManager.giftpacks[id] = nil
                 SaveCategoryToCloud("giftpacks")
                 RenderGiftPacks()
-            end)
-        contentPanel_:AddChild(row)
+            end,
+        })
         ::continue_giftpacks::
     end
+    contentPanel_:AddChild(CreateVirtualDataList(dataArray))
 
     contentPanel_:AddChild(UI.Button {
         text = "+ 添加礼包",
@@ -3504,15 +3650,43 @@ local function RandPick(tbl)
     return tbl[math.random(1, #tbl)]
 end
 
---- 重试取名：用 nameFn 生成随机名，若在 existingTable 中已存在则重试，最多 maxRetry 次
---- 返回 name 或 nil（取不到唯一名时）
+--- 名字拓展字池（修仙风格单字，用于名池用尽后自动拼接拓展）
+local NAME_EXTEND_CHARS = {
+    "玄", "幽", "灵", "魂", "星", "月", "风", "雷",
+    "冰", "炎", "天", "地", "云", "霜", "岚", "渊",
+    "紫", "碧", "苍", "翠", "金", "银", "墨", "丹",
+    "隐", "虚", "真", "妙", "古", "寒", "烈", "圣",
+}
+
+--- 重试取名（无限模式）：
+--- Phase1: 用 nameFn 生成随机名，重试 maxRetry 次
+--- Phase2: 若仍冲突，对最后一次生成的基础名追加拓展字，逐级加长直到唯一
+--- 理论上不会返回 nil（拓展字池^10 级 = 万亿级组合）
 local function TryUniqueName(nameFn, existingTable, maxRetry)
     maxRetry = maxRetry or 50
+    local baseName
+    -- Phase1: 纯随机重试
     for _ = 1, maxRetry do
-        local name = nameFn()
-        if not existingTable[name] then return name end
+        baseName = nameFn()
+        if not existingTable[baseName] then return baseName end
     end
-    return nil
+    -- Phase2: 基础名池用尽，追加拓展字
+    local extPool = NAME_EXTEND_CHARS
+    local extLen = #extPool
+    -- 逐级增加拓展字数（1字、2字、3字...最多10级）
+    for level = 1, 10 do
+        -- 每级尝试 maxRetry 次随机组合
+        for _ = 1, maxRetry do
+            local ext = ""
+            for _ = 1, level do
+                ext = ext .. extPool[math.random(1, extLen)]
+            end
+            local candidate = baseName .. ext
+            if not existingTable[candidate] then return candidate end
+        end
+    end
+    -- 理论不可达（32^10 > 1万亿种组合），兜底返回时间戳名
+    return baseName .. "_" .. tostring(os.time()) .. "_" .. tostring(math.random(10000, 99999))
 end
 
 
@@ -4378,17 +4552,18 @@ local function RenderRealms()
     local count = #DataManager.realms
     ShowMsg("共 " .. count .. " 个境界")
 
-    for idx, data in ipairs(DataManager.realms) do
+    local dataArray = {}
+    for _, data in ipairs(DataManager.realms) do
         if not MatchSearch(data.name) then goto continue_realms end
         local subtext = "阶段:" .. data.stage .. " 层数:" .. data.layers
             .. " 层经验:" .. (data.layer_exp or "100")
             .. " 攻:" .. (data.atk_bonus or "0")
             .. " 防:" .. (data.def_bonus or "0")
             .. " 血:" .. (data.hp_bonus or "0")
-        local row = CreateListRow(
-            "[" .. data.stage .. "] " .. data.name,
-            subtext,
-            function()
+        table.insert(dataArray, {
+            text = "[" .. data.stage .. "] " .. data.name,
+            subtext = subtext,
+            onEdit = function()
                 ShowEditDialog("编辑境界 - " .. data.name, {
                     { label = "名称", key = "name", value = data.name },
                     { label = "阶段(排序)", key = "stage", value = tostring(data.stage) },
@@ -4425,7 +4600,8 @@ local function RenderRealms()
                     CloseDialog()
                     RenderRealms()
                 end)
-            end, idx, function()
+            end,
+            onDelete = function()
                 -- 删除境界
                 for i, r in ipairs(DataManager.realms) do
                     if r == data then
@@ -4439,10 +4615,11 @@ local function RenderRealms()
                 end
                 SaveCategoryToCloud("realms")
                 RenderRealms()
-            end)
-        contentPanel_:AddChild(row)
+            end,
+        })
         ::continue_realms::
     end
+    contentPanel_:AddChild(CreateVirtualDataList(dataArray))
 
     contentPanel_:AddChild(UI.Panel {
         flexDirection = "row", width = "100%", gap = 8, marginTop = 8, marginLeft = 12,
@@ -4522,13 +4699,12 @@ local function RenderRealms()
         marginLeft = 12, marginBottom = 4,
     })
 
-    local pillIdx = 0
+    local pillDataArray = {}
     for id, pill in pairs(DataManager.realmPills) do
-        pillIdx = pillIdx + 1
-        local row = CreateListRow(
-            pill.name,
-            "经验值:" .. (pill.value or "0") .. "  " .. (pill.desc or ""),
-            function()
+        table.insert(pillDataArray, {
+            text = pill.name,
+            subtext = "经验值:" .. (pill.value or "0") .. "  " .. (pill.desc or ""),
+            onEdit = function()
                 ShowEditDialog("编辑经验丹 - " .. id, {
                     { label = "名称", key = "name", value = pill.name },
                     { label = "描述", key = "desc", value = pill.desc or "", opts = { width = 220 } },
@@ -4541,13 +4717,17 @@ local function RenderRealms()
                     CloseDialog()
                     RenderRealms()
                 end)
-            end, pillIdx, function()
+            end,
+            onDelete = function()
                 DataManager.realmPills[id] = nil
                 DataManager.items[id] = nil
                 SaveCategoryToCloud("realm_pills")
                 RenderRealms()
-            end)
-        contentPanel_:AddChild(row)
+            end,
+        })
+    end
+    if #pillDataArray > 0 then
+        contentPanel_:AddChild(CreateVirtualDataList(pillDataArray))
     end
 
     contentPanel_:AddChild(UI.Button {
@@ -5042,18 +5222,17 @@ local function RenderPets()
     ClearContent()
     contentPanel_:AddChild(CreateSearchBar("搜索宠物名...", function() RenderPets() end))
     local count = 0
-    local idx = 0
     for _ in pairs(DataManager.petTypes) do count = count + 1 end
     ShowMsg("共 " .. count .. " 种宠物")
 
+    local dataArray = {}
     for id, data in pairs(DataManager.petTypes) do
         if not MatchSearch(data.name or id) then goto continue_pets end
-        idx = idx + 1
         local qualTag = data.quality and ("[" .. data.quality .. "] ") or ""
-        local row = CreateListRow(
-            qualTag .. (data.name or id),
-            "攻:" .. (data.atk or 0) .. " 防:" .. (data.def or 0) .. " 血:" .. (data.max_hp or 0) .. (data.skill ~= "" and (" 技能:" .. data.skill) or ""),
-            function()
+        table.insert(dataArray, {
+            text = qualTag .. (data.name or id),
+            subtext = "攻:" .. (data.atk or 0) .. " 防:" .. (data.def or 0) .. " 血:" .. (data.max_hp or 0) .. (data.skill ~= "" and (" 技能:" .. data.skill) or ""),
+            onEdit = function()
                 ShowEditDialog("编辑宠物 - " .. (data.name or id), {
                     { label = "名称", key = "name", value = data.name or id },
                     { label = "品质", key = "quality", value = data.quality or "白", type = "selector", opts = { options = GetPetQualityOptions() } },
@@ -5076,14 +5255,16 @@ local function RenderPets()
                     CloseDialog()
                     RenderPets()
                 end)
-            end, idx, function()
+            end,
+            onDelete = function()
                 DataManager.petTypes[id] = nil
                 SaveCategoryToCloud("pet_types")
                 RenderPets()
-            end)
-        contentPanel_:AddChild(row)
+            end,
+        })
         ::continue_pets::
     end
+    contentPanel_:AddChild(CreateVirtualDataList(dataArray))
 
     contentPanel_:AddChild(UI.Button {
         text = "+ 添加宠物",
@@ -5136,17 +5317,16 @@ local function RenderPetEquip()
 
     ShowMsg("共 " .. #petEquips .. " 件宠物装备")
 
-    local idx = 0
+    local dataArray = {}
     for _, item in ipairs(petEquips) do
         local id = item.id
         local data = item.data
         if not MatchSearch(data.name or id) then goto continue_pe end
-        idx = idx + 1
         local statsStr = "部位:" .. (data.pet_slot or "未设") .. " 攻+" .. (data.pet_atk or 0) .. " 防+" .. (data.pet_def or 0) .. " 血+" .. (data.pet_hp or 0)
-        local row = CreateListRow(
-            (data.name or id),
-            statsStr,
-            function()
+        table.insert(dataArray, {
+            text = (data.name or id),
+            subtext = statsStr,
+            onEdit = function()
                 -- 编辑宠物装备弹窗
                 CloseDialog()
                 local fieldWidgets = {}
@@ -5222,14 +5402,16 @@ local function RenderPetEquip()
                     },
                 }
                 if rootPanel_ then rootPanel_:AddChild(editDialog_) end
-            end, idx, function()
+            end,
+            onDelete = function()
                 DataManager.items[id] = nil
                 SaveCategoryToCloud("items")
                 RenderPetEquip()
-            end)
-        contentPanel_:AddChild(row)
+            end,
+        })
         ::continue_pe::
     end
+    contentPanel_:AddChild(CreateVirtualDataList(dataArray))
 
     -- 添加新宠物装备
     contentPanel_:AddChild(UI.Button {
@@ -6556,6 +6738,327 @@ local function RenderGenerator()
     })
 end
 
+-- =============== 排行榜管理 ===============
+
+--- 可用的排行数据来源（玩家属性字段）
+-- 排行榜来源分类
+-- 玩家类来源（固定字段 + 动态货币 + 战魂等级）
+local LEADERBOARD_PLAYER_SOURCES = { "等级", "攻击力", "防御力", "生命上限", "战魂等级" }
+-- 物品类来源前缀
+local LEADERBOARD_ITEM_PREFIXES = { "道具:", "装备:" }
+
+--- 检查来源是否合法
+---@param source string
+---@return boolean
+local function IsValidLeaderboardSource(source)
+    if not source or source == "" then return false end
+    -- 固定玩家属性
+    for _, s in ipairs(LEADERBOARD_PLAYER_SOURCES) do
+        if s == source then return true end
+    end
+    -- 自定义货币（直接写货币名，如"金币""钻石"）
+    local currencyList = DataManager.GetCurrencyList()
+    for _, c in ipairs(currencyList) do
+        if source == "货币:" .. c or source == c then return true end
+    end
+    -- 物品类前缀（道具:物品名 / 装备:装备名）
+    for _, prefix in ipairs(LEADERBOARD_ITEM_PREFIXES) do
+        if source:sub(1, #prefix) == prefix and #source > #prefix then
+            return true
+        end
+    end
+    return false
+end
+
+--- 渲染排行榜管理面板
+local function RenderLeaderboards()
+    ClearContent()
+
+    -- 确保排行榜数据已加载
+    DataManager.LoadLazyData(function()
+        ClearContent()
+
+        local boardCount = 0
+        for _ in pairs(DataManager.leaderboards) do boardCount = boardCount + 1 end
+        ShowMsg("共 " .. boardCount .. " 个排行榜")
+
+        -- 操作按钮区
+        contentPanel_:AddChild(UI.Panel {
+            flexDirection = "row", width = "100%", gap = 8, marginBottom = 8, marginLeft = 12,
+            flexWrap = "wrap",
+            children = {
+                UI.Button {
+                    text = "+ 添加排行榜",
+                    variant = "primary", width = 130,
+                    onClick = function()
+                        ShowEditDialog("添加排行榜", {
+                            { label = "排行榜ID(唯一)", key = "id", value = "", opts = { placeholder = "如：rank_level" } },
+                            { label = "显示名称", key = "name", value = "", opts = { placeholder = "如：等级排行" } },
+                            { label = "数据来源", key = "source", value = "等级", opts = { placeholder = "如: 等级/攻击力/金币/道具:回血丹" } },
+                            { label = "排序方式", key = "order", value = "desc", opts = { placeholder = "desc=降序, asc=升序" } },
+                            { label = "显示人数", key = "top_count", value = "10" },
+                        }, function(v)
+                            if not v.id or v.id == "" then
+                                ShowMsg("排行榜ID不能为空")
+                                return
+                            end
+                            if not v.name or v.name == "" then
+                                ShowMsg("显示名称不能为空")
+                                return
+                            end
+                            if DataManager.leaderboards[v.id] then
+                                ShowMsg("该ID已存在，请换一个")
+                                return
+                            end
+                            -- 验证数据来源是否合法
+                            if not IsValidLeaderboardSource(v.source) then
+                                ShowMsg("数据来源无效，请参考下方\"可用数据来源\"")
+                                return
+                            end
+                            DataManager.leaderboards[v.id] = {
+                                name = v.name,
+                                key = "rank_" .. v.id,
+                                source = v.source,
+                                order = v.order or "desc",
+                                top_count = tonumber(v.top_count) or 10,
+                            }
+                            SaveCategoryToCloud("leaderboards")
+                            CloseDialog()
+                            RenderLeaderboards()
+                        end)
+                    end,
+                },
+                UI.Button {
+                    text = "刷新所有玩家排行",
+                    variant = "secondary", width = 160,
+                    onClick = function()
+                        ShowMsg("正在刷新所有玩家排行数据...")
+                        DataManager.RefreshAllPlayersRankingForAdmin(function(ok, msg)
+                            ShowMsg(ok and ("刷新完成: " .. msg) or ("刷新失败: " .. msg))
+                            RenderLeaderboards()
+                        end)
+                    end,
+                },
+            },
+        })
+
+        -- 排行榜列表
+        local dataArray = {}
+        for id, board in pairs(DataManager.leaderboards) do
+            local subtext = "来源:" .. (board.source or "?") .. "  排序:" .. (board.order or "desc") .. "  显示:" .. (board.top_count or 10) .. "人"
+            table.insert(dataArray, {
+                text = board.name .. " [" .. id .. "]",
+                subtext = subtext,
+                onEdit = function()
+                    ShowEditDialog("编辑排行榜 - " .. board.name, {
+                        { label = "显示名称", key = "name", value = board.name or "" },
+                        { label = "数据来源", key = "source", value = board.source or "等级", opts = { placeholder = "如: 等级/攻击力/金币/道具:回血丹" } },
+                        { label = "排序方式", key = "order", value = board.order or "desc", opts = { placeholder = "desc=降序, asc=升序" } },
+                        { label = "显示人数", key = "top_count", value = tostring(board.top_count or 10) },
+                    }, function(v)
+                        -- 验证数据来源
+                        if not IsValidLeaderboardSource(v.source or "") then
+                            ShowMsg("数据来源无效，请参考下方\"可用数据来源\"")
+                            return
+                        end
+                        board.name = v.name or board.name
+                        board.source = v.source or board.source
+                        board.order = v.order or "desc"
+                        board.top_count = tonumber(v.top_count) or 10
+                        SaveCategoryToCloud("leaderboards")
+                        CloseDialog()
+                        RenderLeaderboards()
+                    end)
+                end,
+                onDelete = function()
+                    DataManager.leaderboards[id] = nil
+                    SaveCategoryToCloud("leaderboards")
+                    RenderLeaderboards()
+                end,
+            })
+        end
+        if #dataArray > 0 then
+            contentPanel_:AddChild(CreateVirtualDataList(dataArray))
+        else
+            contentPanel_:AddChild(UI.Label {
+                text = "暂无排行榜，点击上方按钮添加",
+                fontSize = 13, fontColor = { 180, 180, 180, 200 },
+                marginLeft = 12, marginTop = 8,
+            })
+        end
+
+        -- 分隔线 —— 排行榜数据预览
+        contentPanel_:AddChild(UI.Panel {
+            width = "100%", height = 1, backgroundColor = { 80, 70, 120, 200 }, marginTop = 12, marginBottom = 4,
+        })
+        contentPanel_:AddChild(UI.Label {
+            text = "排行榜数据预览（点击可查看排名详情）",
+            fontSize = 14, fontColor = { 200, 180, 255, 255 },
+            marginLeft = 12, marginBottom = 4,
+        })
+
+        -- 为每个排行榜显示一个预览按钮
+        local previewBtns = {}
+        for id, board in pairs(DataManager.leaderboards) do
+            table.insert(previewBtns, UI.Button {
+                text = board.name,
+                variant = "outline", width = 120,
+                onClick = function()
+                    -- 显示该排行榜的具体排名数据
+                    local rankedList = DataManager.GetRankedList(board.source, board.top_count, board.order or "desc")
+                    local lines = { board.name .. " (来源: " .. board.source .. ", 前" .. board.top_count .. "名)\n" }
+                    if #rankedList == 0 then
+                        table.insert(lines, "暂无数据，请先点击[刷新所有玩家排行]")
+                    else
+                        for i, entry in ipairs(rankedList) do
+                            local valStr = NumFormat.Short(entry.value)
+                            table.insert(lines, "#" .. i .. "  " .. entry.name .. "  —  " .. valStr)
+                        end
+                    end
+                    ShowEditDialog("排行详情 - " .. board.name, {
+                        { label = "排行数据", key = "_info", value = table.concat(lines, "\n"), opts = { width = 280 } },
+                    }, function()
+                        CloseDialog()
+                    end)
+                end,
+            })
+        end
+        if #previewBtns > 0 then
+            contentPanel_:AddChild(UI.Panel {
+                flexDirection = "row", width = "100%", gap = 8,
+                flexWrap = "wrap", marginLeft = 12, marginTop = 4,
+                children = previewBtns,
+            })
+        end
+
+        -- 可用数据来源提示（分类显示）
+        contentPanel_:AddChild(UI.Panel {
+            width = "100%", height = 1, backgroundColor = { 80, 70, 120, 200 }, marginTop = 12, marginBottom = 4,
+        })
+        contentPanel_:AddChild(UI.Label {
+            text = "可用数据来源（填写\"数据来源\"字段时使用）",
+            fontSize = 14, fontColor = { 200, 180, 255, 255 },
+            marginLeft = 12, marginBottom = 4,
+        })
+
+        -- ===== 玩家类 =====
+        contentPanel_:AddChild(UI.Label {
+            text = "【玩家类】读取玩家属性，按数值高到低排序",
+            fontSize = 12, fontColor = { 255, 220, 100, 255 },
+            marginLeft = 12, marginTop = 4, marginBottom = 2,
+        })
+        local playerSourceDescs = {
+            { source = "等级",     desc = "玩家当前等级" },
+            { source = "攻击力",   desc = "总攻击力（基础+装备+buff+境界+战魂）" },
+            { source = "防御力",   desc = "总防御力（基础+装备+buff+境界+战魂）" },
+            { source = "生命上限", desc = "总生命上限（基础+装备+buff+境界+战魂）" },
+            { source = "战魂等级", desc = "战魂培养等级" },
+        }
+        for _, item in ipairs(playerSourceDescs) do
+            contentPanel_:AddChild(UI.Panel {
+                flexDirection = "row", width = "100%", marginLeft = 20, marginBottom = 2,
+                children = {
+                    UI.Label {
+                        text = item.source,
+                        fontSize = 12, fontColor = { 100, 255, 200, 255 },
+                        width = 80,
+                    },
+                    UI.Label {
+                        text = "— " .. item.desc,
+                        fontSize = 11, fontColor = { 160, 160, 180, 255 },
+                    },
+                },
+            })
+        end
+
+        -- 自定义货币（动态列出）
+        local currencyList = DataManager.GetCurrencyList()
+        contentPanel_:AddChild(UI.Label {
+            text = "  同步自定义货币（直接写货币名或加\"货币:\"前缀）：",
+            fontSize = 11, fontColor = { 180, 200, 255, 255 },
+            marginLeft = 20, marginTop = 2,
+        })
+        for _, cName in ipairs(currencyList) do
+            contentPanel_:AddChild(UI.Panel {
+                flexDirection = "row", width = "100%", marginLeft = 28, marginBottom = 1,
+                children = {
+                    UI.Label {
+                        text = cName,
+                        fontSize = 12, fontColor = { 100, 255, 200, 255 },
+                        width = 80,
+                    },
+                    UI.Label {
+                        text = "— 或写 货币:" .. cName,
+                        fontSize = 11, fontColor = { 160, 160, 180, 255 },
+                    },
+                },
+            })
+        end
+
+        -- ===== 物品类 =====
+        contentPanel_:AddChild(UI.Label {
+            text = "【物品类】手动输入名称查看排行，按持有数量多到少排序",
+            fontSize = 12, fontColor = { 255, 220, 100, 255 },
+            marginLeft = 12, marginTop = 8, marginBottom = 2,
+        })
+        local itemSourceDescs = {
+            { source = "道具:物品名", desc = "背包中该道具的持有数量（如 道具:回血丹）" },
+            { source = "装备:装备名", desc = "背包中该装备的持有数量（如 装备:青锋剑）" },
+        }
+        for _, item in ipairs(itemSourceDescs) do
+            contentPanel_:AddChild(UI.Panel {
+                flexDirection = "row", width = "100%", marginLeft = 20, marginBottom = 2,
+                children = {
+                    UI.Label {
+                        text = item.source,
+                        fontSize = 12, fontColor = { 100, 255, 200, 255 },
+                        width = 100,
+                    },
+                    UI.Label {
+                        text = "— " .. item.desc,
+                        fontSize = 11, fontColor = { 160, 160, 180, 255 },
+                    },
+                },
+            })
+        end
+
+        -- 使用说明
+        contentPanel_:AddChild(UI.Panel {
+            width = "100%", height = 1, backgroundColor = { 80, 70, 120, 200 }, marginTop = 12, marginBottom = 4,
+        })
+        contentPanel_:AddChild(UI.Label {
+            text = "使用说明",
+            fontSize = 14, fontColor = { 200, 180, 255, 255 },
+            marginLeft = 12, marginBottom = 2,
+        })
+        contentPanel_:AddChild(UI.Label {
+            text = "1. 点击[+添加排行榜]创建新排行榜",
+            fontSize = 11, fontColor = { 160, 160, 180, 255 },
+            marginLeft = 16,
+        })
+        contentPanel_:AddChild(UI.Label {
+            text = "2. 玩家类直接填字段名，物品类填\"道具:名称\"或\"装备:名称\"",
+            fontSize = 11, fontColor = { 160, 160, 180, 255 },
+            marginLeft = 16,
+        })
+        contentPanel_:AddChild(UI.Label {
+            text = "3. 点击[刷新所有玩家排行]手动更新排名数据",
+            fontSize = 11, fontColor = { 160, 160, 180, 255 },
+            marginLeft = 16,
+        })
+        contentPanel_:AddChild(UI.Label {
+            text = "4. 添加后玩家界面会自动显示对应排行榜Tab",
+            fontSize = 11, fontColor = { 160, 160, 180, 255 },
+            marginLeft = 16,
+        })
+        contentPanel_:AddChild(UI.Label {
+            text = "示例: 来源=等级 / 来源=金币 / 来源=道具:回血丹",
+            fontSize = 11, fontColor = { 100, 255, 200, 255 },
+            marginLeft = 16, marginTop = 4,
+        })
+    end)
+end
+
 -- =============== 分类切换 ===============
 
 --- 根据分类渲染内容
@@ -6583,6 +7086,7 @@ local function RenderCategory(catId)
     elseif catId == "pet_bonus" then RenderPetBonus()
     elseif catId == "system_shops" then RenderSystemShops()
     elseif catId == "battle_soul" then RenderBattleSoul()
+    elseif catId == "leaderboards" then RenderLeaderboards()
     elseif catId == "generator" then RenderGenerator()
     end
 end
@@ -6682,6 +7186,7 @@ function AdminUI.ShowDashboard()
 
     contentPanel_ = UI.Panel {
         width = "100%",
+        height = "100%",
         flexDirection = "column",
         gap = 2,
     }

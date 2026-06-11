@@ -27,7 +27,7 @@ local mainContent_ = nil
 
 -- 日志弹窗（模态，手动关闭）
 local logDialog_ = nil      -- 弹窗遮罩层
-local logContent_ = nil     -- 消息内容面板
+
 local logTexts_ = {}        -- 消息文本队列
 local LOG_MAX = 30          -- 最多保留条数
 
@@ -700,13 +700,30 @@ end
 
 --- 渲染排行榜面板
 --- 固定的排行榜配置
-local LEADERBOARD_TABS = {
+-- 默认排行榜Tab（当管理后台未配置时使用）
+local DEFAULT_LEADERBOARD_TABS = {
     { name = "等级", source = "等级" },
     { name = "攻击", source = "攻击力" },
     { name = "防御", source = "防御力" },
     { name = "生命", source = "生命上限" },
     { name = "金币", source = "金币" },
 }
+
+--- 动态获取排行榜Tab列表（优先读取管理后台配置）
+local function GetLeaderboardTabs()
+    local tabs = {}
+    -- 从管理后台配置的排行榜中读取
+    if DataManager.leaderboards then
+        for _, board in pairs(DataManager.leaderboards) do
+            table.insert(tabs, { name = board.name, source = board.source })
+        end
+    end
+    -- 如果管理后台没有配置任何排行榜，使用默认值
+    if #tabs == 0 then
+        return DEFAULT_LEADERBOARD_TABS
+    end
+    return tabs
+end
 
 function GameUI.RenderLeaderboardPanel()
     mainContent_:ClearChildren()
@@ -721,41 +738,49 @@ function GameUI.RenderLeaderboardPanel()
         width = "100%",
     })
 
-    -- 标签按钮行
-    local tabChildren = {}
-    for i, tab in ipairs(LEADERBOARD_TABS) do
-        table.insert(tabChildren, UI.Button {
-            text = tab.name,
-            variant = "secondary",
-            flexGrow = 1,
-            marginRight = (i < #LEADERBOARD_TABS) and 4 or 0,
-            onClick = function()
-                GameUI.ShowLeaderboardDetail(tab.source)
-            end,
+    -- 重置延迟加载标记，确保每次打开都从云端拉取最新管理员配置
+    DataManager.ResetLazyData()
+    -- 加载排行榜配置+排名数据，再构建UI
+    DataManager.LoadLazyData(function()
+        -- 标签按钮行（动态获取）
+        local lbTabs = GetLeaderboardTabs()
+        local tabChildren = {}
+        for i, tab in ipairs(lbTabs) do
+            table.insert(tabChildren, UI.Button {
+                text = tab.name,
+                variant = "secondary",
+                flexGrow = 1,
+                marginRight = (i < #lbTabs) and 4 or 0,
+                onClick = function()
+                    GameUI.ShowLeaderboardDetail(tab.source)
+                end,
+            })
+        end
+
+        mainContent_:AddChild(UI.Panel {
+            flexDirection = "row",
+            width = "100%",
+            paddingLeft = 8, paddingRight = 8,
+            marginBottom = 8,
+            flexWrap = "wrap",
+            gap = 4,
+            children = tabChildren,
         })
-    end
 
-    mainContent_:AddChild(UI.Panel {
-        flexDirection = "row",
-        width = "100%",
-        paddingLeft = 8, paddingRight = 8,
-        marginBottom = 8,
-        children = tabChildren,
-    })
+        -- 内容区
+        mainContent_:AddChild(UI.Panel {
+            id = "lb_content",
+            width = "100%",
+            padding = 8,
+            children = {
+                UI.Label { text = "加载中...", fontSize = 12, fontColor = { 180, 180, 180, 255 }, textAlign = "center" },
+            },
+        })
 
-    -- 内容区
-    mainContent_:AddChild(UI.Panel {
-        id = "lb_content",
-        width = "100%",
-        padding = 8,
-        children = {
-            UI.Label { text = "加载中...", fontSize = 12, fontColor = { 180, 180, 180, 255 }, textAlign = "center" },
-        },
-    })
-
-    -- 先同步当前玩家分数，再显示第一个排行榜（等级）
-    DataManager.SyncLeaderboardScores(function()
-        GameUI.ShowLeaderboardDetail(LEADERBOARD_TABS[1].source)
+        -- 先同步当前玩家分数，再显示第一个排行榜
+        DataManager.SyncLeaderboardScores(function()
+            GameUI.ShowLeaderboardDetail(lbTabs[1].source)
+        end)
     end)
 end
 
@@ -774,16 +799,12 @@ function GameUI.ShowLeaderboardDetail(source)
     local rankedList = DataManager.GetRankedList(source, 20)
 
     -- 标题行
-    existing:AddChild(UI.Panel {
-        flexDirection = "row",
-        width = "100%",
-        paddingLeft = 4, paddingRight = 4,
+    existing:AddChild(UI.Label {
+        text = "排名 / 玩家 / 数值",
+        fontSize = 11,
+        fontColor = { 200, 170, 100, 255 },
         marginBottom = 4,
-        children = {
-            UI.Label { text = "排名", fontSize = 11, fontColor = { 200, 170, 100, 255 }, width = 36 },
-            UI.Label { text = "玩家昵称", fontSize = 11, fontColor = { 200, 170, 100, 255 }, flexGrow = 1, flexShrink = 1 },
-            UI.Label { text = "数值", fontSize = 11, fontColor = { 200, 170, 100, 255 }, width = 110, textAlign = "right" },
-        },
+        paddingLeft = 4,
     })
 
     if #rankedList == 0 then
@@ -797,22 +818,33 @@ function GameUI.ShowLeaderboardDetail(source)
         return
     end
 
-    -- 显示排行列表
-    for i, item in ipairs(rankedList) do
+    -- 排行榜最多20条，直接循环渲染，长数值手动拆行
+    local LINE_CHARS = 22  -- 每行最多字符数
+    for i, data in ipairs(rankedList) do
         local rankColor = (i <= 3) and { 255, 215, 0, 255 } or { 200, 200, 220, 255 }
-        existing:AddChild(UI.Panel {
-            flexDirection = "row",
+        local row = UI.Panel {
             width = "100%",
-            paddingLeft = 4, paddingRight = 4,
-            paddingTop = 3, paddingBottom = 3,
-            alignItems = "center",
+            flexDirection = "column",
+            paddingLeft = 6, paddingRight = 6,
+            paddingTop = 4, paddingBottom = 4,
+            marginBottom = 4,
+            borderRadius = 4,
             backgroundColor = (i % 2 == 0) and { 40, 35, 60, 150 } or { 30, 25, 50, 100 },
-            children = {
-                UI.Label { text = "#" .. i, fontSize = 12, fontColor = rankColor, width = 36 },
-                UI.Label { text = item.name, fontSize = 12, fontColor = { 220, 220, 240, 255 }, flexGrow = 1, flexShrink = 1 },
-                UI.Label { text = NumFormat.Short(item.value), fontSize = 12, fontColor = { 100, 255, 200, 255 }, width = 110, textAlign = "right", whiteSpace = "normal" },
-            },
-        })
+        }
+        row:AddChild(UI.Label { text = "#" .. i .. "  " .. (data.name or ""), fontSize = 12, fontColor = rankColor, width = "100%" })
+
+        -- 将长数值拆成多行
+        local valueStr = NumFormat.Short(data.value)
+        local pos = 1
+        local len = utf8.len(valueStr) or #valueStr
+        while pos <= len do
+            local endPos = math.min(pos + LINE_CHARS - 1, len)
+            local line = string.sub(valueStr, utf8.offset(valueStr, pos), (utf8.offset(valueStr, endPos + 1) or (#valueStr + 1)) - 1)
+            row:AddChild(UI.Label { text = line, fontSize = 10, fontColor = { 100, 255, 200, 255 }, width = "100%" })
+            pos = endPos + 1
+        end
+
+        existing:AddChild(row)
     end
 end
 
@@ -853,15 +885,15 @@ function GameUI.BuildChatUI()
         marginLeft = 4,
     })
 
-    -- 消息列表区域
-    chatListPanel_ = UI.ScrollView {
+    -- 消息列表区域（VirtualList 容器）
+    chatListPanel_ = UI.Panel {
         width = "100%",
         flexGrow = 1,
         flexShrink = 1,
+        flexBasis = 0,
+        overflow = "hidden",
         backgroundColor = { 20, 15, 40, 180 },
         borderRadius = 4,
-        paddingLeft = 6, paddingRight = 6,
-        paddingTop = 4, paddingBottom = 4,
     }
     mainContent_:AddChild(chatListPanel_)
 
@@ -919,9 +951,12 @@ function GameUI.BuildChatUI()
     })
 end
 
+local CHAT_ITEM_HEIGHT = 48
+local CHAT_ITEM_GAP = 2
+
 function GameUI.RefreshChatList()
     if not chatListPanel_ then return end
-    chatListPanel_:RemoveAllChildren()
+    chatListPanel_:ClearChildren()
 
     local messages = DataManager.chatMessages
     if not messages or #messages == 0 then
@@ -930,45 +965,77 @@ function GameUI.RefreshChatList()
             fontSize = 12,
             fontColor = { 150, 150, 170, 255 },
             marginTop = 8,
+            marginLeft = 6,
         })
         return
     end
 
-    for i, msg in ipairs(messages) do
-        chatListPanel_:AddChild(UI.Panel {
-            width = "100%",
-            paddingTop = 3, paddingBottom = 3,
-            paddingLeft = 2, paddingRight = 2,
-            backgroundColor = (i % 2 == 0) and { 40, 35, 60, 100 } or { 0, 0, 0, 0 },
-            children = {
-                UI.Panel {
-                    flexDirection = "row",
-                    width = "100%",
-                    children = {
-                        UI.Label {
-                            text = msg.sender,
-                            fontSize = 11,
-                            fontColor = { 100, 200, 255, 255 },
-                            marginRight = 8,
-                        },
-                        UI.Label {
-                            text = msg.time or "",
-                            fontSize = 10,
-                            fontColor = { 120, 120, 140, 255 },
-                        },
-                    },
-                },
-                UI.Label {
-                    text = msg.content,
-                    fontSize = 12,
-                    fontColor = { 220, 220, 240, 255 },
-                    marginTop = 2,
-                    whiteSpace = "normal",
-                },
-            },
-        })
-    end
+    local vList = UI.VirtualList {
+        width = "100%",
+        height = "100%",
+        viewportHeight = 300,
+        data = messages,
+        itemHeight = CHAT_ITEM_HEIGHT,
+        itemGap = CHAT_ITEM_GAP,
+        poolBuffer = 5,
+        createItem = function()
+            local row = UI.Panel {
+                width = "100%",
+                height = CHAT_ITEM_HEIGHT,
+                flexDirection = "column",
+                justifyContent = "center",
+                paddingTop = 3, paddingBottom = 3,
+                paddingLeft = 6, paddingRight = 6,
+            }
+            local headerRow = UI.Panel {
+                flexDirection = "row",
+                width = "100%",
+            }
+            local senderLabel = UI.Label {
+                id = "sender",
+                text = "",
+                fontSize = 11,
+                fontColor = { 100, 200, 255, 255 },
+                marginRight = 8,
+            }
+            local timeLabel = UI.Label {
+                id = "time",
+                text = "",
+                fontSize = 10,
+                fontColor = { 120, 120, 140, 255 },
+            }
+            headerRow:AddChild(senderLabel)
+            headerRow:AddChild(timeLabel)
+            row:AddChild(headerRow)
+
+            local contentLabel = UI.Label {
+                id = "content",
+                text = "",
+                fontSize = 12,
+                fontColor = { 220, 220, 240, 255 },
+                marginTop = 2,
+                maxLines = 1,
+            }
+            row:AddChild(contentLabel)
+
+            row._senderLabel = senderLabel
+            row._timeLabel = timeLabel
+            row._contentLabel = contentLabel
+            return row
+        end,
+        bindItem = function(widget, data, index)
+            widget._senderLabel:SetText(data.sender or "")
+            widget._timeLabel:SetText(data.time or "")
+            widget._contentLabel:SetText(data.content or "")
+            widget.props.backgroundColor = (index % 2 == 0) and { 40, 35, 60, 100 } or { 0, 0, 0, 0 }
+        end,
+    }
+    chatListPanel_:AddChild(vList)
 end
+
+local LOG_ITEM_HEIGHT = 24
+local LOG_ITEM_GAP = 2
+local logVirtualList_ = nil
 
 --- 添加游戏日志（一体式弹窗显示）
 ---@param msg string
@@ -979,15 +1046,9 @@ function GameUI.AddLog(msg)
         table.remove(logTexts_, 1)
     end
 
-    -- 如果弹窗已打开，追加新消息
-    if logDialog_ and logContent_ then
-        logContent_:AddChild(UI.Label {
-            text = "> " .. msg,
-            fontSize = 12,
-            fontColor = { 220, 220, 240, 255 },
-            whiteSpace = "normal",
-            width = "100%",
-        })
+    -- 如果弹窗已打开，更新 VirtualList 数据
+    if logDialog_ and logVirtualList_ then
+        logVirtualList_:SetData(logTexts_)
     else
         -- 弹窗未打开，自动弹出
         GameUI.ShowLogDialog()
@@ -1001,25 +1062,47 @@ function GameUI.ShowLogDialog()
     -- 如果已打开，不重复创建
     if logDialog_ then return end
 
-    -- 构建历史消息列表
-    local msgChildren = {}
-    for i, text in ipairs(logTexts_) do
-        table.insert(msgChildren, UI.Label {
-            text = "> " .. text,
-            fontSize = 12,
-            fontColor = { 220, 220, 240, 255 },
-            whiteSpace = "normal",
-            width = "100%",
-        })
-    end
-
-    -- 消息内容面板（滚动区域内的子面板）
-    logContent_ = UI.Panel {
+    -- VirtualList 容器
+    local listContainer = UI.Panel {
         width = "100%",
-        flexDirection = "column",
-        gap = 4,
-        children = msgChildren,
+        flexGrow = 1,
+        flexShrink = 1,
+        flexBasis = 0,
+        overflow = "hidden",
     }
+
+    logVirtualList_ = UI.VirtualList {
+        width = "100%",
+        height = "100%",
+        viewportHeight = 280,
+        data = logTexts_,
+        itemHeight = LOG_ITEM_HEIGHT,
+        itemGap = LOG_ITEM_GAP,
+        poolBuffer = 5,
+        createItem = function()
+            local row = UI.Panel {
+                width = "100%",
+                height = LOG_ITEM_HEIGHT,
+                justifyContent = "center",
+                paddingLeft = 4,
+            }
+            local label = UI.Label {
+                id = "msg",
+                text = "",
+                fontSize = 12,
+                fontColor = { 220, 220, 240, 255 },
+                maxLines = 1,
+                width = "100%",
+            }
+            row:AddChild(label)
+            row._label = label
+            return row
+        end,
+        bindItem = function(widget, data, index)
+            widget._label:SetText("> " .. (data or ""))
+        end,
+    }
+    listContainer:AddChild(logVirtualList_)
 
     logDialog_ = UI.Panel {
         id = "logDialogOverlay",
@@ -1050,13 +1133,8 @@ function GameUI.ShowLogDialog()
                     UI.Label { text = "游戏日志", fontSize = 16, fontColor = { 200, 180, 255, 255 }, textAlign = "center" },
                     -- 分隔线
                     UI.Panel { width = "100%", height = 1, backgroundColor = { 80, 60, 120, 200 } },
-                    -- 消息滚动区域
-                    UI.ScrollView {
-                        width = "100%",
-                        flexGrow = 1,
-                        flexShrink = 1,
-                        children = { logContent_ },
-                    },
+                    -- VirtualList 消息区域
+                    listContainer,
                     -- 关闭按钮
                     UI.Button {
                         text = "关  闭",
@@ -1087,7 +1165,7 @@ function GameUI.HideLogDialog()
     if logDialog_ then
         logDialog_:Remove()
         logDialog_ = nil
-        logContent_ = nil
+        logVirtualList_ = nil
     end
     logTexts_ = {}
 end

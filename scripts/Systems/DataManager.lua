@@ -2328,13 +2328,37 @@ function DataManager.RefreshAllPlayersRankingForAdmin(callback)
                             local charName = st.name or info.username
                             local totalAtk, totalDef, totalHp = DataManager.CalcFullStatsFromPlayerData(playerData)
 
-                            DataManager.rankingData[charName] = {
+                            local rankEntry = {
                                 ["等级"] = NumFormat.Int(st.level or 1),
                                 ["金币"] = NumFormat.Int(st.gold or 0),
                                 ["攻击力"] = NumFormat.Int(totalAtk),
                                 ["防御力"] = NumFormat.Int(totalDef),
                                 ["生命上限"] = NumFormat.Int(totalHp),
+                                ["战魂等级"] = NumFormat.Int(st.battle_soul_level or 0),
                             }
+                            -- 自定义货币
+                            local currencies = st.currencies or {}
+                            for cName, cVal in pairs(currencies) do
+                                rankEntry["货币:" .. cName] = NumFormat.Int(cVal or 0)
+                                rankEntry[cName] = NumFormat.Int(cVal or 0)
+                            end
+                            -- 背包道具计数
+                            for _, item in ipairs(playerData.bag or {}) do
+                                local key = "道具:" .. item.name
+                                local prev = tonumber(rankEntry[key]) or 0
+                                rankEntry[key] = tostring(prev + (tonumber(item.count) or 1))
+                            end
+                            -- 装备栏（已穿戴装备计数）
+                            local eqSlots = { "weapon", "helmet", "armor", "bracer", "belt", "boots", "cloak", "necklace", "ring", "artifact", "mount", "wings", "shield" }
+                            for _, slot in ipairs(eqSlots) do
+                                local eName = playerData.equip and playerData.equip[slot]
+                                if eName and eName ~= "" then
+                                    local key = "装备:" .. eName
+                                    local prev = tonumber(rankEntry[key]) or 0
+                                    rankEntry[key] = tostring(prev + 1)
+                                end
+                            end
+                            DataManager.rankingData[charName] = rankEntry
                             successCount = successCount + 1
                         end
                         checkDone()
@@ -2564,13 +2588,37 @@ function DataManager.SyncLeaderboardScores(callback)
             local totalDef = BigNum.add(BigNum.add(BigNum.add(BigNum.add(pd.status.def or "3", tostring(eDef)), tostring(buffDef)), rDef), soulBonus.def)
             local totalHp = BigNum.add(BigNum.add(BigNum.add(BigNum.add(pd.status.max_hp or "100", tostring(eHp)), tostring(buffHp)), rHp), soulBonus.max_hp)
 
-            DataManager.rankingData[charName] = {
+            local rankEntry = {
                 ["等级"] = NumFormat.Int(pd.status.level or 1),
                 ["金币"] = NumFormat.Int(pd.status.gold or 0),
                 ["攻击力"] = NumFormat.Int(totalAtk),
                 ["防御力"] = NumFormat.Int(totalDef),
                 ["生命上限"] = NumFormat.Int(totalHp),
+                ["战魂等级"] = NumFormat.Int(pd.status.battle_soul_level or 0),
             }
+            -- 自定义货币
+            local currencies = pd.status.currencies or {}
+            for cName, cVal in pairs(currencies) do
+                rankEntry["货币:" .. cName] = NumFormat.Int(cVal or 0)
+                rankEntry[cName] = NumFormat.Int(cVal or 0) -- 兼容直接用货币名
+            end
+            -- 背包道具计数
+            for _, item in ipairs(pd.bag or {}) do
+                local key = "道具:" .. item.name
+                local prev = tonumber(rankEntry[key]) or 0
+                rankEntry[key] = tostring(prev + (tonumber(item.count) or 1))
+            end
+            -- 装备栏（已穿戴装备计数）
+            local equipSlots = { "weapon", "helmet", "armor", "bracer", "belt", "boots", "cloak", "necklace", "ring", "artifact", "mount", "wings", "shield" }
+            for _, slot in ipairs(equipSlots) do
+                local eName = pd.equip and pd.equip[slot]
+                if eName and eName ~= "" then
+                    local key = "装备:" .. eName
+                    local prev = tonumber(rankEntry[key]) or 0
+                    rankEntry[key] = tostring(prev + 1)
+                end
+            end
+            DataManager.rankingData[charName] = rankEntry
 
             -- 清理无效条目
             if DataManager.rankingData["default"] then
@@ -2608,13 +2656,37 @@ function DataManager.SyncLeaderboardScores(callback)
             local totalDef2 = BigNum.add(BigNum.add(BigNum.add(BigNum.add(pd.status.def or "3", tostring(eDef2)), tostring(buffDef2)), rDef2), soulBonus2.def)
             local totalHp2 = BigNum.add(BigNum.add(BigNum.add(BigNum.add(pd.status.max_hp or "100", tostring(eHp2)), tostring(buffHp2)), rHp2), soulBonus2.max_hp)
 
-            DataManager.rankingData[charName] = {
+            local rankEntry2 = {
                 ["等级"] = NumFormat.Int(pd.status.level or 1),
                 ["金币"] = NumFormat.Int(pd.status.gold or 0),
                 ["攻击力"] = NumFormat.Int(totalAtk2),
                 ["防御力"] = NumFormat.Int(totalDef2),
                 ["生命上限"] = NumFormat.Int(totalHp2),
+                ["战魂等级"] = NumFormat.Int(pd.status.battle_soul_level or 0),
             }
+            -- 自定义货币
+            local currencies2 = pd.status.currencies or {}
+            for cName, cVal in pairs(currencies2) do
+                rankEntry2["货币:" .. cName] = NumFormat.Int(cVal or 0)
+                rankEntry2[cName] = NumFormat.Int(cVal or 0)
+            end
+            -- 背包道具计数
+            for _, item in ipairs(pd.bag or {}) do
+                local key = "道具:" .. item.name
+                local prev = tonumber(rankEntry2[key]) or 0
+                rankEntry2[key] = tostring(prev + (tonumber(item.count) or 1))
+            end
+            -- 装备栏
+            local equipSlots2 = { "weapon", "helmet", "armor", "bracer", "belt", "boots", "cloak", "necklace", "ring", "artifact", "mount", "wings", "shield" }
+            for _, slot in ipairs(equipSlots2) do
+                local eName = pd.equip and pd.equip[slot]
+                if eName and eName ~= "" then
+                    local key = "装备:" .. eName
+                    local prev = tonumber(rankEntry2[key]) or 0
+                    rankEntry2[key] = tostring(prev + 1)
+                end
+            end
+            DataManager.rankingData[charName] = rankEntry2
             local content = IniParser.Serialize(DataManager.rankingData)
             cloud_:Set("系统配置/ranking_data.ini", content, {
                 ok = function()
@@ -2629,20 +2701,34 @@ function DataManager.SyncLeaderboardScores(callback)
 end
 
 --- 获取排行榜排序结果
----@param source string 数据来源字段（等级/金币/经验/攻击力）
+---@param source string 数据来源字段（等级/金币/攻击力/货币:xx/道具:xx/装备:xx）
 ---@param topCount number 显示前几名
+---@param order? string "desc"(默认降序) 或 "asc"(升序)
 ---@return table 排序后的列表 { {name=xx, value=xx}, ... }
-function DataManager.GetRankedList(source, topCount)
+function DataManager.GetRankedList(source, topCount, order)
+    order = order or "desc"
     local list = {}
     for name, data in pairs(DataManager.rankingData) do
         -- 过滤无效条目
         if name ~= "default" and name ~= "" then
-            local val = BigNum.new(data[source])
-            table.insert(list, { name = name, value = val })
+            local rawVal = data[source]
+            -- 如果直接匹配不到，可能是用了不带前缀的货币名
+            if not rawVal or rawVal == "" then
+                rawVal = data["货币:" .. source]
+            end
+            local val = BigNum.new(rawVal or "0")
+            -- 只有值>0的才加入排行（避免所有人都是0的无意义排行）
+            if not BigNum.eq(val, BigNum.new("0")) then
+                table.insert(list, { name = name, value = val })
+            end
         end
     end
-    -- 降序排序（分数高的在前，使用大数比较）
-    table.sort(list, function(a, b) return BigNum.gt(a.value, b.value) end)
+    -- 排序
+    if order == "asc" then
+        table.sort(list, function(a, b) return BigNum.gt(b.value, a.value) end)
+    else
+        table.sort(list, function(a, b) return BigNum.gt(a.value, b.value) end)
+    end
     -- 截取前N名
     local result = {}
     for i = 1, math.min(topCount, #list) do

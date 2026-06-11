@@ -485,25 +485,42 @@ function TradeUI.ShowSellDialog()
 
     CloseDialog()  -- 关闭之前的弹窗
 
-    -- 选择物品阶段
-    local itemsPanel = UI.ScrollView {
+    -- 选择物品阶段（VirtualList）
+    local TRADE_ITEM_HEIGHT = 36
+    local TRADE_ITEM_GAP = 4
+
+    local itemsPanel = UI.Panel {
         width = "100%",
-        maxHeight = 300,
-        scrollY = true,
-        flexDirection = "column",
-        gap = 4,
+        height = 300,
+        overflow = "hidden",
     }
-    for i, item in ipairs(player.bag) do
-        itemsPanel:AddChild(UI.Button {
-            text = item.name .. " x" .. tostring(item.count),
-            variant = "secondary",
-            width = "100%",
-            onClick = function()
+
+    local vList = UI.VirtualList {
+        width = "100%",
+        height = "100%",
+        viewportHeight = 300,
+        data = player.bag,
+        itemHeight = TRADE_ITEM_HEIGHT,
+        itemGap = TRADE_ITEM_GAP,
+        poolBuffer = 5,
+        createItem = function()
+            local btn = UI.Button {
+                text = "",
+                variant = "secondary",
+                width = "100%",
+                height = TRADE_ITEM_HEIGHT,
+            }
+            return btn
+        end,
+        bindItem = function(widget, data, index)
+            widget:SetText(data.name .. " x" .. tostring(data.count))
+            widget.props.onClick = function()
                 CloseDialog()
-                TradeUI.ShowPriceDialog(item)
-            end,
-        })
-    end
+                TradeUI.ShowPriceDialog(data)
+            end
+        end,
+    }
+    itemsPanel:AddChild(vList)
 
     currentDialog_ = UI.Panel {
         position = "absolute",

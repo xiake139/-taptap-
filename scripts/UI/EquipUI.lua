@@ -40,26 +40,10 @@ function EquipUI.Refresh()
     local player = DataManager.playerData
     if not player then return end
 
-    -- 使用 ScrollView 确保内容可滚动
-    local scrollContent = UI.ScrollView {
-        width = "100%",
-        flexGrow = 1,
-        flexShrink = 1,
-        flexBasis = 0,
-        flexDirection = "column",
-    }
-    parentRef_:AddChild(scrollContent)
+    local EQUIP_ITEM_HEIGHT = 40
+    local EQUIP_ITEM_GAP = 4
 
-    scrollContent:AddChild(UI.Label {
-        text = "— 装备栏 —",
-        fontSize = 16,
-        fontColor = { 200, 170, 100, 255 },
-        textAlign = "center",
-        marginTop = 8,
-        marginBottom = 8,
-    })
-
-    -- 装备槽（13个部位）
+    -- 构建统一数据列表：装备槽 + 可装备物品
     local slots = {
         { key = "weapon", label = "武器" },
         { key = "helmet", label = "头盔" },
@@ -76,57 +60,26 @@ function EquipUI.Refresh()
         { key = "shield", label = "护盾" },
     }
 
+    local dataList = {}
+
+    -- 装备槽数据
     for _, slot in ipairs(slots) do
         local equipName = player.equip[slot.key] or ""
         local eData = equipName ~= "" and DataManager.GetEquipData(equipName) or nil
         local qualityColor = EquipUI.GetQualityColor(eData and eData.quality or "white")
-
-        scrollContent:AddChild(UI.Panel {
-            flexDirection = "row",
-            alignItems = "center",
-            width = "100%",
-            padding = 8,
-            backgroundColor = { 25, 20, 45, 200 },
-            borderRadius = 6,
-            marginBottom = 6,
-            gap = 8,
-            children = {
-                UI.Label { text = "[" .. slot.label .. "]", fontSize = 14, fontColor = { 140, 140, 160, 255 }, width = 50 },
-                UI.Label {
-                    text = equipName ~= "" and equipName or "（未装备）",
-                    fontSize = 14,
-                    fontColor = equipName ~= "" and qualityColor or { 100, 100, 120, 255 },
-                    flexGrow = 1,
-                    flexShrink = 1,
-                },
-                equipName ~= "" and UI.Button {
-                    text = "详情",
-                    variant = "secondary",
-                    height = 28,
-                    onClick = function() EquipUI.ShowDetail(equipName) end,
-                } or UI.Panel { width = 0 },
-                equipName ~= "" and UI.Button {
-                    text = "卸下",
-                    variant = "secondary",
-                    height = 28,
-                    onClick = function() EquipUI.Unequip(slot.key) end,
-                } or UI.Panel { width = 0 },
-            },
+        table.insert(dataList, {
+            type = "slot",
+            slotLabel = slot.label,
+            slotKey = slot.key,
+            equipName = equipName,
+            qualityColor = qualityColor,
         })
     end
 
-    -- 分隔
-    scrollContent:AddChild(UI.Panel { width = "100%", height = 1, backgroundColor = { 50, 40, 70, 255 }, marginTop = 8, marginBottom = 8 })
+    -- 分隔符
+    table.insert(dataList, { type = "separator" })
 
-    -- 可装备物品列表
-    scrollContent:AddChild(UI.Label {
-        text = "背包中可装备的物品",
-        fontSize = 14,
-        fontColor = { 150, 150, 180, 255 },
-        textAlign = "center",
-        marginBottom = 6,
-    })
-
+    -- 可装备物品数据
     local hasEquippable = false
     for i, item in ipairs(player.bag) do
         local itemData = DataManager.GetEquipData(item.name)
@@ -135,50 +88,122 @@ function EquipUI.Refresh()
             local qualityColor = EquipUI.GetQualityColor(itemData.quality or "white")
             local slotKey = SLOT_CN_TO_KEY[itemData.slot] or itemData.slot
             local slotLabel = SLOT_KEY_TO_LABEL[slotKey] or itemData.slot or "未知"
-
-            scrollContent:AddChild(UI.Panel {
-                flexDirection = "row",
-                alignItems = "center",
-                width = "100%",
-                padding = 6,
-                backgroundColor = { 20, 15, 35, 200 },
-                borderRadius = 4,
-                marginBottom = 3,
-                gap = 6,
-                children = {
-                    UI.Label { text = "[" .. slotLabel .. "]", fontSize = 12, fontColor = { 120, 120, 150, 255 }, width = 46 },
-                    UI.Label {
-                        text = item.name .. " x" .. item.count,
-                        fontSize = 13,
-                        fontColor = qualityColor,
-                        flexGrow = 1,
-                        flexShrink = 1,
-                    },
-                    UI.Button {
-                        text = "详情",
-                        variant = "secondary",
-                        height = 26,
-                        onClick = function() EquipUI.ShowDetail(item.name) end,
-                    },
-                    UI.Button {
-                        text = "装备",
-                        variant = "primary",
-                        height = 26,
-                        onClick = function() EquipUI.EquipFromBag(i) end,
-                    },
-                },
+            table.insert(dataList, {
+                type = "bag",
+                bagIndex = i,
+                itemName = item.name,
+                itemCount = item.count,
+                slotLabel = slotLabel,
+                qualityColor = qualityColor,
             })
         end
     end
 
     if not hasEquippable then
-        scrollContent:AddChild(UI.Label {
-            text = "无可装备物品",
-            fontSize = 12,
-            fontColor = { 100, 100, 120, 255 },
-            textAlign = "center",
-        })
+        table.insert(dataList, { type = "empty_hint" })
     end
+
+    -- 标题
+    parentRef_:AddChild(UI.Label {
+        text = "— 装备栏 —",
+        fontSize = 16,
+        fontColor = { 200, 170, 100, 255 },
+        textAlign = "center",
+        marginTop = 8,
+        marginBottom = 8,
+    })
+
+    -- VirtualList 容器
+    local listContainer = UI.Panel {
+        width = "100%",
+        flexGrow = 1,
+        flexShrink = 1,
+        flexBasis = 0,
+        overflow = "hidden",
+    }
+    parentRef_:AddChild(listContainer)
+
+    local vList = UI.VirtualList {
+        width = "100%",
+        height = "100%",
+        viewportHeight = 400,
+        data = dataList,
+        itemHeight = EQUIP_ITEM_HEIGHT,
+        itemGap = EQUIP_ITEM_GAP,
+        poolBuffer = 5,
+        createItem = function()
+            local row = UI.Panel {
+                width = "100%",
+                height = EQUIP_ITEM_HEIGHT,
+                flexDirection = "row",
+                alignItems = "center",
+                padding = 6,
+                gap = 6,
+            }
+            local slotLabel = UI.Label { id = "slot", text = "", fontSize = 13, width = 50, fontColor = { 140, 140, 160, 255 } }
+            local nameLabel = UI.Label { id = "name", text = "", fontSize = 13, flexGrow = 1, flexShrink = 1 }
+            local btn1 = UI.Button { id = "btn1", text = "", variant = "secondary", height = 28, width = 50, fontSize = 11 }
+            local btn2 = UI.Button { id = "btn2", text = "", variant = "secondary", height = 28, width = 50, fontSize = 11 }
+            row:AddChild(slotLabel)
+            row:AddChild(nameLabel)
+            row:AddChild(btn1)
+            row:AddChild(btn2)
+            row._slotLabel = slotLabel
+            row._nameLabel = nameLabel
+            row._btn1 = btn1
+            row._btn2 = btn2
+            return row
+        end,
+        bindItem = function(widget, data, index)
+            if data.type == "slot" then
+                widget._slotLabel:SetText("[" .. data.slotLabel .. "]")
+                widget._slotLabel:SetVisible(true)
+                local hasEquip = data.equipName ~= ""
+                widget._nameLabel:SetText(hasEquip and data.equipName or "（未装备）")
+                widget._nameLabel.props.fontColor = hasEquip and data.qualityColor or { 100, 100, 120, 255 }
+                if hasEquip then
+                    widget._btn1:SetText("详情")
+                    widget._btn1:SetVisible(true)
+                    widget._btn1.props.onClick = function() EquipUI.ShowDetail(data.equipName) end
+                    widget._btn2:SetText("卸下")
+                    widget._btn2:SetVisible(true)
+                    widget._btn2.props.onClick = function() EquipUI.Unequip(data.slotKey) end
+                else
+                    widget._btn1:SetVisible(false)
+                    widget._btn2:SetVisible(false)
+                end
+                widget.props.backgroundColor = { 25, 20, 45, 200 }
+            elseif data.type == "bag" then
+                widget._slotLabel:SetText("[" .. data.slotLabel .. "]")
+                widget._slotLabel:SetVisible(true)
+                widget._nameLabel:SetText(data.itemName .. " x" .. tostring(data.itemCount))
+                widget._nameLabel.props.fontColor = data.qualityColor
+                widget._btn1:SetText("详情")
+                widget._btn1:SetVisible(true)
+                widget._btn1.props.onClick = function() EquipUI.ShowDetail(data.itemName) end
+                widget._btn2:SetText("装备")
+                widget._btn2:SetVisible(true)
+                widget._btn2.props.variant = "primary"
+                widget._btn2.props.onClick = function() EquipUI.EquipFromBag(data.bagIndex) end
+                widget.props.backgroundColor = { 20, 15, 35, 200 }
+            elseif data.type == "separator" then
+                widget._slotLabel:SetVisible(false)
+                widget._nameLabel:SetText("— 背包中可装备的物品 —")
+                widget._nameLabel.props.fontColor = { 150, 150, 180, 255 }
+                widget._btn1:SetVisible(false)
+                widget._btn2:SetVisible(false)
+                widget.props.backgroundColor = { 0, 0, 0, 0 }
+            elseif data.type == "empty_hint" then
+                widget._slotLabel:SetVisible(false)
+                widget._nameLabel:SetText("无可装备物品")
+                widget._nameLabel.props.fontColor = { 100, 100, 120, 255 }
+                widget._btn1:SetVisible(false)
+                widget._btn2:SetVisible(false)
+                widget.props.backgroundColor = { 0, 0, 0, 0 }
+            end
+        end,
+    }
+    listContainer:AddChild(vList)
 end
 
 --- 卸下装备
