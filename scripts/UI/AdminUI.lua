@@ -3504,23 +3504,36 @@ local function RandPick(tbl)
     return tbl[math.random(1, #tbl)]
 end
 
+--- 重试取名：用 nameFn 生成随机名，若在 existingTable 中已存在则重试，最多 maxRetry 次
+--- 返回 name 或 nil（取不到唯一名时）
+local function TryUniqueName(nameFn, existingTable, maxRetry)
+    maxRetry = maxRetry or 50
+    for _ = 1, maxRetry do
+        local name = nameFn()
+        if not existingTable[name] then return name end
+    end
+    return nil
+end
+
+
+
 --- 生成地图数据
 ---@param count number
+---@return number generated, number skipped
 local function GenerateMaps(count)
     local existingMaps = {}
     for id in pairs(DataManager.maps) do
         table.insert(existingMaps, id)
     end
     local generated = 0
+    local skipped = 0
     for i = 1, count do
-        local name = RandPick(GEN_NAMES.map_prefix) .. RandPick(GEN_NAMES.map_suffix)
-        -- 避免重复名
-        if DataManager.maps[name] then
-            name = name .. tostring(i)
-        end
+        local name = TryUniqueName(function()
+            return RandPick(GEN_NAMES.map_prefix) .. RandPick(GEN_NAMES.map_suffix)
+        end, DataManager.maps)
+        if not name then skipped = skipped + 1; goto map_continue end
         local desc = RandPick(GEN_NAMES.map_desc_prefix) .. name .. "，修仙者的历练之地"
         local lvReq = tostring(math.random(1, 15))
-        -- 连接关系由一键部署统一处理，生成时不设置
         DataManager.maps[name] = {
             name = name,
             desc = desc,
@@ -3534,9 +3547,10 @@ local function GenerateMaps(count)
         }
         table.insert(existingMaps, name)
         generated = generated + 1
+        ::map_continue::
     end
     SaveCategoryToCloud("maps")
-    return generated
+    return generated, skipped
 end
 
 --- 在BigNum区间 [minStr, maxStr] 内生成随机数
@@ -3590,11 +3604,12 @@ local function GenerateMonsters(count, monsterType)
     local mtype = MONSTER_TYPES[typeIdx]
 
     local generated = 0
+    local skipped = 0
     for i = 1, count do
-        local name = RandPick(GEN_NAMES.monster_prefix) .. RandPick(GEN_NAMES.monster_suffix)
-        if DataManager.monsters[name] then
-            name = name .. tostring(i)
-        end
+        local name = TryUniqueName(function()
+            return RandPick(GEN_NAMES.monster_prefix) .. RandPick(GEN_NAMES.monster_suffix)
+        end, DataManager.monsters)
+        if not name then skipped = skipped + 1; goto monster_continue end
         local hp = BigNumRandRange(mtype.min_hp or "10", mtype.max_hp or "2000")
         local atk = BigNumRandRange(mtype.min_atk or "5", mtype.max_atk or "1000")
         local def = BigNumRandRange(mtype.min_def or "3", mtype.max_def or "800")
@@ -3622,9 +3637,10 @@ local function GenerateMonsters(count, monsterType)
             drops = "",
         }
         generated = generated + 1
+        ::monster_continue::
     end
     SaveCategoryToCloud("monsters")
-    return generated
+    return generated, skipped
 end
 
 --- 装备部位映射
@@ -3673,18 +3689,17 @@ local function GenerateEquipment(count, filterSlots, filterQualities)
     if #qualities == 0 then for _, q in ipairs(EQUIP_QUALITIES) do table.insert(qualities, q) end end
 
     local generated = 0
+    local skipped = 0
     for i = 1, count do
         local slotCN = slots[math.random(1, #slots)]
         local slot = EQUIP_SLOT_MAP[slotCN] or "weapon"
         local quality = qualities[math.random(1, #qualities)]
         local range = EQUIP_QUALITY_RANGES[quality]
-        local prefix = RandPick(GEN_NAMES.equip_prefix)
         local suffixTable = GEN_NAMES["equip_" .. slot] or GEN_NAMES.equip_weapon
-        local suffix = RandPick(suffixTable)
-        local name = prefix .. suffix
-        if DataManager.equipment[name] then
-            name = name .. tostring(i)
-        end
+        local name = TryUniqueName(function()
+            return RandPick(GEN_NAMES.equip_prefix) .. RandPick(suffixTable)
+        end, DataManager.equipment)
+        if not name then skipped = skipped + 1; goto equip_continue end
         -- 根据部位决定属性偏向：攻击型/防御型/生命型
         local baseVal = BigNumRandRange(range.min, range.max)
         local subMax = BigNum.div(BigNum.add(range.min, range.max), "3")
@@ -3723,9 +3738,10 @@ local function GenerateEquipment(count, filterSlots, filterQualities)
             price_sell = sell,
         }
         generated = generated + 1
+        ::equip_continue::
     end
     SaveCategoryToCloud("equipment")
-    return generated
+    return generated, skipped
 end
 
 --- 道具类型到效果的映射
@@ -3747,6 +3763,7 @@ local ITEM_TYPE_EFFECTS = {
 local function GenerateItems(count, selectedTypes, duration)
     local typeList = selectedTypes or { "恢复血量", "材料" }
     local generated = 0
+    local skipped = 0
     for i = 1, count do
         local typeName = typeList[math.random(1, #typeList)]
         local info = ITEM_TYPE_EFFECTS[typeName] or ITEM_TYPE_EFFECTS["材料"]
@@ -3774,21 +3791,17 @@ local function GenerateItems(count, selectedTypes, duration)
                 name = value .. "倍货币卡[" .. durMin .. "分钟]"
             end
         else
-            local prefix = RandPick(GEN_NAMES.item_prefix)
-            local suffix
-            if typeName == "材料" then
-                suffix = RandPick(GEN_NAMES.item_material)
-            else
-                suffix = RandPick(GEN_NAMES.item_consumable)
-            end
-            name = prefix .. suffix
+            local suffix_src = (typeName == "材料") and GEN_NAMES.item_material or GEN_NAMES.item_consumable
+            name = TryUniqueName(function()
+                return RandPick(GEN_NAMES.item_prefix) .. RandPick(suffix_src)
+            end, DataManager.items)
+            if not name then skipped = skipped + 1; goto item_continue end
             if typeName ~= "材料" then
                 value = tostring(math.random(10, 200))
             end
         end
-        if DataManager.items[name] then
-            name = name .. tostring(i)
-        end
+        -- 倍率卡名称固定，已存在则跳过
+        if DataManager.items[name] then skipped = skipped + 1; goto item_continue end
         local desc = (typeName == "材料") and info.descFmt or string.format(info.descFmt, tonumber(value) or 0)
         local itemData = {
             name = name,
@@ -3803,20 +3816,22 @@ local function GenerateItems(count, selectedTypes, duration)
         end
         DataManager.items[name] = itemData
         generated = generated + 1
+        ::item_continue::
     end
     SaveCategoryToCloud("items")
-    return generated
+    return generated, skipped
 end
 
 --- 生成副本数据
 ---@param count number
 local function GenerateDungeons(count)
     local generated = 0
+    local skipped = 0
     for i = 1, count do
-        local name = RandPick(GEN_NAMES.dungeon_prefix) .. RandPick(GEN_NAMES.dungeon_suffix)
-        if DataManager.dungeons[name] then
-            name = name .. tostring(i)
-        end
+        local name = TryUniqueName(function()
+            return RandPick(GEN_NAMES.dungeon_prefix) .. RandPick(GEN_NAMES.dungeon_suffix)
+        end, DataManager.dungeons)
+        if not name then skipped = skipped + 1; goto dungeon_continue end
         local lvReq = tostring(math.random(1, 12))
         local waves = math.random(3, 5)
         -- 获取已有怪物名列表作为波次内容
@@ -3846,9 +3861,10 @@ local function GenerateDungeons(count)
         end
         DataManager.dungeons[name] = dungeonData
         generated = generated + 1
+        ::dungeon_continue::
     end
     SaveCategoryToCloud("dungeons")
-    return generated
+    return generated, skipped
 end
 
 --- 生成商店数据
@@ -3901,7 +3917,7 @@ local function GenerateShops(count)
         generated = generated + 1
     end
     SaveCategoryToCloud("shops")
-    return generated
+    return generated, 0
 end
 
 --- 生成NPC数据
@@ -3925,12 +3941,13 @@ local function GenerateNPCs(count)
         "难得来客，给你便宜些。",
     }
     local generated = 0
+    local skipped = 0
     for i = 1, count do
         local nType = npcTypes[math.random(1, #npcTypes)]
-        local name = surnames[math.random(1, #surnames)] .. titles[math.random(1, #titles)]
-        if DataManager.npcs[name] then
-            name = name .. tostring(i)
-        end
+        local name = TryUniqueName(function()
+            return surnames[math.random(1, #surnames)] .. titles[math.random(1, #titles)]
+        end, DataManager.npcs)
+        if not name then skipped = skipped + 1; goto npc_continue end
         local dialog
         if nType == "任务" then
             dialog = dialogs_quest[math.random(1, #dialogs_quest)]
@@ -3946,9 +3963,10 @@ local function GenerateNPCs(count)
             shop_id = "",
         }
         generated = generated + 1
+        ::npc_continue::
     end
     SaveCategoryToCloud("npcs")
-    return generated
+    return generated, skipped
 end
 
 --- 生成任务数据
@@ -4027,7 +4045,7 @@ local function GenerateQuests(count)
         generated = generated + 1
     end
     SaveCategoryToCloud("quests")
-    return generated
+    return generated, 0
 end
 
 --- 一键部署：将地图、怪物、NPC、商店等数据关联在一起
@@ -5756,9 +5774,16 @@ local function RenderGenerator()
                                     return
                                 end
                                 if n > 100 then n = 100 end -- 上限保护
-                                local generated = onGenerate(n)
-                                resultLabel:SetText("成功生成 " .. generated .. " 个" .. title)
-                                ShowMsg(title .. "生成完成: " .. generated .. " 个")
+                                local generated, skipped = onGenerate(n)
+                                skipped = skipped or 0
+                                if skipped > 0 and generated == 0 then
+                                    resultLabel:SetText("已有" .. skipped .. "条数据存在，无需生成")
+                                elseif skipped > 0 then
+                                    resultLabel:SetText("生成" .. generated .. "个，跳过" .. skipped .. "个(已存在)")
+                                else
+                                    resultLabel:SetText("成功生成 " .. generated .. " 个" .. title)
+                                end
+                                ShowMsg(title .. ": 生成" .. generated .. "个, 跳过" .. skipped .. "个")
                             end,
                         },
                     },
@@ -6031,10 +6056,17 @@ local function RenderGenerator()
                                 return
                             end
                             if n > 100 then n = 100 end
-                            local generated = GenerateMonsters(n, selectedMonsterType)
+                            local generated, skipped = GenerateMonsters(n, selectedMonsterType)
+                            skipped = skipped or 0
                             local typeName = MONSTER_TYPES[selectedMonsterType].name
-                            monsterResultLabel:SetText("成功生成 " .. generated .. " 个" .. typeName)
-                            ShowMsg("怪物生成完成: " .. generated .. " 个" .. typeName)
+                            if skipped > 0 and generated == 0 then
+                                monsterResultLabel:SetText("已有" .. skipped .. "条" .. typeName .. "数据存在，无需生成")
+                            elseif skipped > 0 then
+                                monsterResultLabel:SetText("生成" .. generated .. "个，跳过" .. skipped .. "个(已存在)")
+                            else
+                                monsterResultLabel:SetText("成功生成 " .. generated .. " 个" .. typeName)
+                            end
+                            ShowMsg(typeName .. ": 生成" .. generated .. "个, 跳过" .. skipped .. "个")
                         end,
                     },
                 },
@@ -6136,9 +6168,16 @@ local function RenderGenerator()
                         for _, q in ipairs(EQUIP_QUALITIES) do
                             if equipQualSelected[q] then table.insert(selQuals, q) end
                         end
-                        local generated = GenerateEquipment(n, selSlots, selQuals)
-                        equipResultLabel:SetText("成功生成 " .. generated .. " 个装备")
-                        ShowMsg("装备生成完成: " .. generated .. " 个")
+                        local generated, skipped = GenerateEquipment(n, selSlots, selQuals)
+                        skipped = skipped or 0
+                        if skipped > 0 and generated == 0 then
+                            equipResultLabel:SetText("已有" .. skipped .. "条装备数据存在，无需生成")
+                        elseif skipped > 0 then
+                            equipResultLabel:SetText("生成" .. generated .. "个，跳过" .. skipped .. "个(已存在)")
+                        else
+                            equipResultLabel:SetText("成功生成 " .. generated .. " 个装备")
+                        end
+                        ShowMsg("装备: 生成" .. generated .. "个, 跳过" .. skipped .. "个")
                     end,
                 },
             }},
@@ -6160,6 +6199,7 @@ local function RenderGenerator()
                         local quality = selQuals[math.random(1, #selQuals)]
                         local range = EQUIP_QUALITY_RANGES[quality]
                         local generated = 0
+                        local skipped = 0
                         -- 为每个选中的部位生成一件装备
                         local selSlots = {}
                         for _, s in ipairs(EQUIP_SLOTS) do
@@ -6169,9 +6209,10 @@ local function RenderGenerator()
                         for _, slotCN in ipairs(selSlots) do
                             local slot = EQUIP_SLOT_MAP[slotCN] or "weapon"
                             local suffixTable = GEN_NAMES["equip_" .. slot] or GEN_NAMES.equip_weapon
-                            local suffix = RandPick(suffixTable)
-                            local name = prefix .. suffix
-                            if DataManager.equipment[name] then name = name .. "_" .. tostring(generated + 1) end
+                            local name = TryUniqueName(function()
+                                return prefix .. RandPick(suffixTable)
+                            end, DataManager.equipment)
+                            if not name then skipped = skipped + 1; goto set_continue end
                             local baseVal = BigNumRandRange(range.min, range.max)
                             local subMax = BigNum.div(BigNum.add(range.min, range.max), "3")
                             if BigNum.gt(range.min, subMax) then subMax = range.min end
@@ -6194,10 +6235,17 @@ local function RenderGenerator()
                                 level_req = lvReq, price_buy = price, price_sell = sell,
                             }
                             generated = generated + 1
+                            ::set_continue::
                         end
-                        SaveCategoryToCloud("equipment")
-                        setResultLabel:SetText("已生成[" .. prefix .. "]套装 " .. generated .. " 件")
-                        ShowMsg("套装生成完成: " .. prefix .. " 套装 " .. generated .. " 件")
+                        if generated > 0 then SaveCategoryToCloud("equipment") end
+                        if skipped > 0 and generated == 0 then
+                            setResultLabel:SetText("[" .. prefix .. "]套装已存在，无需重复生成")
+                        elseif skipped > 0 then
+                            setResultLabel:SetText("生成" .. generated .. "件，跳过" .. skipped .. "件(已存在)")
+                        else
+                            setResultLabel:SetText("已生成[" .. prefix .. "]套装 " .. generated .. " 件")
+                        end
+                        ShowMsg("套装: 生成" .. generated .. "件, 跳过" .. skipped .. "件")
                     end,
                 },
             }},
@@ -6272,9 +6320,16 @@ local function RenderGenerator()
                             if itemTypeSelected[t] then table.insert(selTypes, t) end
                         end
                         local dur = tonumber(itemDurationField:GetValue()) or 0
-                        local generated = GenerateItems(n, selTypes, dur)
-                        itemResultLabel:SetText("成功生成 " .. generated .. " 个道具")
-                        ShowMsg("道具生成完成: " .. generated .. " 个")
+                        local generated, skipped = GenerateItems(n, selTypes, dur)
+                        skipped = skipped or 0
+                        if skipped > 0 and generated == 0 then
+                            itemResultLabel:SetText("已有" .. skipped .. "条道具数据存在，无需生成")
+                        elseif skipped > 0 then
+                            itemResultLabel:SetText("生成" .. generated .. "个，跳过" .. skipped .. "个(已存在)")
+                        else
+                            itemResultLabel:SetText("成功生成 " .. generated .. " 个道具")
+                        end
+                        ShowMsg("道具: 生成" .. generated .. "个, 跳过" .. skipped .. "个")
                     end,
                 },
             }},
@@ -6291,6 +6346,7 @@ local function RenderGenerator()
                         local dur = tonumber(itemDurationField:GetValue()) or 0
                         local multStr = tostring(math.floor(mult))
                         local generated = 0
+                        local skipped = 0
                         -- 生成经验倍率卡
                         local expName
                         if dur == 0 then
@@ -6298,14 +6354,17 @@ local function RenderGenerator()
                         else
                             expName = multStr .. "倍经验卡[" .. dur .. "分钟]"
                         end
-                        if DataManager.items[expName] then expName = expName .. "_" .. os.time() end
-                        DataManager.items[expName] = {
-                            name = expName, type = "经验倍率",
-                            desc = string.format("使用后经验获取提升%d倍持续一段时间", mult),
-                            effect = "exp_mult", value = multStr,
-                            duration = (dur > 0) and tostring(dur) or nil,
-                        }
-                        generated = generated + 1
+                        if DataManager.items[expName] then
+                            skipped = skipped + 1
+                        else
+                            DataManager.items[expName] = {
+                                name = expName, type = "经验倍率",
+                                desc = string.format("使用后经验获取提升%d倍持续一段时间", mult),
+                                effect = "exp_mult", value = multStr,
+                                duration = (dur > 0) and tostring(dur) or nil,
+                            }
+                            generated = generated + 1
+                        end
                         -- 生成货币倍率卡
                         local goldName
                         if dur == 0 then
@@ -6313,17 +6372,26 @@ local function RenderGenerator()
                         else
                             goldName = multStr .. "倍货币卡[" .. dur .. "分钟]"
                         end
-                        if DataManager.items[goldName] then goldName = goldName .. "_" .. os.time() end
-                        DataManager.items[goldName] = {
-                            name = goldName, type = "货币倍率",
-                            desc = string.format("使用后金币获取提升%d倍持续一段时间", mult),
-                            effect = "gold_mult", value = multStr,
-                            duration = (dur > 0) and tostring(dur) or nil,
-                        }
-                        generated = generated + 1
-                        SaveCategoryToCloud("items")
-                        customMultResultLabel:SetText("已生成" .. multStr .. "倍经验卡+" .. multStr .. "倍货币卡")
-                        ShowMsg("倍率卡生成完成: " .. generated .. " 个")
+                        if DataManager.items[goldName] then
+                            skipped = skipped + 1
+                        else
+                            DataManager.items[goldName] = {
+                                name = goldName, type = "货币倍率",
+                                desc = string.format("使用后金币获取提升%d倍持续一段时间", mult),
+                                effect = "gold_mult", value = multStr,
+                                duration = (dur > 0) and tostring(dur) or nil,
+                            }
+                            generated = generated + 1
+                        end
+                        if generated > 0 then SaveCategoryToCloud("items") end
+                        if skipped > 0 and generated == 0 then
+                            customMultResultLabel:SetText(multStr .. "倍卡已存在，无需重复生成")
+                        elseif skipped > 0 then
+                            customMultResultLabel:SetText("生成" .. generated .. "个，跳过" .. skipped .. "个(已存在)")
+                        else
+                            customMultResultLabel:SetText("已生成" .. multStr .. "倍经验卡+" .. multStr .. "倍货币卡")
+                        end
+                        ShowMsg("倍率卡: 生成" .. generated .. "个, 跳过" .. skipped .. "个")
                     end,
                 },
             }},
