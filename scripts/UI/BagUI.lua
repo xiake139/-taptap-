@@ -256,6 +256,39 @@ local function AddBuff(player, buffType, value, durationMin)
     end
 end
 
+--- 永久buff常量：过期时间设为 9999999999（约2286年）
+local PERMANENT_EXPIRES = 9999999999
+
+--- 添加永久buff（不会过期）
+---@param player table
+---@param buffType string "经验倍率"|"货币倍率"
+---@param value number
+local function AddPermanentBuff(player, buffType, value)
+    if not player.buffs then player.buffs = {} end
+
+    -- 查找相同类型且相同数值的已有永久buff（避免重复）
+    for _, b in ipairs(player.buffs) do
+        if b.type == buffType and tonumber(b.value) == value and b.expires >= PERMANENT_EXPIRES then
+            print("[Buff] " .. buffType .. " x" .. value .. " 永久buff已存在，跳过")
+            return
+        end
+    end
+    -- 新增永久buff
+    table.insert(player.buffs, {
+        type = buffType,
+        value = value,
+        expires = PERMANENT_EXPIRES,
+    })
+    print("[Buff] " .. buffType .. " x" .. value .. " 永久buff新增")
+end
+
+--- 判断buff是否为永久buff
+---@param buff table
+---@return boolean
+function BagUI.IsPermanentBuff(buff)
+    return buff.expires >= PERMANENT_EXPIRES
+end
+
 --- 获取当前有效的 buff 加成
 ---@param player table
 ---@param buffType string
@@ -265,14 +298,14 @@ function BagUI.GetBuffValue(player, buffType)
 
     local now = os.time()
     if buffType == "经验倍率" or buffType == "货币倍率" then
-        -- 倍率类：所有有效buff的value相乘
-        local total = 1
+        -- 倍率类：所有有效buff的value相加（多张卡叠加）
+        local total = 0
         for _, b in ipairs(player.buffs) do
             if b.type == buffType and b.expires > now then
-                total = total * tonumber(b.value)
+                total = total + (tonumber(b.value) or 0)
             end
         end
-        return total
+        return total > 0 and total or 1
     else
         -- 属性类：所有有效buff的value相加（大数）
         local total = "0"
@@ -386,15 +419,15 @@ function BagUI.UseItem(index)
         end
     end
 
-    -- 经验倍率/货币倍率：必须有 duration（倍率用数字）
+    -- 经验倍率/货币倍率：duration>0 为限时buff，duration==0 为永久buff
     if itemType:find("经验倍率") then
         if duration > 0 then
             AddBuff(player, "经验倍率", valNum, duration)
             effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "经验x" .. valNum .. "(" .. duration .. "分钟)"
         else
-            -- 无持续时间默认给 30 分钟
-            AddBuff(player, "经验倍率", valNum, 30)
-            effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "经验x" .. valNum .. "(30分钟)"
+            -- 永久buff：使用极大过期时间
+            AddPermanentBuff(player, "经验倍率", valNum)
+            effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "经验x" .. valNum .. "(永久)"
         end
     end
     if itemType:find("货币倍率") then
@@ -402,8 +435,9 @@ function BagUI.UseItem(index)
             AddBuff(player, "货币倍率", valNum, duration)
             effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "金币x" .. valNum .. "(" .. duration .. "分钟)"
         else
-            AddBuff(player, "货币倍率", valNum, 30)
-            effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "金币x" .. valNum .. "(30分钟)"
+            -- 永久buff：使用极大过期时间
+            AddPermanentBuff(player, "货币倍率", valNum)
+            effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "金币x" .. valNum .. "(永久)"
         end
     end
 

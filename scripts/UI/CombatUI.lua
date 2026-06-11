@@ -416,15 +416,17 @@ function CombatUI.Victory()
     local soulMin, soulMax = DataManager.GetBattleSoulRange(monsterName_)
     local soulGain = tostring(math.random(soulMin, math.max(soulMin, soulMax)))
     player.status.battle_soul_exp = BigNum.add(player.status.battle_soul_exp or "0", soulGain)
-    -- 战魂自动升级检测
+    -- 战魂自动升级检测（限制单次最多升1000级防卡）
     local soulLeveledUp = false
     local curSoulLv = tonumber(player.status.battle_soul_level) or 0
+    local soulUpCount = 0
     local needSoulExp = DataManager.GetBattleSoulExpNeeded(curSoulLv)
-    while BigNum.gte(player.status.battle_soul_exp, needSoulExp) do
+    while BigNum.gte(player.status.battle_soul_exp, needSoulExp) and soulUpCount < 1000 do
         player.status.battle_soul_exp = BigNum.sub(player.status.battle_soul_exp, needSoulExp)
         curSoulLv = curSoulLv + 1
         player.status.battle_soul_level = tostring(curSoulLv)
         soulLeveledUp = true
+        soulUpCount = soulUpCount + 1
         needSoulExp = DataManager.GetBattleSoulExpNeeded(curSoulLv)
     end
     -- 战魂升级后回满生命（使用完整计算的生命上限）
@@ -487,19 +489,56 @@ function CombatUI.Victory()
                 local petExpGain = expGain
                 pet.exp = BigNum.add(pet.exp or "0", petExpGain)
                 table.insert(petExpGainList, pet.name)
-                -- 自动升级检测
+                -- 宠物升级：二分搜索 + 闭合求和（O(log n)，不会卡）
+                -- 宠物经验公式: 50*lv*(1+lv*0.2) = 10*lv² + 50*lv
+                -- 闭合求和: sum(10*i²+50*i, i=a..b) = 10*SumOfPowers(b,2) + 50*SumOfPowers(b,1) - 同(a-1)
                 local petLv = tonumber(pet.level) or 1
-                local needExp = tostring(math.floor(50 * petLv * (1 + petLv * 0.2)))
-                while BigNum.gte(pet.exp, needExp) do
-                    pet.exp = BigNum.sub(pet.exp, needExp)
-                    pet.level = BigNum.add(pet.level or "1", "1")
-                    -- 升级属性成长
-                    pet.atk = BigNum.add(pet.atk or "10", tostring(math.floor(2 + petLv * 0.5)))
-                    pet.def = BigNum.add(pet.def or "5", tostring(math.floor(1 + petLv * 0.3)))
-                    pet.max_hp = BigNum.add(pet.max_hp or "100", tostring(math.floor(10 + petLv * 2)))
-                    petLv = tonumber(pet.level) or 1
-                    needExp = tostring(math.floor(50 * petLv * (1 + petLv * 0.2)))
-                    print("[Combat] 宠物 " .. pet.name .. " 升级到 Lv." .. pet.level)
+                local petNeedExp = tostring(math.floor(50 * petLv * (1 + petLv * 0.2)))
+                if BigNum.gte(pet.exp, petNeedExp) then
+                    -- 闭合求和: 从 petLv 升到 targetLv 需要的总经验
+                    local function petTotalExp(fromLv, toLv)
+                        if toLv <= fromLv then return "0" end
+                        -- sum(10*i²+50*i, i=fromLv..toLv-1)
+                        local s2High = DataManager.SumOfPowers(toLv - 1, 2)
+                        local s2Low = DataManager.SumOfPowers(fromLv - 1, 2)
+                        local s1High = DataManager.SumOfPowers(toLv - 1, 1)
+                        local s1Low = DataManager.SumOfPowers(fromLv - 1, 1)
+                        local sum2 = BigNum.mul("10", BigNum.sub(s2High, s2Low))
+                        local sum1 = BigNum.mul("50", BigNum.sub(s1High, s1Low))
+                        return BigNum.add(sum2, sum1)
+                    end
+                    -- 二分搜索目标等级（单次最多升10000级，防属性计算过慢）
+                    local lo = petLv + 1
+                    local hi = petLv + 10000
+                    while lo < hi do
+                        local mid = math.floor((lo + hi + 1) / 2)
+                        local cost = petTotalExp(petLv, mid)
+                        if BigNum.gte(pet.exp, cost) then
+                            lo = mid
+                        else
+                            hi = mid - 1
+                        end
+                    end
+                    local targetPetLv = lo
+                    if targetPetLv > petLv then
+                        local totalCost = petTotalExp(petLv, targetPetLv)
+                        pet.exp = BigNum.sub(pet.exp, totalCost)
+                        local levelsGained = targetPetLv - petLv
+                        -- 批量计算属性增量: atk += sum(floor(2+i*0.5)), def += sum(floor(1+i*0.3)), hp += sum(floor(10+i*2))
+                        local totalAtkAdd = 0
+                        local totalDefAdd = 0
+                        local totalHpAdd = 0
+                        for i = petLv, targetPetLv - 1 do
+                            totalAtkAdd = totalAtkAdd + math.floor(2 + i * 0.5)
+                            totalDefAdd = totalDefAdd + math.floor(1 + i * 0.3)
+                            totalHpAdd = totalHpAdd + math.floor(10 + i * 2)
+                        end
+                        pet.atk = BigNum.add(pet.atk or "10", tostring(totalAtkAdd))
+                        pet.def = BigNum.add(pet.def or "5", tostring(totalDefAdd))
+                        pet.max_hp = BigNum.add(pet.max_hp or "100", tostring(totalHpAdd))
+                        pet.level = tostring(targetPetLv)
+                        print("[Combat] 宠物 " .. pet.name .. " 升级到 Lv." .. targetPetLv .. "（连升" .. levelsGained .. "级）")
+                    end
                 end
             end
         end

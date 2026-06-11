@@ -163,6 +163,68 @@ local function SaveConfigToCloud(configKey, content, onDone)
     doSave(content, onDone)
 end
 
+-- 怪物类型定义（默认值，运行时从云端配置覆盖）
+-- min/max: 战斗属性(HP/ATK/DEF)区间; min_exp/max_exp: 经验区间; min_gold/max_gold: 金币区间
+local MONSTER_TYPES_DEFAULTS = {
+    { name = "普通怪",  min_hp = "10", max_hp = "2000", min_atk = "5", max_atk = "1000", min_def = "3", max_def = "800", min_exp = "5", max_exp = "500", currency_ranges = { ["金币"] = { min = "1", max = "200" } }, desc = "散发着微弱的妖气" },
+    { name = "精英怪",  min_hp = "3000", max_hp = "100000", min_atk = "1500", max_atk = "50000", min_def = "1000", max_def = "40000", min_exp = "1000", max_exp = "30000", currency_ranges = { ["金币"] = { min = "500", max = "10000" } }, desc = "浑身散发着强大气息" },
+    { name = "BOSS",    min_hp = "500000", max_hp = "1000000", min_atk = "200000", max_atk = "500000", min_def = "150000", max_def = "400000", min_exp = "100000", max_exp = "500000", currency_ranges = { ["金币"] = { min = "50000", max = "200000" } }, desc = "威压四方，令人胆寒" },
+    { name = "帝级",    min_hp = "3000000", max_hp = "500000000", min_atk = "1000000", max_atk = "200000000", min_def = "800000", max_def = "150000000", min_exp = "1000000", max_exp = "100000000", currency_ranges = { ["金币"] = { min = "500000", max = "50000000" } }, desc = "帝威无边，天地变色" },
+    { name = "仙级",    min_hp = "600000000", max_hp = "5000000000", min_atk = "300000000", max_atk = "2000000000", min_def = "200000000", max_def = "1500000000", min_exp = "200000000", max_exp = "2000000000", currency_ranges = { ["金币"] = { min = "100000000", max = "1000000000" } }, desc = "仙威浩荡，不可直视" },
+    { name = "神级",    min_hp = "5000000000", max_hp = "60000000000", min_atk = "2000000000", max_atk = "30000000000", min_def = "1500000000", max_def = "20000000000", min_exp = "2000000000", max_exp = "30000000000", currency_ranges = { ["金币"] = { min = "1000000000", max = "15000000000" } }, desc = "神威如狱，万物臣服" },
+    { name = "创世级",  min_hp = "60000000000", max_hp = "10000000000000000000000000000000000000000", min_atk = "30000000000", max_atk = "5000000000000000000000000000000000000000", min_def = "20000000000", max_def = "3000000000000000000000000000000000000000", min_exp = "30000000000", max_exp = "5000000000000000000000000000000000000000", currency_ranges = { ["金币"] = { min = "10000000000", max = "1000000000000000000000000000000000000000" } }, desc = "创世之力，毁天灭地" },
+}
+
+--- 加载怪物类型配置（优先从云端配置读取，否则用默认值）
+local function LoadMonsterTypes()
+    local saved = DataManager.gameConfig["monster_gen"]
+    if saved and #saved > 0 then
+        -- 兼容旧配置：如果没有 min_hp 等新字段，从旧 min/max 迁移
+        for _, t in ipairs(saved) do
+            local oldMin = t.min or "10"
+            local oldMax = t.max or "2000"
+            if not t.min_hp or t.min_hp == "" then t.min_hp = oldMin end
+            if not t.max_hp or t.max_hp == "" then t.max_hp = oldMax end
+            if not t.min_atk or t.min_atk == "" then t.min_atk = oldMin end
+            if not t.max_atk or t.max_atk == "" then t.max_atk = oldMax end
+            if not t.min_def or t.min_def == "" then t.min_def = oldMin end
+            if not t.max_def or t.max_def == "" then t.max_def = oldMax end
+            if not t.min_exp or t.min_exp == "" then t.min_exp = oldMin end
+            if not t.max_exp or t.max_exp == "" then t.max_exp = oldMax end
+            -- 兼容旧 min_gold/max_gold → 迁移到 currency_ranges
+            if not t.currency_ranges then
+                t.currency_ranges = {}
+                local oldGoldMin = t.min_gold or oldMin
+                local oldGoldMax = t.max_gold or oldMax
+                t.currency_ranges["金币"] = { min = oldGoldMin, max = oldGoldMax }
+            end
+        end
+        return saved
+    end
+    local types = {}
+    for _, t in ipairs(MONSTER_TYPES_DEFAULTS) do
+        -- 深拷贝 currency_ranges
+        local cr = {}
+        if t.currency_ranges then
+            for k, v in pairs(t.currency_ranges) do
+                cr[k] = { min = v.min, max = v.max }
+            end
+        end
+        table.insert(types, {
+            name = t.name,
+            min_hp = t.min_hp, max_hp = t.max_hp,
+            min_atk = t.min_atk, max_atk = t.max_atk,
+            min_def = t.min_def, max_def = t.max_def,
+            min_exp = t.min_exp, max_exp = t.max_exp,
+            currency_ranges = cr,
+            desc = t.desc,
+        })
+    end
+    return types
+end
+
+local MONSTER_TYPES = LoadMonsterTypes()
+
 --- 将 DataManager 中的数据序列化为 INI 并保存
 ---@param category string
 local function SaveCategoryToCloud(category, onDoneExtra)
@@ -189,7 +251,7 @@ local function SaveCategoryToCloud(category, onDoneExtra)
     elseif category == "monsters" then
         local sections = {}
         for id, data in pairs(DataManager.monsters) do
-            sections[id] = {
+            local sec = {
                 ["名称"] = data.name or id,
                 ["类型"] = data.type or "普通怪",
                 ["描述"] = data.desc or "",
@@ -200,6 +262,19 @@ local function SaveCategoryToCloud(category, onDoneExtra)
                 ["金币"] = NumFormat.Int(data.gold or 2),
                 ["掉落"] = data.drops or "",
             }
+            -- 序列化多货币掉落
+            if data.currency_drops then
+                local cIdx = 0
+                for cName, cVal in pairs(data.currency_drops) do
+                    cIdx = cIdx + 1
+                    sec["货币" .. cIdx .. "_名称"] = cName
+                    sec["货币" .. cIdx .. "_数量"] = NumFormat.Int(cVal or 0)
+                end
+                sec["货币数量"] = tostring(cIdx)
+            else
+                sec["货币数量"] = "0"
+            end
+            sections[id] = sec
         end
         content = IniParser.Serialize(sections)
         SaveConfigToCloud("系统配置/monsters.ini", content, function(ok)
@@ -429,7 +504,7 @@ local function SaveCategoryToCloud(category, onDoneExtra)
         local lvlSec = gc["level_up"] or {}
         sections["升级配置"] = {
             ["基础经验"] = NumFormat.Int(lvlSec.base_exp or 20),
-            ["经验系数"] = tostring(lvlSec.exp_factor or 1.5),
+            ["经验系数"] = tostring(lvlSec.exp_factor or 2),
             ["每级生命"] = NumFormat.Int(lvlSec.hp_per_level or 20),
             ["每级法力"] = NumFormat.Int(lvlSec.mp_per_level or 10),
             ["每级攻击"] = NumFormat.Int(lvlSec.atk_per_level or 3),
@@ -443,6 +518,34 @@ local function SaveCategoryToCloud(category, onDoneExtra)
             currSec["货币_" .. i] = name
         end
         sections["货币配置"] = currSec
+        -- 怪物生成区间配置
+        local monGenSec = { ["类型数量"] = tostring(#MONSTER_TYPES) }
+        for i, mt in ipairs(MONSTER_TYPES) do
+            monGenSec["类型" .. i .. "_名称"] = mt.name
+            monGenSec["类型" .. i .. "_HP下限"] = mt.min_hp or "10"
+            monGenSec["类型" .. i .. "_HP上限"] = mt.max_hp or "2000"
+            monGenSec["类型" .. i .. "_攻击下限"] = mt.min_atk or "5"
+            monGenSec["类型" .. i .. "_攻击上限"] = mt.max_atk or "1000"
+            monGenSec["类型" .. i .. "_防御下限"] = mt.min_def or "3"
+            monGenSec["类型" .. i .. "_防御上限"] = mt.max_def or "800"
+            monGenSec["类型" .. i .. "_经验下限"] = mt.min_exp or "5"
+            monGenSec["类型" .. i .. "_经验上限"] = mt.max_exp or "500"
+            -- 货币区间（多货币支持）
+            if mt.currency_ranges then
+                local cIdx = 0
+                for cName, cRange in pairs(mt.currency_ranges) do
+                    cIdx = cIdx + 1
+                    monGenSec["类型" .. i .. "_货币" .. cIdx .. "_名称"] = cName
+                    monGenSec["类型" .. i .. "_货币" .. cIdx .. "_下限"] = cRange.min or "0"
+                    monGenSec["类型" .. i .. "_货币" .. cIdx .. "_上限"] = cRange.max or "0"
+                end
+                monGenSec["类型" .. i .. "_货币数量"] = tostring(cIdx)
+            else
+                monGenSec["类型" .. i .. "_货币数量"] = "0"
+            end
+            monGenSec["类型" .. i .. "_描述"] = mt.desc or ""
+        end
+        sections["怪物生成配置"] = monGenSec
         content = IniParser.Serialize(sections)
         SaveConfigToCloud("系统配置/game_config.ini", content, function(ok)
             ShowMsg(ok and "游戏设置已保存到云端" or "保存失败")
@@ -872,12 +975,41 @@ local function ShowPlayerDetailDialog(username, accountInfo, editMode)
             { label = "防御力", key = "st_def", value = st.def or "3" },
             { label = "金币", key = "st_gold", value = st.gold or "50" },
             { label = "当前地图", key = "st_current_map", value = st.current_map or "新手村" },
+            { label = "战魂等级", key = "st_battle_soul_level", value = st.battle_soul_level or "0" },
+            { label = "战魂经验", key = "st_battle_soul_exp", value = st.battle_soul_exp or "0" },
         }
         for _, f in ipairs(statusFields) do
             local panel, field = CreateFormField(f.label, f.value, { width = 150 })
             if not editMode then field:SetDisabled(true) end
             fieldWidgets[f.key] = field
             table.insert(formChildren, panel)
+        end
+
+        -- === 自定义货币 ===
+        local currencyList = DataManager.GetCurrencyList()
+        local stCurrencies = st.currencies or {}
+        -- 过滤掉"金币"（已在基础属性中展示）
+        local customCurrencies = {}
+        for _, cName in ipairs(currencyList) do
+            if cName ~= "金币" then
+                table.insert(customCurrencies, cName)
+            end
+        end
+        if #customCurrencies > 0 then
+            table.insert(formChildren, UI.Label {
+                text = "【自定义货币】",
+                fontSize = 13,
+                fontColor = { 100, 200, 255, 255 },
+                marginTop = 6,
+                marginBottom = 2,
+            })
+            for _, cName in ipairs(customCurrencies) do
+                local cValue = tostring(stCurrencies[cName] or "0")
+                local panel, field = CreateFormField(cName, cValue, { width = 150 })
+                if not editMode then field:SetDisabled(true) end
+                fieldWidgets["currency_" .. cName] = field
+                table.insert(formChildren, panel)
+            end
         end
 
         -- === 背包数据 ===
@@ -1016,6 +1148,9 @@ local function ShowPlayerDetailDialog(username, accountInfo, editMode)
                             def = fieldWidgets["st_def"]:GetValue() or "3",
                             gold = fieldWidgets["st_gold"]:GetValue() or "50",
                             current_map = fieldWidgets["st_current_map"]:GetValue() or "新手村",
+                            battle_soul_level = fieldWidgets["st_battle_soul_level"]:GetValue() or "0",
+                            battle_soul_exp = fieldWidgets["st_battle_soul_exp"]:GetValue() or "0",
+                            currencies = {},
                         },
                         bag = {},
                         equip = {
@@ -1036,6 +1171,14 @@ local function ShowPlayerDetailDialog(username, accountInfo, editMode)
                         quests = { active = {}, completed = {} },
                         redeemed_codes = {},
                     }
+
+                    -- 收集自定义货币数据
+                    for _, cName in ipairs(customCurrencies) do
+                        local w = fieldWidgets["currency_" .. cName]
+                        if w then
+                            newPlayerData.status.currencies[cName] = w:GetValue() or "0"
+                        end
+                    end
 
                     -- 解析礼包使用记录
                     local redeemedVal = fieldWidgets["redeemed_codes"]:GetValue() or ""
@@ -1102,6 +1245,17 @@ local function ShowPlayerDetailDialog(username, accountInfo, editMode)
                 end,
             })
         end
+        table.insert(btnChildren, UI.Button {
+            text = "刷新排行",
+            variant = "secondary",
+            width = 80,
+            onClick = function()
+                dialogMsg:SetText("正在刷新排行榜...")
+                DataManager.RefreshPlayerRankingForAdmin(username, function(ok, msg)
+                    dialogMsg:SetText(ok and msg or ("失败: " .. msg))
+                end)
+            end,
+        })
         table.insert(btnChildren, UI.Button {
             text = "关闭",
             variant = "secondary",
@@ -1262,6 +1416,37 @@ RenderPlayers = function()
             end
         end
         ShowMsg("共 " .. #players .. " 个玩家" .. (searchKeyword_ ~= "" and ("，匹配 " .. #filtered .. " 个") or ""))
+
+        -- 批量刷新排行榜按钮
+        local refreshRankMsg = UI.Label {
+            text = "",
+            fontSize = 11,
+            fontColor = { 100, 255, 100, 255 },
+            marginLeft = 8,
+        }
+        contentPanel_:AddChild(UI.Panel {
+            flexDirection = "row",
+            alignItems = "center",
+            marginBottom = 4,
+            paddingLeft = 4,
+            children = {
+                UI.Button {
+                    text = "批量刷新排行榜",
+                    fontSize = 10,
+                    width = 110,
+                    height = 26,
+                    variant = "primary",
+                    onClick = function()
+                        refreshRankMsg:SetText("正在刷新所有玩家排行...")
+                        DataManager.RefreshAllPlayersRankingForAdmin(function(ok, msg)
+                            refreshRankMsg:SetText(ok and msg or ("失败: " .. msg))
+                        end)
+                    end,
+                },
+                refreshRankMsg,
+            },
+        })
+
         for i, info in ipairs(filtered) do
             local bgColor = (i % 2 == 0) and { 25, 20, 45, 200 } or { 20, 15, 35, 200 }
             local isPlayerAdmin = IsAdmin(info.username)
@@ -1411,7 +1596,7 @@ local function RenderGameConfig()
 
     -- 升级公式
     contentPanel_:AddChild(CreateListRow("升级公式",
-        "最高等级:" .. (lvlSec.max_level or 100) .. " 基础经验:" .. (lvlSec.base_exp or 20) .. " 系数:" .. (lvlSec.exp_factor or 1.5),
+        "最高等级:" .. (lvlSec.max_level or 100) .. " 基础经验:" .. (lvlSec.base_exp or 20) .. " 系数:" .. (lvlSec.exp_factor or 2),
         function()
             ShowEditDialog("升级公式", {
                 { label = "最高等级", key = "max_level", value = lvlSec.max_level or "100" },
@@ -1424,7 +1609,7 @@ local function RenderGameConfig()
             }, function(v)
                 gc["level_up"] = {
                     max_level = v.max_level or "100",
-                    base_exp = v.base_exp or "20", exp_factor = tonumber(v.exp_factor) or 1.5,
+                    base_exp = v.base_exp or "20", exp_factor = tonumber(v.exp_factor) or 2,
                     hp_per_level = v.hp_per_level or "20", mp_per_level = v.mp_per_level or "10",
                     atk_per_level = v.atk_per_level or "3", def_per_level = v.def_per_level or "2",
                 }
@@ -1662,25 +1847,38 @@ local function RenderMonsters()
         if not MatchSearch(data.name or id) then goto continue_monsters end
         idx = idx + 1
         local typeTag = data.type and ("[" .. data.type .. "] ") or ""
+        -- 动态构建编辑字段（含多货币）
+        local editFields = {
+            { label = "名称", key = "name", value = data.name },
+            { label = "描述", key = "desc", value = data.desc, opts = { width = 220 } },
+            { label = "生命值", key = "hp", value = data.hp },
+            { label = "攻击力", key = "atk", value = data.atk },
+            { label = "防御力", key = "def", value = data.def },
+            { label = "经验值", key = "exp", value = data.exp },
+        }
+        local currencies = DataManager.gameConfig["currencies"] or { "金币" }
+        for _, cName in ipairs(currencies) do
+            local cVal = (data.currency_drops and data.currency_drops[cName]) or (cName == "金币" and data.gold) or "0"
+            table.insert(editFields, { label = cName, key = "curr_" .. cName, value = cVal })
+        end
+        table.insert(editFields, { label = "掉落", key = "drops", value = data.drops, opts = { width = 220, placeholder = "物品:概率,..." } })
+
         local row = CreateListRow(
             typeTag .. (data.name or id),
             "血量:" .. (data.hp or 0) .. " 攻击:" .. (data.atk or 0) .. " 经验:" .. (data.exp or 0),
             function()
-                ShowEditDialog("编辑怪物 - " .. id, {
-                    { label = "名称", key = "name", value = data.name },
-                    { label = "描述", key = "desc", value = data.desc, opts = { width = 220 } },
-                    { label = "生命值", key = "hp", value = data.hp },
-                    { label = "攻击力", key = "atk", value = data.atk },
-                    { label = "防御力", key = "def", value = data.def },
-                    { label = "经验值", key = "exp", value = data.exp },
-                    { label = "金币", key = "gold", value = data.gold },
-                    { label = "掉落", key = "drops", value = data.drops, opts = { width = 220, placeholder = "物品:概率,..." } },
-                }, function(v)
+                ShowEditDialog("编辑怪物 - " .. id, editFields, function(v)
+                    local currDrops = {}
+                    local cs = DataManager.gameConfig["currencies"] or { "金币" }
+                    for _, cn in ipairs(cs) do
+                        currDrops[cn] = v["curr_" .. cn] or "0"
+                    end
                     DataManager.monsters[id] = {
                         name = v.name, type = DataManager.ClassifyMonsterType(v.hp or "20"), desc = v.desc,
                         hp = v.hp or "20", atk = v.atk or "3",
                         def = v.def or "1", exp = v.exp or "5",
-                        gold = v.gold or "2", drops = v.drops,
+                        gold = currDrops["金币"] or v["curr_金币"] or "2",
+                        currency_drops = currDrops, drops = v.drops,
                     }
                     SaveCategoryToCloud("monsters")
                     CloseDialog()
@@ -1699,22 +1897,32 @@ local function RenderMonsters()
         text = "+ 添加怪物",
         variant = "primary", width = 120, marginTop = 8, marginLeft = 12,
         onClick = function()
-            ShowEditDialog("添加怪物", {
+            local addFields = {
                 { label = "ID(名称)", key = "id", value = "", opts = { placeholder = "如：火焰鸟" } },
                 { label = "描述", key = "desc", value = "", opts = { width = 220 } },
                 { label = "生命值", key = "hp", value = "50" },
                 { label = "攻击力", key = "atk", value = "10" },
                 { label = "防御力", key = "def", value = "5" },
                 { label = "经验值", key = "exp", value = "15" },
-                { label = "金币", key = "gold", value = "8" },
-                { label = "掉落", key = "drops", value = "", opts = { width = 220, placeholder = "物品:概率,..." } },
-            }, function(v)
+            }
+            local addCurrencies = DataManager.gameConfig["currencies"] or { "金币" }
+            for _, cName in ipairs(addCurrencies) do
+                table.insert(addFields, { label = cName, key = "curr_" .. cName, value = "8" })
+            end
+            table.insert(addFields, { label = "掉落", key = "drops", value = "", opts = { width = 220, placeholder = "物品:概率,..." } })
+
+            ShowEditDialog("添加怪物", addFields, function(v)
                 if v.id == "" then return end
+                local currDrops = {}
+                for _, cn in ipairs(addCurrencies) do
+                    currDrops[cn] = v["curr_" .. cn] or "0"
+                end
                 DataManager.monsters[v.id] = {
                     name = v.id, type = DataManager.ClassifyMonsterType(v.hp or "50"), desc = v.desc,
                     hp = v.hp or "50", atk = v.atk or "10",
                     def = v.def or "5", exp = v.exp or "15",
-                    gold = v.gold or "8", drops = v.drops,
+                    gold = currDrops["金币"] or "8",
+                    currency_drops = currDrops, drops = v.drops,
                 }
                 SaveCategoryToCloud("monsters")
                 CloseDialog()
@@ -3312,18 +3520,14 @@ local function GenerateMaps(count)
         end
         local desc = RandPick(GEN_NAMES.map_desc_prefix) .. name .. "，修仙者的历练之地"
         local lvReq = tostring(math.random(1, 15))
-        -- 随机连接已有地图
-        local front, back = "", ""
-        if #existingMaps > 0 then
-            back = existingMaps[math.random(1, #existingMaps)]
-        end
+        -- 连接关系由一键部署统一处理，生成时不设置
         DataManager.maps[name] = {
             name = name,
             desc = desc,
             monsters = "",
             npcs = "",
-            front = front,
-            back = back,
+            front = "",
+            back = "",
             left = "",
             right = "",
             level_req = lvReq,
@@ -3334,17 +3538,6 @@ local function GenerateMaps(count)
     SaveCategoryToCloud("maps")
     return generated
 end
-
--- 怪物类型定义：{ 名称, 属性下限, 属性上限, 描述后缀 }
-local MONSTER_TYPES = {
-    { name = "普通怪",  min = "10",            max = "2000",           desc = "散发着微弱的妖气" },
-    { name = "精英怪",  min = "3000",          max = "100000",         desc = "浑身散发着强大气息" },
-    { name = "BOSS",    min = "500000",        max = "1000000",        desc = "威压四方，令人胆寒" },
-    { name = "帝级",    min = "3000000",       max = "500000000",      desc = "帝威无边，天地变色" },
-    { name = "仙级",    min = "600000000",     max = "5000000000",     desc = "仙威浩荡，不可直视" },
-    { name = "神级",    min = "5000000000",    max = "60000000000",    desc = "神威如狱，万物臣服" },
-    { name = "创世级",  min = "60000000000",   max = "10000000000000000000000000000000000000000", desc = "创世之力，毁天灭地" },
-}
 
 --- 在BigNum区间 [minStr, maxStr] 内生成随机数
 ---@param minStr string
@@ -3402,11 +3595,20 @@ local function GenerateMonsters(count, monsterType)
         if DataManager.monsters[name] then
             name = name .. tostring(i)
         end
-        local hp = BigNumRandRange(mtype.min, mtype.max)
-        local atk = BigNumRandRange(mtype.min, mtype.max)
-        local def = BigNumRandRange(mtype.min, mtype.max)
-        local exp = BigNumRandRange(mtype.min, mtype.max)
-        local gold = BigNumRandRange(mtype.min, mtype.max)
+        local hp = BigNumRandRange(mtype.min_hp or "10", mtype.max_hp or "2000")
+        local atk = BigNumRandRange(mtype.min_atk or "5", mtype.max_atk or "1000")
+        local def = BigNumRandRange(mtype.min_def or "3", mtype.max_def or "800")
+        local exp = BigNumRandRange(mtype.min_exp or "5", mtype.max_exp or "500")
+        -- 货币：取第一种货币的区间作为 gold（向后兼容），同时存储所有货币掉落
+        local gold = "0"
+        local currDrops = {}
+        if mtype.currency_ranges then
+            for cName, cRange in pairs(mtype.currency_ranges) do
+                local val = BigNumRandRange(cRange.min or "0", cRange.max or "0")
+                currDrops[cName] = val
+                if gold == "0" then gold = val end -- 兼容 gold 字段
+            end
+        end
         DataManager.monsters[name] = {
             name = name,
             type = mtype.name,
@@ -3416,6 +3618,7 @@ local function GenerateMonsters(count, monsterType)
             def = def,
             exp = exp,
             gold = gold,
+            currency_drops = currDrops,
             drops = "",
         }
         generated = generated + 1
@@ -3552,14 +3755,24 @@ local function GenerateItems(count, selectedTypes, duration)
         local itemDuration = nil
         if typeName == "经验倍率" then
             value = tostring(math.random(2, 100))
-            local durMin = (duration and duration > 0) and duration or math.random(5, 60)
-            itemDuration = durMin
-            name = value .. "倍经验卡[" .. durMin .. "分钟]"
+            if duration and duration == 0 then
+                itemDuration = nil
+                name = value .. "倍经验卡[永久]"
+            else
+                local durMin = (duration and duration > 0) and duration or math.random(5, 60)
+                itemDuration = durMin
+                name = value .. "倍经验卡[" .. durMin .. "分钟]"
+            end
         elseif typeName == "货币倍率" then
             value = tostring(math.random(2, 100))
-            local durMin = (duration and duration > 0) and duration or math.random(5, 60)
-            itemDuration = durMin
-            name = value .. "倍货币卡[" .. durMin .. "分钟]"
+            if duration and duration == 0 then
+                itemDuration = nil
+                name = value .. "倍货币卡[永久]"
+            else
+                local durMin = (duration and duration > 0) and duration or math.random(5, 60)
+                itemDuration = durMin
+                name = value .. "倍货币卡[" .. durMin .. "分钟]"
+            end
         else
             local prefix = RandPick(GEN_NAMES.item_prefix)
             local suffix
@@ -3928,16 +4141,63 @@ local function DeployAll()
         end
     end
 
-    -- 3. 地图之间相互连接（前后左右）
-    for i, id in ipairs(mapNames) do
-        local data = DataManager.maps[id]
-        if (not data.front or data.front == "") and i < #mapNames then
-            data.front = mapNames[i + 1]
-            changes = changes + 1
+    -- 3. 地图之间相互连接（前后左右，双向对应）
+    -- 按等级排序
+    table.sort(mapNames, function(a, b)
+        local lvA = tonumber(DataManager.maps[a].level_req) or 0
+        local lvB = tonumber(DataManager.maps[b].level_req) or 0
+        if lvA ~= lvB then return lvA < lvB end
+        return a < b
+    end)
+    -- 清除所有旧连接
+    for _, id in ipairs(mapNames) do
+        DataManager.maps[id].front = ""
+        DataManager.maps[id].back = ""
+        DataManager.maps[id].left = ""
+        DataManager.maps[id].right = ""
+    end
+    -- 方向对：A用dir1连B，B用dir2连回A
+    local dirPairs = { { "front", "back" }, { "left", "right" } }
+    -- 辅助：给两张地图建立双向连接（随机选方向对）
+    local function linkMaps(idA, idB)
+        local mapA = DataManager.maps[idA]
+        local mapB = DataManager.maps[idB]
+        -- 收集A的空方向
+        local freeA = {}
+        if mapA.front == "" then table.insert(freeA, "front") end
+        if mapA.back == "" then table.insert(freeA, "back") end
+        if mapA.left == "" then table.insert(freeA, "left") end
+        if mapA.right == "" then table.insert(freeA, "right") end
+        if #freeA == 0 then return false end
+        -- 随机打乱A的空方向
+        for i = #freeA, 2, -1 do
+            local j = math.random(1, i)
+            freeA[i], freeA[j] = freeA[j], freeA[i]
         end
-        if (not data.back or data.back == "") and i > 1 then
-            data.back = mapNames[i - 1]
-            changes = changes + 1
+        -- 尝试找到一个方向对，使得A的方向和B的对应反方向都空闲
+        local opposite = { front = "back", back = "front", left = "right", right = "left" }
+        for _, dirA in ipairs(freeA) do
+            local dirB = opposite[dirA]
+            if mapB[dirB] == "" then
+                mapA[dirA] = idB
+                mapB[dirB] = idA
+                changes = changes + 2
+                return true
+            end
+        end
+        return false
+    end
+    -- 确保所有地图连通：按顺序链接相邻地图
+    for i = 1, #mapNames - 1 do
+        linkMaps(mapNames[i], mapNames[i + 1])
+    end
+    -- 额外随机连接：增加一些岔路和环路，让地图网络更丰富
+    local extraLinks = math.max(1, math.floor(#mapNames * 0.3))
+    for _ = 1, extraLinks do
+        local a = math.random(1, #mapNames)
+        local b = math.random(1, #mapNames)
+        if a ~= b then
+            linkMaps(mapNames[a], mapNames[b])
         end
     end
 
@@ -5511,11 +5771,73 @@ local function RenderGenerator()
     -- 各类型生成区块
     local mapSection = CreateGenSection("地图", "maps", "5", GenerateMaps)
 
-    -- === 怪物生成（含类型选择） ===
+    -- === 怪物生成（含类型选择 + 自定义区间） ===
     local monsterNumField = UI.TextField { value = "10", placeholder = "数量", width = 60, height = 30, fontSize = 13 }
     genFields["monsters"] = monsterNumField
     local monsterResultLabel = UI.Label { text = "", fontSize = 11, fontColor = { 100, 255, 150, 255 }, height = 16 }
     local selectedMonsterType = 1  -- 默认普通怪
+
+    -- 三组区间输入框：战斗属性 / 经验 / 金币
+    -- HP/ATK/DEF/EXP 独立区间输入框
+    local monsterMinHpField = UI.TextField { value = MONSTER_TYPES[1].min_hp, placeholder = "HP下限", width = 90, height = 24, fontSize = 10 }
+    local monsterMaxHpField = UI.TextField { value = MONSTER_TYPES[1].max_hp, placeholder = "HP上限", width = 90, height = 24, fontSize = 10 }
+    local monsterMinAtkField = UI.TextField { value = MONSTER_TYPES[1].min_atk, placeholder = "攻击下限", width = 90, height = 24, fontSize = 10 }
+    local monsterMaxAtkField = UI.TextField { value = MONSTER_TYPES[1].max_atk, placeholder = "攻击上限", width = 90, height = 24, fontSize = 10 }
+    local monsterMinDefField = UI.TextField { value = MONSTER_TYPES[1].min_def, placeholder = "防御下限", width = 90, height = 24, fontSize = 10 }
+    local monsterMaxDefField = UI.TextField { value = MONSTER_TYPES[1].max_def, placeholder = "防御上限", width = 90, height = 24, fontSize = 10 }
+    local monsterMinExpField = UI.TextField { value = MONSTER_TYPES[1].min_exp, placeholder = "经验下限", width = 90, height = 24, fontSize = 10 }
+    local monsterMaxExpField = UI.TextField { value = MONSTER_TYPES[1].max_exp, placeholder = "经验上限", width = 90, height = 24, fontSize = 10 }
+    local monsterRangeLabel = UI.Label { text = "当前类型: " .. MONSTER_TYPES[1].name, fontSize = 11, fontColor = { 180, 180, 255, 255 } }
+
+    -- 货币区间输入框（动态，按 currencies 列表生成）
+    local currencyFields = {} -- { [货币名] = { minField, maxField } }
+    local currencyFieldPanels = {} -- UI panels for each currency row
+    local currencies = DataManager.gameConfig["currencies"] or { "金币" }
+
+    local function buildCurrencyFields(mtype)
+        currencyFields = {}
+        currencyFieldPanels = {}
+        for _, cName in ipairs(currencies) do
+            local cRange = (mtype.currency_ranges and mtype.currency_ranges[cName]) or { min = "0", max = "0" }
+            local minF = UI.TextField { value = cRange.min, placeholder = cName .. "下限", width = 90, height = 24, fontSize = 10 }
+            local maxF = UI.TextField { value = cRange.max, placeholder = cName .. "上限", width = 90, height = 24, fontSize = 10 }
+            currencyFields[cName] = { minField = minF, maxField = maxF }
+            table.insert(currencyFieldPanels, UI.Panel {
+                flexDirection = "row", alignItems = "center", gap = 4, marginTop = 3,
+                flexWrap = "wrap",
+                children = {
+                    UI.Label { text = cName .. ":", fontSize = 10, fontColor = { 200, 200, 220, 255 }, width = 60 },
+                    minF,
+                    UI.Label { text = "~", fontSize = 10, fontColor = { 200, 200, 220, 255 } },
+                    maxF,
+                },
+            })
+        end
+    end
+    buildCurrencyFields(MONSTER_TYPES[1])
+
+    -- 刷新区间显示
+    local function refreshMonsterRangeFields()
+        local mtype = MONSTER_TYPES[selectedMonsterType]
+        monsterMinHpField:SetValue(mtype.min_hp or "10")
+        monsterMaxHpField:SetValue(mtype.max_hp or "2000")
+        monsterMinAtkField:SetValue(mtype.min_atk or "5")
+        monsterMaxAtkField:SetValue(mtype.max_atk or "1000")
+        monsterMinDefField:SetValue(mtype.min_def or "3")
+        monsterMaxDefField:SetValue(mtype.max_def or "800")
+        monsterMinExpField:SetValue(mtype.min_exp or "5")
+        monsterMaxExpField:SetValue(mtype.max_exp or "500")
+        -- 刷新货币字段
+        for _, cName in ipairs(currencies) do
+            local cRange = (mtype.currency_ranges and mtype.currency_ranges[cName]) or { min = "0", max = "0" }
+            if currencyFields[cName] then
+                currencyFields[cName].minField:SetValue(cRange.min)
+                currencyFields[cName].maxField:SetValue(cRange.max)
+            end
+        end
+        monsterRangeLabel:SetText("当前类型: " .. mtype.name)
+    end
+
     local monsterTypeBtns = {}
     local function refreshMonsterTypeBtns()
         for idx, btn in ipairs(monsterTypeBtns) do
@@ -5530,11 +5852,92 @@ local function RenderGenerator()
             onClick = function()
                 selectedMonsterType = idx
                 refreshMonsterTypeBtns()
+                refreshMonsterRangeFields()
             end,
         }
         monsterTypeBtns[idx] = btn
         table.insert(monsterTypeBtnChildren, btn)
     end
+
+    --- 验证并保存怪物区间
+    local function saveMonsterRanges()
+        local function trimVal(field)
+            return ((field:GetValue() or ""):match("^%s*(.-)%s*$")) or ""
+        end
+        local newMinHp = trimVal(monsterMinHpField)
+        local newMaxHp = trimVal(monsterMaxHpField)
+        local newMinAtk = trimVal(monsterMinAtkField)
+        local newMaxAtk = trimVal(monsterMaxAtkField)
+        local newMinDef = trimVal(monsterMinDefField)
+        local newMaxDef = trimVal(monsterMaxDefField)
+        local newMinExp = trimVal(monsterMinExpField)
+        local newMaxExp = trimVal(monsterMaxExpField)
+        -- 验证基础字段
+        local baseFields = { newMinHp, newMaxHp, newMinAtk, newMaxAtk, newMinDef, newMaxDef, newMinExp, newMaxExp }
+        for _, v in ipairs(baseFields) do
+            if v == "" then
+                monsterResultLabel:SetText("所有区间字段不能为空")
+                return
+            end
+            if not v:match("^%d+$") then
+                monsterResultLabel:SetText("区间必须为正整数")
+                return
+            end
+        end
+        -- 验证下限<=上限
+        if BigNum.gt(newMinHp, newMaxHp) then
+            monsterResultLabel:SetText("生命: 下限不能大于上限")
+            return
+        end
+        if BigNum.gt(newMinAtk, newMaxAtk) then
+            monsterResultLabel:SetText("攻击: 下限不能大于上限")
+            return
+        end
+        if BigNum.gt(newMinDef, newMaxDef) then
+            monsterResultLabel:SetText("防御: 下限不能大于上限")
+            return
+        end
+        if BigNum.gt(newMinExp, newMaxExp) then
+            monsterResultLabel:SetText("经验: 下限不能大于上限")
+            return
+        end
+        -- 验证货币字段
+        local newCurrRanges = {}
+        for _, cName in ipairs(currencies) do
+            local cf = currencyFields[cName]
+            if cf then
+                local cMin = trimVal(cf.minField)
+                local cMax = trimVal(cf.maxField)
+                if cMin == "" or cMax == "" then
+                    monsterResultLabel:SetText(cName .. ": 区间不能为空")
+                    return
+                end
+                if not cMin:match("^%d+$") or not cMax:match("^%d+$") then
+                    monsterResultLabel:SetText(cName .. ": 区间必须为正整数")
+                    return
+                end
+                if BigNum.gt(cMin, cMax) then
+                    monsterResultLabel:SetText(cName .. ": 下限不能大于上限")
+                    return
+                end
+                newCurrRanges[cName] = { min = cMin, max = cMax }
+            end
+        end
+        local mt = MONSTER_TYPES[selectedMonsterType]
+        mt.min_hp = newMinHp
+        mt.max_hp = newMaxHp
+        mt.min_atk = newMinAtk
+        mt.max_atk = newMaxAtk
+        mt.min_def = newMinDef
+        mt.max_def = newMaxDef
+        mt.min_exp = newMinExp
+        mt.max_exp = newMaxExp
+        mt.currency_ranges = newCurrRanges
+        DataManager.gameConfig["monster_gen"] = MONSTER_TYPES
+        SaveCategoryToCloud("game_config")
+        monsterResultLabel:SetText(mt.name .. " 所有区间已保存")
+    end
+
     local monsterSection = UI.Panel {
         width = "100%",
         flexDirection = "column",
@@ -5557,6 +5960,61 @@ local function RenderGenerator()
                     for _, btn in ipairs(monsterTypeBtnChildren) do table.insert(c, btn) end
                     return c
                 end)(),
+            },
+            -- 自定义区间编辑
+            monsterRangeLabel,
+            -- 生命区间
+            UI.Panel {
+                flexDirection = "row", alignItems = "center", gap = 4, marginTop = 4,
+                flexWrap = "wrap",
+                children = {
+                    UI.Label { text = "生命:", fontSize = 10, fontColor = { 200, 200, 220, 255 }, width = 60 },
+                    monsterMinHpField,
+                    UI.Label { text = "~", fontSize = 10, fontColor = { 200, 200, 220, 255 } },
+                    monsterMaxHpField,
+                },
+            },
+            -- 攻击区间
+            UI.Panel {
+                flexDirection = "row", alignItems = "center", gap = 4, marginTop = 3,
+                flexWrap = "wrap",
+                children = {
+                    UI.Label { text = "攻击:", fontSize = 10, fontColor = { 200, 200, 220, 255 }, width = 60 },
+                    monsterMinAtkField,
+                    UI.Label { text = "~", fontSize = 10, fontColor = { 200, 200, 220, 255 } },
+                    monsterMaxAtkField,
+                },
+            },
+            -- 防御区间
+            UI.Panel {
+                flexDirection = "row", alignItems = "center", gap = 4, marginTop = 3,
+                flexWrap = "wrap",
+                children = {
+                    UI.Label { text = "防御:", fontSize = 10, fontColor = { 200, 200, 220, 255 }, width = 60 },
+                    monsterMinDefField,
+                    UI.Label { text = "~", fontSize = 10, fontColor = { 200, 200, 220, 255 } },
+                    monsterMaxDefField,
+                },
+            },
+            -- 经验区间
+            UI.Panel {
+                flexDirection = "row", alignItems = "center", gap = 4, marginTop = 3,
+                flexWrap = "wrap",
+                children = {
+                    UI.Label { text = "经验:", fontSize = 10, fontColor = { 200, 200, 220, 255 }, width = 60 },
+                    monsterMinExpField,
+                    UI.Label { text = "~", fontSize = 10, fontColor = { 200, 200, 220, 255 } },
+                    monsterMaxExpField,
+                },
+            },
+            -- 货币区间（动态，按配置的货币列表生成）
+            UI.Panel {
+                flexDirection = "column", marginTop = 3, marginBottom = 4, width = "100%",
+                children = currencyFieldPanels,
+            },
+            UI.Button {
+                text = "保存区间", variant = "secondary", width = 80, height = 26, fontSize = 11, marginBottom = 6,
+                onClick = saveMonsterRanges,
             },
             UI.Panel {
                 flexDirection = "row", alignItems = "center", gap = 8,
@@ -5644,6 +6102,10 @@ local function RenderGenerator()
         table.insert(equipQualChildren, btn)
     end
 
+    -- 自定义套装输入
+    local setNameField = UI.TextField { value = "", placeholder = "套装前缀名", width = 100, height = 28, fontSize = 12 }
+    local setResultLabel = UI.Label { text = "", fontSize = 11, fontColor = { 100, 255, 150, 255 }, height = 16 }
+
     local equipSection = UI.Panel {
         width = "100%", flexDirection = "column",
         backgroundColor = { 25, 20, 45, 200 }, borderRadius = 8, padding = 12, marginBottom = 8,
@@ -5657,7 +6119,7 @@ local function RenderGenerator()
                 UI.Label { text = "品质", fontSize = 12, fontColor = { 180, 180, 200, 255 }, width = 40 },
                 UI.Panel { flexDirection = "row", flexWrap = "wrap", gap = 3, children = equipQualChildren },
             }},
-            UI.Panel { flexDirection = "row", alignItems = "center", gap = 8, children = {
+            UI.Panel { flexDirection = "row", alignItems = "center", gap = 8, marginBottom = 6, children = {
                 UI.Label { text = "一键生成", fontSize = 12, fontColor = { 200, 200, 220, 255 } },
                 equipNumField,
                 UI.Label { text = "个装备", fontSize = 12, fontColor = { 200, 200, 220, 255 } },
@@ -5681,6 +6143,65 @@ local function RenderGenerator()
                 },
             }},
             equipResultLabel,
+            -- 自定义套装区域
+            UI.Panel { flexDirection = "row", alignItems = "center", gap = 6, marginTop = 6, children = {
+                UI.Label { text = "套装前缀", fontSize = 12, fontColor = { 180, 180, 200, 255 } },
+                setNameField,
+                UI.Button { text = "生成套装", variant = "primary", width = 80, height = 28, fontSize = 11,
+                    onClick = function()
+                        local prefix = setNameField:GetValue() or ""
+                        if prefix == "" then setResultLabel:SetText("请输入套装前缀名"); return end
+                        -- 从选中的品质中随机取一个作为套装品质
+                        local selQuals = {}
+                        for _, q in ipairs(EQUIP_QUALITIES) do
+                            if equipQualSelected[q] then table.insert(selQuals, q) end
+                        end
+                        if #selQuals == 0 then selQuals = { "橙色" } end
+                        local quality = selQuals[math.random(1, #selQuals)]
+                        local range = EQUIP_QUALITY_RANGES[quality]
+                        local generated = 0
+                        -- 为每个选中的部位生成一件装备
+                        local selSlots = {}
+                        for _, s in ipairs(EQUIP_SLOTS) do
+                            if equipSlotSelected[s] then table.insert(selSlots, s) end
+                        end
+                        if #selSlots == 0 then for _, s in ipairs(EQUIP_SLOTS) do table.insert(selSlots, s) end end
+                        for _, slotCN in ipairs(selSlots) do
+                            local slot = EQUIP_SLOT_MAP[slotCN] or "weapon"
+                            local suffixTable = GEN_NAMES["equip_" .. slot] or GEN_NAMES.equip_weapon
+                            local suffix = RandPick(suffixTable)
+                            local name = prefix .. suffix
+                            if DataManager.equipment[name] then name = name .. "_" .. tostring(generated + 1) end
+                            local baseVal = BigNumRandRange(range.min, range.max)
+                            local subMax = BigNum.div(BigNum.add(range.min, range.max), "3")
+                            if BigNum.gt(range.min, subMax) then subMax = range.min end
+                            local subVal = BigNumRandRange(range.min, subMax)
+                            local atkVal, defVal, hpVal
+                            if slot == "weapon" or slot == "artifact" or slot == "ring" then
+                                atkVal = baseVal; defVal = subVal; hpVal = BigNumRandRange(range.min, subMax)
+                            elseif slot == "armor" or slot == "helmet" or slot == "bracer" or slot == "shield" then
+                                defVal = baseVal; atkVal = subVal; hpVal = BigNumRandRange(range.min, subMax)
+                            else
+                                hpVal = baseVal; atkVal = subVal; defVal = BigNumRandRange(range.min, subMax)
+                            end
+                            local lvReq = tostring(math.random(1, 100))
+                            local price = BigNum.mul(baseVal, tostring(math.random(2, 5)))
+                            local sell = BigNum.div(price, "3")
+                            DataManager.equipment[name] = {
+                                name = name, slot = slotCN, quality = quality,
+                                desc = prefix .. "套装之" .. name .. "，" .. quality .. "品质",
+                                atk = atkVal, def = defVal, hp = hpVal,
+                                level_req = lvReq, price_buy = price, price_sell = sell,
+                            }
+                            generated = generated + 1
+                        end
+                        SaveCategoryToCloud("equipment")
+                        setResultLabel:SetText("已生成[" .. prefix .. "]套装 " .. generated .. " 件")
+                        ShowMsg("套装生成完成: " .. prefix .. " 套装 " .. generated .. " 件")
+                    end,
+                },
+            }},
+            setResultLabel,
         },
     }
 
@@ -5719,6 +6240,10 @@ local function RenderGenerator()
     -- 限时输入框（选中限时类相关类型时可用）
     local itemDurationField = UI.TextField { value = "0", placeholder = "分(0=永久)", width = 80, height = 28, fontSize = 12 }
 
+    -- 自定义倍率输入框
+    local customMultField = UI.TextField { value = "10", placeholder = "倍率", width = 60, height = 28, fontSize = 12 }
+    local customMultResultLabel = UI.Label { text = "", fontSize = 11, fontColor = { 100, 255, 150, 255 }, height = 16 }
+
     local itemSection = UI.Panel {
         width = "100%", flexDirection = "column",
         backgroundColor = { 25, 20, 45, 200 }, borderRadius = 8, padding = 12, marginBottom = 8,
@@ -5733,7 +6258,7 @@ local function RenderGenerator()
                 itemDurationField,
                 UI.Label { text = "分钟 (0=永久)", fontSize = 10, fontColor = { 140, 140, 160, 255 } },
             }},
-            UI.Panel { flexDirection = "row", alignItems = "center", gap = 8, children = {
+            UI.Panel { flexDirection = "row", alignItems = "center", gap = 8, marginBottom = 6, children = {
                 UI.Label { text = "一键生成", fontSize = 12, fontColor = { 200, 200, 220, 255 } },
                 itemNumField,
                 UI.Label { text = "个道具", fontSize = 12, fontColor = { 200, 200, 220, 255 } },
@@ -5754,6 +6279,55 @@ local function RenderGenerator()
                 },
             }},
             itemResultLabel,
+            -- 自定义倍率区域
+            UI.Panel { flexDirection = "row", alignItems = "center", gap = 6, marginTop = 6, children = {
+                UI.Label { text = "自定义倍率", fontSize = 12, fontColor = { 180, 180, 200, 255 } },
+                customMultField,
+                UI.Label { text = "倍", fontSize = 10, fontColor = { 140, 140, 160, 255 } },
+                UI.Button { text = "生成倍率卡", variant = "primary", width = 80, height = 28, fontSize = 11,
+                    onClick = function()
+                        local mult = tonumber(customMultField:GetValue()) or 0
+                        if mult <= 0 then customMultResultLabel:SetText("请输入有效倍率"); return end
+                        local dur = tonumber(itemDurationField:GetValue()) or 0
+                        local multStr = tostring(math.floor(mult))
+                        local generated = 0
+                        -- 生成经验倍率卡
+                        local expName
+                        if dur == 0 then
+                            expName = multStr .. "倍经验卡[永久]"
+                        else
+                            expName = multStr .. "倍经验卡[" .. dur .. "分钟]"
+                        end
+                        if DataManager.items[expName] then expName = expName .. "_" .. os.time() end
+                        DataManager.items[expName] = {
+                            name = expName, type = "经验倍率",
+                            desc = string.format("使用后经验获取提升%d倍持续一段时间", mult),
+                            effect = "exp_mult", value = multStr,
+                            duration = (dur > 0) and tostring(dur) or nil,
+                        }
+                        generated = generated + 1
+                        -- 生成货币倍率卡
+                        local goldName
+                        if dur == 0 then
+                            goldName = multStr .. "倍货币卡[永久]"
+                        else
+                            goldName = multStr .. "倍货币卡[" .. dur .. "分钟]"
+                        end
+                        if DataManager.items[goldName] then goldName = goldName .. "_" .. os.time() end
+                        DataManager.items[goldName] = {
+                            name = goldName, type = "货币倍率",
+                            desc = string.format("使用后金币获取提升%d倍持续一段时间", mult),
+                            effect = "gold_mult", value = multStr,
+                            duration = (dur > 0) and tostring(dur) or nil,
+                        }
+                        generated = generated + 1
+                        SaveCategoryToCloud("items")
+                        customMultResultLabel:SetText("已生成" .. multStr .. "倍经验卡+" .. multStr .. "倍货币卡")
+                        ShowMsg("倍率卡生成完成: " .. generated .. " 个")
+                    end,
+                },
+            }},
+            customMultResultLabel,
         },
     }
     local dungeonSection = CreateGenSection("副本", "dungeons", "5", GenerateDungeons)

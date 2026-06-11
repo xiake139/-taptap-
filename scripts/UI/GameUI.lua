@@ -759,9 +759,13 @@ function GameUI.RenderLeaderboardPanel()
     end)
 end
 
+--- 当前排行榜选中的数据源（用于自动刷新）
+GameUI.currentLeaderboardSource = nil
+
 --- 显示某个排行榜详情
 ---@param source string 数据来源字段名（等级/攻击力/防御力/生命上限/金币）
 function GameUI.ShowLeaderboardDetail(source)
+    GameUI.currentLeaderboardSource = source
     local existing = mainContent_:FindById("lb_content")
     if not existing then return end
     existing:ClearChildren()
@@ -1194,42 +1198,98 @@ function GameUI.CheckLevelUp()
     local player = DataManager.playerData
     if not player then return end
 
-    local level = tostring(player.status.level or "1")
+    local level = tonumber(player.status.level) or 1
     local exp = BigNum.new(player.status.exp or "0")
-    local needExp = DataManager.GetExpForLevel(level)
     local maxLevel = DataManager.GetMaxLevel()
 
-    while BigNum.gte(exp, needExp) do
-        -- 最高等级限制
-        if tonumber(level) >= maxLevel then
-            GameUI.AddLog("已达到最高等级 " .. maxLevel .. "，无法继续提升")
-            break
-        end
-
-        exp = BigNum.sub(exp, needExp)
-        level = BigNum.add(level, "1")
-
-        -- 提升属性
-        local config = DataManager.gameConfig["level_up"] or {}
-        local hpAdd = tostring(config.hp_per_level or "20")
-        local mpAdd = tostring(config.mp_per_level or "10")
-        local atkAdd = tostring(config.atk_per_level or "3")
-        local defAdd = tostring(config.def_per_level or "2")
-
-        player.status.max_hp = BigNum.add(player.status.max_hp or "100", hpAdd)
-        player.status.hp = player.status.max_hp
-        player.status.max_mp = BigNum.add(player.status.max_mp or "50", mpAdd)
-        player.status.mp = player.status.max_mp
-        player.status.atk = BigNum.add(player.status.atk or "5", atkAdd)
-        player.status.def = BigNum.add(player.status.def or "3", defAdd)
-
-        GameUI.AddLog("恭喜！等级提升至 " .. level)
-
-        needExp = DataManager.GetExpForLevel(level)
+    -- 已达到最高等级
+    if level >= maxLevel then
+        player.status.exp = tostring(exp)
+        return
     end
 
-    player.status.level = level
-    player.status.exp = exp
+    local needExp = DataManager.GetExpForLevel(tostring(level))
+
+    -- 快速判断：经验不够升级则直接返回
+    if BigNum.lt(exp, needExp) then
+        player.status.exp = tostring(exp)
+        return
+    end
+
+    -- === O(log n) 精确升级：闭合求和公式 + 二分搜索 ===
+    -- 经验公式: base_exp * level^factor (factor为整数1/2/3)
+    -- 闭合求和: GetTotalExpForRange 使用 Faulhaber 公式 O(1) 计算任意区间经验和
+    -- 二分搜索: O(log(maxLevel)) 次闭合求和即可精确定位目标等级
+
+    local startLevel = level
+
+    -- 二分搜索：找到最大的 targetLevel 使得 totalExp(startLevel..targetLevel) <= exp
+    local lo = startLevel + 1
+    local hi = maxLevel
+
+    while lo < hi do
+        local mid = math.floor((lo + hi + 1) / 2)
+        local cost = DataManager.GetTotalExpForRange(startLevel, mid)
+        if BigNum.gte(exp, cost) then
+            lo = mid
+        else
+            hi = mid - 1
+        end
+    end
+
+    -- lo 现在是能升到的最高等级
+    local finalLevel = lo
+    local totalCost = DataManager.GetTotalExpForRange(startLevel, finalLevel)
+
+    -- 检查是否真的能升级（防御性判断）
+    if BigNum.lt(exp, totalCost) then
+        -- 回退一级
+        finalLevel = finalLevel - 1
+        if finalLevel <= startLevel then
+            player.status.exp = tostring(exp)
+            return
+        end
+        totalCost = DataManager.GetTotalExpForRange(startLevel, finalLevel)
+    end
+
+    -- 扣除经验
+    local expRemaining = BigNum.sub(exp, totalCost)
+
+    -- 没有升级
+    if finalLevel <= startLevel then
+        player.status.exp = tostring(expRemaining)
+        return
+    end
+
+    if finalLevel > maxLevel then
+        finalLevel = maxLevel
+    end
+
+    local levelsGained = finalLevel - startLevel
+    local config = DataManager.gameConfig["level_up"] or {}
+
+    -- 批量计算属性增量
+    local hpPerLv = tonumber(config.hp_per_level) or 20
+    local mpPerLv = tonumber(config.mp_per_level) or 10
+    local atkPerLv = tonumber(config.atk_per_level) or 3
+    local defPerLv = tonumber(config.def_per_level) or 2
+
+    local totalHpAdd = tostring(hpPerLv * levelsGained)
+    local totalMpAdd = tostring(mpPerLv * levelsGained)
+    local totalAtkAdd = tostring(atkPerLv * levelsGained)
+    local totalDefAdd = tostring(defPerLv * levelsGained)
+
+    player.status.max_hp = BigNum.add(player.status.max_hp or "100", totalHpAdd)
+    player.status.hp = player.status.max_hp
+    player.status.max_mp = BigNum.add(player.status.max_mp or "50", totalMpAdd)
+    player.status.mp = player.status.max_mp
+    player.status.atk = BigNum.add(player.status.atk or "5", totalAtkAdd)
+    player.status.def = BigNum.add(player.status.def or "3", totalDefAdd)
+
+    player.status.level = tostring(finalLevel)
+    player.status.exp = tostring(expRemaining)
+
+    GameUI.AddLog("恭喜！等级提升至 " .. finalLevel .. "（连升 " .. levelsGained .. " 级）")
 end
 
 --- ESC 键处理

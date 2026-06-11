@@ -73,6 +73,8 @@ end
 
 local buffCheckTimer_ = 0
 local statusRefreshTimer_ = 0
+local leaderboardRefreshTimer_ = 0
+local LEADERBOARD_REFRESH_INTERVAL = 30  -- 排行榜每30秒自动刷新
 function HandleUpdate(eventType, eventData)
     local dt = eventData["TimeStep"]:GetFloat()
     local GameUI = require("UI.GameUI")
@@ -93,6 +95,19 @@ function HandleUpdate(eventType, eventData)
         end
     else
         statusRefreshTimer_ = 0
+    end
+    -- 排行榜面板打开时自动定时刷新
+    if GameUI.currentPanel == "leaderboard" then
+        leaderboardRefreshTimer_ = leaderboardRefreshTimer_ + dt
+        if leaderboardRefreshTimer_ >= LEADERBOARD_REFRESH_INTERVAL then
+            leaderboardRefreshTimer_ = 0
+            DataManager.SyncLeaderboardScores(function()
+                local src = GameUI.currentLeaderboardSource or "等级"
+                GameUI.ShowLeaderboardDetail(src)
+            end)
+        end
+    else
+        leaderboardRefreshTimer_ = 0
     end
 end
 

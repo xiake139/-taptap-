@@ -133,7 +133,7 @@ local function ParseGameConfig(sections)
     if lvlSec then
         config["level_up"] = {
             base_exp = lvlSec["基础经验"] or "20",
-            exp_factor = tonumber(lvlSec["经验系数"]) or 1.5,
+            exp_factor = tonumber(lvlSec["经验系数"]) or 2,
             hp_per_level = lvlSec["每级生命"] or "20",
             mp_per_level = lvlSec["每级法力"] or "10",
             atk_per_level = lvlSec["每级攻击"] or "3",
@@ -158,6 +158,59 @@ local function ParseGameConfig(sections)
         config["currencies"] = list
     else
         config["currencies"] = { "金币" }
+    end
+    -- 怪物生成区间配置
+    local monGenSec = sections["怪物生成配置"]
+    if monGenSec then
+        local types = {}
+        local count = tonumber(monGenSec["类型数量"]) or 0
+        for i = 1, count do
+            local name = monGenSec["类型" .. i .. "_名称"]
+            if name and name ~= "" then
+                -- 兼容旧格式（单一 下限/上限）
+                local oldMin = monGenSec["类型" .. i .. "_下限"] or "10"
+                local oldMax = monGenSec["类型" .. i .. "_上限"] or "2000"
+                -- 新格式：独立 HP/ATK/DEF 区间
+                local entry = {
+                    name = name,
+                    min_hp = monGenSec["类型" .. i .. "_HP下限"] or oldMin,
+                    max_hp = monGenSec["类型" .. i .. "_HP上限"] or oldMax,
+                    min_atk = monGenSec["类型" .. i .. "_攻击下限"] or oldMin,
+                    max_atk = monGenSec["类型" .. i .. "_攻击上限"] or oldMax,
+                    min_def = monGenSec["类型" .. i .. "_防御下限"] or oldMin,
+                    max_def = monGenSec["类型" .. i .. "_防御上限"] or oldMax,
+                    min_exp = monGenSec["类型" .. i .. "_经验下限"] or oldMin,
+                    max_exp = monGenSec["类型" .. i .. "_经验上限"] or oldMax,
+                    desc = monGenSec["类型" .. i .. "_描述"] or "",
+                    -- 保留旧字段供兼容
+                    min = oldMin,
+                    max = oldMax,
+                }
+                -- 货币区间（多货币支持）
+                local currCount = tonumber(monGenSec["类型" .. i .. "_货币数量"]) or 0
+                local currRanges = {}
+                for ci = 1, currCount do
+                    local cName = monGenSec["类型" .. i .. "_货币" .. ci .. "_名称"]
+                    if cName and cName ~= "" then
+                        currRanges[cName] = {
+                            min = monGenSec["类型" .. i .. "_货币" .. ci .. "_下限"] or "0",
+                            max = monGenSec["类型" .. i .. "_货币" .. ci .. "_上限"] or "0",
+                        }
+                    end
+                end
+                -- 兼容旧金币字段
+                if currCount == 0 then
+                    local oldGoldMin = monGenSec["类型" .. i .. "_金币下限"] or oldMin
+                    local oldGoldMax = monGenSec["类型" .. i .. "_金币上限"] or oldMax
+                    currRanges["金币"] = { min = oldGoldMin, max = oldGoldMax }
+                end
+                entry.currency_ranges = currRanges
+                table.insert(types, entry)
+            end
+        end
+        if #types > 0 then
+            config["monster_gen"] = types
+        end
     end
     return config
 end
@@ -222,6 +275,22 @@ local function ParseMonsters(sections)
             gold = data["金币"] or "2",
             drops = data["掉落"] or "",
         }
+        -- 解析多货币掉落
+        local currCount = tonumber(data["货币数量"]) or 0
+        if currCount > 0 then
+            local currDrops = {}
+            for ci = 1, currCount do
+                local cName = data["货币" .. ci .. "_名称"]
+                local cVal = data["货币" .. ci .. "_数量"] or "0"
+                if cName and cName ~= "" then
+                    currDrops[cName] = cVal
+                end
+            end
+            entry.currency_drops = currDrops
+        else
+            -- 向后兼容：只有金币字段时，构建 currency_drops
+            entry.currency_drops = { ["金币"] = entry.gold }
+        end
         monsters[sectionName] = entry
     end
     return monsters
@@ -958,12 +1027,26 @@ function DataManager.PlayerDataToFiles(playerData)
         battle_soul_exp = "战魂经验",
     }
     for k, v in pairs(playerData.status) do
-        local zhKey = statusMap[k] or k
-        -- 数值字段用 NumFormat.Int 避免科学计数法
-        if type(v) == "number" then
-            statusSections["角色属性"][zhKey] = NumFormat.Int(v)
+        if k == "currencies" then
+            -- currencies 是 table，单独序列化为 [自定义货币] section
+        elseif type(v) == "table" then
+            -- 跳过其他 table 类型字段，避免 tostring 产生垃圾
         else
-            statusSections["角色属性"][zhKey] = tostring(v)
+            local zhKey = statusMap[k] or k
+            -- 数值字段用 NumFormat.Int 避免科学计数法
+            if type(v) == "number" then
+                statusSections["角色属性"][zhKey] = NumFormat.Int(v)
+            else
+                statusSections["角色属性"][zhKey] = tostring(v)
+            end
+        end
+    end
+    -- 自定义货币序列化为独立 section
+    local currencies = playerData.status.currencies
+    if currencies and type(currencies) == "table" then
+        statusSections["自定义货币"] = {}
+        for name, amount in pairs(currencies) do
+            statusSections["自定义货币"][name] = tostring(amount)
         end
     end
     files["状态数据.ini"] = IniParser.Serialize(statusSections)
@@ -1115,6 +1198,16 @@ function DataManager.FilesToPlayerData(fileMap)
                 local internalKey = statusReverseMap[k] or k
                 playerData.status[internalKey] = v
             end
+        end
+        -- 解析 [自定义货币] section
+        local currencySection = sections["自定义货币"]
+        if currencySection then
+            playerData.status.currencies = {}
+            for name, amount in pairs(currencySection) do
+                playerData.status.currencies[name] = tostring(amount)
+            end
+        else
+            playerData.status.currencies = playerData.status.currencies or {}
         end
     end
 
@@ -1611,6 +1704,14 @@ function DataManager.SavePlayerDataForAdmin(username, playerData, callback)
     batch:Save("管理员修改玩家数据", {
         ok = function()
             print("[DataManager] 管理员保存成功: " .. username)
+            -- 自动刷新该玩家的排行榜数据
+            DataManager.RefreshPlayerRankingForAdmin(username, function(rankOk, rankMsg)
+                if rankOk then
+                    print("[DataManager] 排行榜已自动刷新: " .. username)
+                else
+                    print("[DataManager] 排行榜自动刷新失败: " .. tostring(rankMsg))
+                end
+            end)
             if callback then callback(true) end
         end,
         error = function(code, reason)
@@ -2036,6 +2137,217 @@ function DataManager.GetBattleSoulBonus(level)
     }
 end
 
+--- 根据任意 playerData 计算完整战斗属性（基础+装备+buff+境界+战魂）
+--- 用于管理后台刷新排行榜，不依赖当前登录玩家
+---@param playerData table
+---@return string totalAtk, string totalDef, string totalHp
+function DataManager.CalcFullStatsFromPlayerData(playerData)
+    local st = playerData.status or {}
+    local eq = playerData.equip or {}
+
+    -- 基础属性
+    local baseAtk = st.atk or "5"
+    local baseDef = st.def or "3"
+    local baseHp = st.max_hp or "100"
+
+    -- 装备加成
+    local equipAtk, equipDef, equipHp = "0", "0", "0"
+    for _, slot in ipairs({ "weapon", "helmet", "armor", "bracer", "belt", "boots", "cloak", "necklace", "ring", "artifact", "mount", "wings", "shield" }) do
+        local equipName = eq[slot]
+        if equipName and equipName ~= "" then
+            local eData = DataManager.GetEquipment(equipName)
+            if eData then
+                equipAtk = BigNum.add(equipAtk, eData.atk or "0")
+                equipDef = BigNum.add(equipDef, eData.def or "0")
+                equipHp = BigNum.add(equipHp, eData.hp or "0")
+            end
+        end
+    end
+
+    -- Buff 加成（需要检查过期）
+    local buffAtk, buffDef, buffHp = "0", "0", "0"
+    local now = os.time()
+    local buffs = playerData.buffs or {}
+    for _, b in ipairs(buffs) do
+        if b.expires and b.expires > now then
+            if b.type == "攻击" then
+                buffAtk = BigNum.add(buffAtk, tostring(b.value or 0))
+            elseif b.type == "防御" then
+                buffDef = BigNum.add(buffDef, tostring(b.value or 0))
+            elseif b.type == "生命上限" then
+                buffHp = BigNum.add(buffHp, tostring(b.value or 0))
+            end
+        end
+    end
+
+    -- 境界加成（基于 playerData 中的境界数据）
+    local stage = tonumber(st.realm) or 1
+    local layer = tonumber(st.realm_layer) or 1
+    local realmAtk, realmDef, realmHp = "0", "0", "0"
+    for i = 1, stage - 1 do
+        local r = DataManager.realmsByStage[i]
+        if r then
+            local layers = r.layers or 9
+            for _ = 1, layers do
+                realmAtk = BigNum.add(realmAtk, r.atk_bonus or "0")
+                realmDef = BigNum.add(realmDef, r.def_bonus or "0")
+                realmHp = BigNum.add(realmHp, r.hp_bonus or "0")
+            end
+        end
+    end
+    local curRealm = DataManager.realmsByStage[stage]
+    if curRealm then
+        for _ = 1, layer do
+            realmAtk = BigNum.add(realmAtk, curRealm.atk_bonus or "0")
+            realmDef = BigNum.add(realmDef, curRealm.def_bonus or "0")
+            realmHp = BigNum.add(realmHp, curRealm.hp_bonus or "0")
+        end
+    end
+
+    -- 战魂加成
+    local soulBonus = DataManager.GetBattleSoulBonus(st.battle_soul_level)
+
+    -- 汇总
+    local totalAtk = BigNum.add(BigNum.add(BigNum.add(BigNum.add(baseAtk, equipAtk), buffAtk), realmAtk), soulBonus.atk)
+    local totalDef = BigNum.add(BigNum.add(BigNum.add(BigNum.add(baseDef, equipDef), buffDef), realmDef), soulBonus.def)
+    local totalHp = BigNum.add(BigNum.add(BigNum.add(BigNum.add(baseHp, equipHp), buffHp), realmHp), soulBonus.max_hp)
+
+    return totalAtk, totalDef, totalHp
+end
+
+--- 管理员刷新单个玩家的排行榜数据（加载其完整存档后计算属性并写入排行榜）
+---@param username string 玩家账号
+---@param callback fun(success: boolean, msg: string)
+function DataManager.RefreshPlayerRankingForAdmin(username, callback)
+    if not cloud_ then
+        callback(false, "云存储不可用")
+        return
+    end
+
+    DataManager.LoadPlayerDataForAdmin(username, function(playerData)
+        if not playerData then
+            callback(false, "加载玩家数据失败")
+            return
+        end
+
+        local st = playerData.status or {}
+        local charName = st.name or username
+
+        -- 计算完整属性
+        local totalAtk, totalDef, totalHp = DataManager.CalcFullStatsFromPlayerData(playerData)
+
+        -- 读取当前排行榜数据
+        cloud_:Get("系统配置/ranking_data.ini", {
+            ok = function(values)
+                local raw = values["系统配置/ranking_data.ini"]
+                if raw and raw ~= "" then
+                    DataManager.rankingData = IniParser.Parse(raw)
+                end
+
+                -- 更新该玩家的排行榜条目
+                DataManager.rankingData[charName] = {
+                    ["等级"] = NumFormat.Int(st.level or 1),
+                    ["金币"] = NumFormat.Int(st.gold or 0),
+                    ["攻击力"] = NumFormat.Int(totalAtk),
+                    ["防御力"] = NumFormat.Int(totalDef),
+                    ["生命上限"] = NumFormat.Int(totalHp),
+                }
+
+                -- 清理无效条目
+                if DataManager.rankingData["default"] then DataManager.rankingData["default"] = nil end
+                if DataManager.rankingData[""] then DataManager.rankingData[""] = nil end
+
+                local content = IniParser.Serialize(DataManager.rankingData)
+                cloud_:Set("系统配置/ranking_data.ini", content, {
+                    ok = function()
+                        print("[DataManager] 管理员刷新排行榜成功: " .. charName)
+                        callback(true, charName .. " 排行榜已刷新")
+                    end,
+                    error = function(_, r)
+                        callback(false, "写入排行榜失败: " .. tostring(r))
+                    end,
+                })
+            end,
+            error = function(_, r)
+                callback(false, "读取排行榜失败: " .. tostring(r))
+            end,
+        })
+    end)
+end
+
+--- 管理员批量刷新所有玩家排行榜
+---@param callback fun(success: boolean, msg: string)
+function DataManager.RefreshAllPlayersRankingForAdmin(callback)
+    if not cloud_ then
+        callback(false, "云存储不可用")
+        return
+    end
+
+    DataManager.GetAllPlayers(function(players)
+        if #players == 0 then
+            callback(false, "没有玩家数据")
+            return
+        end
+
+        -- 先读取当前排行榜
+        cloud_:Get("系统配置/ranking_data.ini", {
+            ok = function(values)
+                local raw = values["系统配置/ranking_data.ini"]
+                if raw and raw ~= "" then
+                    DataManager.rankingData = IniParser.Parse(raw)
+                end
+
+                local total = #players
+                local done = 0
+                local successCount = 0
+
+                local function checkDone()
+                    done = done + 1
+                    if done >= total then
+                        -- 清理无效条目并保存
+                        if DataManager.rankingData["default"] then DataManager.rankingData["default"] = nil end
+                        if DataManager.rankingData[""] then DataManager.rankingData[""] = nil end
+
+                        local content = IniParser.Serialize(DataManager.rankingData)
+                        cloud_:Set("系统配置/ranking_data.ini", content, {
+                            ok = function()
+                                print("[DataManager] 批量刷新排行榜完成: " .. successCount .. "/" .. total)
+                                callback(true, "已刷新 " .. successCount .. "/" .. total .. " 个玩家")
+                            end,
+                            error = function(_, r)
+                                callback(false, "写入排行榜失败: " .. tostring(r))
+                            end,
+                        })
+                    end
+                end
+
+                for _, info in ipairs(players) do
+                    DataManager.LoadPlayerDataForAdmin(info.username, function(playerData)
+                        if playerData then
+                            local st = playerData.status or {}
+                            local charName = st.name or info.username
+                            local totalAtk, totalDef, totalHp = DataManager.CalcFullStatsFromPlayerData(playerData)
+
+                            DataManager.rankingData[charName] = {
+                                ["等级"] = NumFormat.Int(st.level or 1),
+                                ["金币"] = NumFormat.Int(st.gold or 0),
+                                ["攻击力"] = NumFormat.Int(totalAtk),
+                                ["防御力"] = NumFormat.Int(totalDef),
+                                ["生命上限"] = NumFormat.Int(totalHp),
+                            }
+                            successCount = successCount + 1
+                        end
+                        checkDone()
+                    end)
+                end
+            end,
+            error = function(_, r)
+                callback(false, "读取排行榜失败: " .. tostring(r))
+            end,
+        })
+    end)
+end
+
 --- 获取所有怪物类型列表（从怪物配置中提取去重）
 ---@return table 类型名列表
 function DataManager.GetMonsterTypes()
@@ -2074,17 +2386,67 @@ function DataManager.GetDungeon(dungeonId)
 end
 
 --- 获取升级所需经验（返回大数字符串）
+--- 公式: base_exp * level^exp_factor (exp_factor 必须为整数: 1, 2, 3)
 ---@param level number|string
 ---@return string
 function DataManager.GetExpForLevel(level)
     local config = DataManager.gameConfig["level_up"] or {}
     local baseExp = tostring(config.base_exp or "20")
-    local factor = config.exp_factor or 1.5
+    -- 强制取整（兼容旧配置 1.5 → 2），确保闭合求和公式可用
+    local factor = math.max(1, math.min(3, math.floor((tonumber(config.exp_factor) or 2) + 0.5)))
     local lvl = tonumber(level) or 1
-    -- 用浮点算出倍率，再用 BigNum 乘以 base_exp
-    local multiplier = math.floor(lvl ^ factor)
-    if multiplier < 1 then multiplier = 1 end
-    return BigNum.mul(baseExp, tostring(multiplier))
+    local multiplier = tostring(math.floor(lvl ^ factor))
+    return BigNum.mul(baseExp, multiplier)
+end
+
+--- 闭合公式计算 sum(i^k, i=1..n)，返回 BigNum 字符串
+--- 支持 k=1: n(n+1)/2, k=2: n(n+1)(2n+1)/6, k=3: [n(n+1)/2]^2
+---@param n number 上界（含）
+---@param k number 幂次（1/2/3）
+---@return string BigNum 字符串
+function DataManager.SumOfPowers(n, k)
+    if n <= 0 then return "0" end
+    local sn = tostring(n)
+    local sn1 = tostring(n + 1)
+    if k == 1 then
+        -- n*(n+1)/2
+        local prod = BigNum.mul(sn, sn1)
+        return BigNum.div(prod, "2")
+    elseif k == 2 then
+        -- n*(n+1)*(2n+1)/6
+        local s2n1 = tostring(2 * n + 1)
+        local prod = BigNum.mul(BigNum.mul(sn, sn1), s2n1)
+        return BigNum.div(prod, "6")
+    elseif k == 3 then
+        -- [n*(n+1)/2]^2
+        local half = BigNum.div(BigNum.mul(sn, sn1), "2")
+        return BigNum.mul(half, half)
+    else
+        -- 降级：逐级累加（不应触发，仅保护）
+        local total = "0"
+        for i = 1, n do
+            total = BigNum.add(total, tostring(math.floor(i ^ k)))
+        end
+        return total
+    end
+end
+
+--- 闭合公式计算从 fromLv 升到 toLv 需要的总经验（精确）
+--- = base_exp * sum(i^factor, i=fromLv .. toLv-1)
+--- = base_exp * (SumOfPowers(toLv-1, factor) - SumOfPowers(fromLv-1, factor))
+---@param fromLv number 起始等级
+---@param toLv number 目标等级（不含该级消耗）
+---@return string BigNum 字符串
+function DataManager.GetTotalExpForRange(fromLv, toLv)
+    if toLv <= fromLv then return "0" end
+    local config = DataManager.gameConfig["level_up"] or {}
+    local baseExp = tostring(config.base_exp or "20")
+    -- 强制取整，与 GetExpForLevel 一致
+    local factor = math.max(1, math.min(3, math.floor((tonumber(config.exp_factor) or 2) + 0.5)))
+    local sumHigh = DataManager.SumOfPowers(toLv - 1, factor)
+    local sumLow = DataManager.SumOfPowers(fromLv - 1, factor)
+    local diff = BigNum.sub(sumHigh, sumLow)
+    return BigNum.mul(baseExp, diff)
 end
 
 --- 获取最高等级上限

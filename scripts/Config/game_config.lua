@@ -17,7 +17,7 @@ return {
     },
     ["level_up"] = {
         base_exp = 20,
-        exp_factor = 1.5,
+        exp_factor = 2,
         hp_per_level = 20,
         mp_per_level = 10,
         atk_per_level = 3,

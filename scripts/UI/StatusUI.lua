@@ -9,8 +9,10 @@ local BigNum = require("Utils.BigNum")
 local StatusUI = {}
 
 -- 保留倒计时标签引用，供动态更新
-local expRateLabel_ = nil
-local goldRateLabel_ = nil
+local expPermLabel_ = nil
+local expTempLabel_ = nil
+local goldPermLabel_ = nil
+local goldTempLabel_ = nil
 
 --- 格式化剩余时间
 local function formatRemain(seconds)
@@ -24,22 +26,36 @@ local function formatRemain(seconds)
     end
 end
 
---- 计算倍率显示文字
-local function calcRateStr(player, buffType)
+--- 计算永久倍率显示文字
+local function calcPermRateStr(player, buffType)
     local BagUI = require("UI.BagUI")
-    local rate = BagUI.GetBuffValue(player, buffType)
-    local str = "x" .. rate
-    if player.buffs then
-        local now = os.time()
-        local remain = 0
-        for _, b in ipairs(player.buffs) do
-            if b.type == buffType and b.expires > now then
-                remain = math.max(remain, b.expires - now)
-            end
+    if not player.buffs then return "x0" end
+    -- 永久buff的value相加
+    local total = 0
+    for _, b in ipairs(player.buffs) do
+        if b.type == buffType and BagUI.IsPermanentBuff(b) then
+            total = total + (tonumber(b.value) or 0)
         end
-        if remain > 0 then
-            str = str .. formatRemain(remain)
+    end
+    return "x" .. total
+end
+
+--- 计算有限倍率显示文字（含倒计时）
+local function calcTempRateStr(player, buffType)
+    local BagUI = require("UI.BagUI")
+    if not player.buffs then return "x0" end
+    local now = os.time()
+    local total = 0
+    local maxRemain = 0
+    for _, b in ipairs(player.buffs) do
+        if b.type == buffType and not BagUI.IsPermanentBuff(b) and b.expires > now then
+            total = total + (tonumber(b.value) or 0)
+            maxRemain = math.max(maxRemain, b.expires - now)
         end
+    end
+    local str = "x" .. total
+    if maxRemain > 0 then
+        str = str .. formatRemain(maxRemain)
     end
     return str
 end
@@ -48,11 +64,17 @@ end
 function StatusUI.UpdateTimers()
     local player = DataManager.playerData
     if not player then return end
-    if expRateLabel_ then
-        expRateLabel_:SetText(calcRateStr(player, "经验倍率"))
+    if expPermLabel_ then
+        expPermLabel_:SetText(calcPermRateStr(player, "经验倍率"))
     end
-    if goldRateLabel_ then
-        goldRateLabel_:SetText(calcRateStr(player, "货币倍率"))
+    if expTempLabel_ then
+        expTempLabel_:SetText(calcTempRateStr(player, "经验倍率"))
+    end
+    if goldPermLabel_ then
+        goldPermLabel_:SetText(calcPermRateStr(player, "货币倍率"))
+    end
+    if goldTempLabel_ then
+        goldTempLabel_:SetText(calcTempRateStr(player, "货币倍率"))
     end
 end
 
@@ -104,9 +126,11 @@ function StatusUI.Render(parent)
         s.hp = maxHpTotal
     end
 
-    -- 创建倍率标签（保留引用用于动态更新）
-    expRateLabel_ = UI.Label { text = calcRateStr(player, "经验倍率"), fontSize = 14, fontColor = { 220, 220, 240, 255 } }
-    goldRateLabel_ = UI.Label { text = calcRateStr(player, "货币倍率"), fontSize = 14, fontColor = { 220, 220, 240, 255 } }
+    -- 创建倍率标签（永久/有限分开，保留引用用于动态更新）
+    expPermLabel_ = UI.Label { text = calcPermRateStr(player, "经验倍率"), fontSize = 14, fontColor = { 180, 255, 180, 255 } }
+    expTempLabel_ = UI.Label { text = calcTempRateStr(player, "经验倍率"), fontSize = 14, fontColor = { 255, 220, 150, 255 } }
+    goldPermLabel_ = UI.Label { text = calcPermRateStr(player, "货币倍率"), fontSize = 14, fontColor = { 180, 255, 180, 255 } }
+    goldTempLabel_ = UI.Label { text = calcTempRateStr(player, "货币倍率"), fontSize = 14, fontColor = { 255, 220, 150, 255 } }
 
     -- 构建 children 列表（避免 table.unpack 不在末尾的陷阱）
     local statChildren = {
@@ -127,19 +151,34 @@ function StatusUI.Render(parent)
 
         UI.Panel { width = "100%", height = 1, backgroundColor = { 50, 40, 70, 255 } },
 
-        -- 倍率行用预创建的标签
+        -- 经验倍率：永久/有限分开显示
         UI.Panel {
             flexDirection = "row", width = "100%", justifyContent = "space-between",
             children = {
-                UI.Label { text = "经验倍率", fontSize = 14, fontColor = { 160, 160, 180, 255 } },
-                expRateLabel_,
+                UI.Label { text = "经验倍率(永久)", fontSize = 14, fontColor = { 160, 160, 180, 255 } },
+                expPermLabel_,
             },
         },
         UI.Panel {
             flexDirection = "row", width = "100%", justifyContent = "space-between",
             children = {
-                UI.Label { text = "货币倍率", fontSize = 14, fontColor = { 160, 160, 180, 255 } },
-                goldRateLabel_,
+                UI.Label { text = "经验倍率(有限)", fontSize = 14, fontColor = { 160, 160, 180, 255 } },
+                expTempLabel_,
+            },
+        },
+        -- 货币倍率：永久/有限分开显示
+        UI.Panel {
+            flexDirection = "row", width = "100%", justifyContent = "space-between",
+            children = {
+                UI.Label { text = "货币倍率(永久)", fontSize = 14, fontColor = { 160, 160, 180, 255 } },
+                goldPermLabel_,
+            },
+        },
+        UI.Panel {
+            flexDirection = "row", width = "100%", justifyContent = "space-between",
+            children = {
+                UI.Label { text = "货币倍率(有限)", fontSize = 14, fontColor = { 160, 160, 180, 255 } },
+                goldTempLabel_,
             },
         },
 
