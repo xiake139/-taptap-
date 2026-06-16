@@ -774,7 +774,9 @@ function BagUI.ShowReviveRejectDialog()
         return
     end
 
-    local dialog = UI.Panel {
+    ---@type Widget
+    local dialog = nil
+    dialog = UI.Panel {
         id = "reviveRejectOverlay",
         position = "absolute",
         left = 0, top = 0, right = 0, bottom = 0,
