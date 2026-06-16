@@ -14,6 +14,8 @@ Shared.EVENTS = {
     CLOUD_BATCH_GET_RESULT = "CloudBatchGetResult",
     CLOUD_BATCH_SET = "CloudBatchSet",
     CLOUD_BATCH_SET_RESULT = "CloudBatchSetResult",
+
+
 }
 
 --- 注册所有远程事件（客户端和服务端都必须调用）

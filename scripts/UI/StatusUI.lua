@@ -104,22 +104,19 @@ function StatusUI.Render(parent)
     -- 战魂加成
     local soulBonus = DataManager.GetBattleSoulBonus(s.battle_soul_level)
 
-    -- 攻击/防御总加成文字
-    local atkBonusNum = equipAtk + buffAtk
-    local atkBonusTotal = BigNum.add(BigNum.add(tostring(atkBonusNum), realmAtk), soulBonus.atk)
+    -- 攻击/防御总加成文字（全部使用BigNum避免精度丢失）
+    local atkBonusTotal = BigNum.add(BigNum.add(BigNum.add(tostring(equipAtk), tostring(buffAtk)), realmAtk), soulBonus.atk)
     local atkTotal = BigNum.add(s.atk or "0", atkBonusTotal)
     local atkStr = NumFormat.Short(atkTotal)
     if BigNum.gt(atkBonusTotal, "0") then atkStr = atkStr .. " (+" .. NumFormat.Short(atkBonusTotal) .. ")" end
 
-    local defBonusNum = equipDef + buffDef
-    local defBonusTotal = BigNum.add(BigNum.add(tostring(defBonusNum), realmDef), soulBonus.def)
+    local defBonusTotal = BigNum.add(BigNum.add(BigNum.add(tostring(equipDef), tostring(buffDef)), realmDef), soulBonus.def)
     local defTotal = BigNum.add(s.def or "0", defBonusTotal)
     local defStr = NumFormat.Short(defTotal)
     if BigNum.gt(defBonusTotal, "0") then defStr = defStr .. " (+" .. NumFormat.Short(defBonusTotal) .. ")" end
 
     -- 生命上限总加成
-    local hpBonusNum = equipHp + buffHp
-    local hpBonusTotal = BigNum.add(BigNum.add(tostring(hpBonusNum), realmHp), soulBonus.max_hp)
+    local hpBonusTotal = BigNum.add(BigNum.add(BigNum.add(tostring(equipHp), tostring(buffHp)), realmHp), soulBonus.max_hp)
     local maxHpTotal = BigNum.add(s.max_hp or "100", hpBonusTotal)
     -- 确保当前hp不超过实际上限（兼容旧存档）
     if BigNum.gt(s.hp or "0", maxHpTotal) then

@@ -20,6 +20,10 @@ local monsterAtk_ = "0"
 local monsterDef_ = "0"
 local inCombat_ = false
 
+-- 回合战报（显示在战斗面板内）
+---@type {text: string, color: number[]}[]
+local combatMessages_ = {}
+
 -- 出战宠物战斗状态
 local combatPets_ = {}  -- { {name, atk, def, hp, maxHp, alive} }
 
@@ -46,6 +50,7 @@ function CombatUI.Start(monsterName, parent, onFinish)
     callback_ = onFinish
     monsterName_ = monsterName
     inCombat_ = true
+    combatMessages_ = {}
 
     local mData = DataManager.GetMonster(monsterName)
     if not mData then
@@ -172,7 +177,7 @@ function CombatUI.Render()
                 marginTop = 8,
                 children = {
                     UI.Button { text = "攻击", variant = "danger", width = 80, onClick = function() CombatUI.DoAttack() end },
-                    UI.Button { text = "使用丹药", variant = "success", width = 100, onClick = function() CombatUI.UsePotion() end },
+                    UI.Button { text = "使用道具", variant = "success", width = 100, onClick = function() CombatUI.UsePotion() end },
                     UI.Button { text = "逃跑", variant = "secondary", width = 80, onClick = function() CombatUI.Flee() end },
                 },
             },
@@ -180,6 +185,40 @@ function CombatUI.Render()
 
         },
     })
+end
+
+--- 渲染回合战报面板
+function CombatUI.RenderMessages()
+    if #combatMessages_ == 0 then
+        return UI.Panel { height = 0 }
+    end
+
+    local msgChildren = {}
+    -- 只显示最近6条战报
+    local startIdx = math.max(1, #combatMessages_ - 5)
+    for i = startIdx, #combatMessages_ do
+        local msg = combatMessages_[i]
+        ---@type number[]
+        local c = msg.color or { 200, 200, 200, 255 }
+        table.insert(msgChildren, UI.Label {
+            text = msg.text or "",
+            fontSize = 11,
+            fontColor = c,
+            whiteSpace = "normal",
+        })
+    end
+
+    return UI.Panel {
+        width = "100%",
+        flexDirection = "column",
+        backgroundColor = { 15, 15, 15, 200 },
+        borderRadius = 4,
+        padding = 6,
+        gap = 2,
+        maxHeight = 90,
+        overflow = "scroll",
+        children = msgChildren,
+    }
 end
 
 --- 渲染出战宠物面板
@@ -297,69 +336,159 @@ function CombatUI.DoAttack()
     CombatUI.Render()
 end
 
---- 使用丹药回血
+--- 道具选择弹框引用
+local itemDialog_ = nil
+
+--- 使用道具（弹出选择弹框）
 function CombatUI.UsePotion()
     local player = DataManager.playerData
     if not player then return end
 
-    -- 寻找回血物品
+    -- 收集所有可用的恢复类道具（恢复血量 / 恢复灵力）
+    local usableItems = {}
     for i, item in ipairs(player.bag) do
         local itemData = DataManager.GetItem(item.name)
-        if itemData and itemData.effect == "heal" then
-            local healValue = BigNum.new(itemData.value or "0")
-            local maxHp = CalcPlayerMaxHp()
-            player.status.hp = BigNum.min(BigNum.add(player.status.hp or "0", healValue), maxHp)
-
-            item.count = BigNum.sub(item.count or "1", "1")
-            if BigNum.lte(item.count, "0") then
-                table.remove(player.bag, i)
-            end
-
-            CombatUI.AddCombatLog("使用了" .. item.name .. "，恢复" .. NumFormat.Short(healValue) .. "生命")
-
-            -- 怪物趁机攻击：优先攻击宠物
-            local potionTargetPet = nil
-            for _, pet in ipairs(combatPets_) do
-                if pet.alive then
-                    potionTargetPet = pet
-                    break
+        if itemData and itemData.type then
+            if itemData.type:find("恢复血量") or itemData.type:find("恢复灵力") then
+                if BigNum.gt(item.count or "0", "0") then
+                    table.insert(usableItems, {
+                        index = i,
+                        name = item.name,
+                        count = item.count or "1",
+                        type = itemData.type,
+                        value = itemData.value or "0",
+                        desc = itemData.desc or "",
+                    })
                 end
             end
-
-            if potionTargetPet then
-                local dmg = BigNum.max("1", BigNum.add(BigNum.sub(monsterAtk_, potionTargetPet.def), tostring(math.random(-1, 2))))
-                potionTargetPet.hp = BigNum.sub(potionTargetPet.hp, dmg)
-                CombatUI.AddCombatLog(monsterName_ .. "趁机攻击宠物【" .. potionTargetPet.name .. "】，造成 " .. NumFormat.Short(dmg) .. " 伤害")
-                if BigNum.lte(potionTargetPet.hp, "0") then
-                    potionTargetPet.hp = "0"
-                    potionTargetPet.alive = false
-                    CombatUI.AddCombatLog("宠物【" .. potionTargetPet.name .. "】已阵亡！")
-                end
-            else
-                local StatusUI = require("UI.StatusUI")
-                local BagUI = require("UI.BagUI")
-                local _, eDef, _ = StatusUI.GetEquipBonus()
-                local buffDef = BagUI.GetBuffValue(player, "防御")
-                local _, rDef3, _ = DataManager.GetRealmBonus()
-                local soulBonus3 = DataManager.GetBattleSoulBonus(player.status.battle_soul_level)
-                local playerDef = BigNum.add(BigNum.add(BigNum.add(BigNum.add(player.status.def or "3", tostring(eDef)), tostring(buffDef)), rDef3), soulBonus3.def)
-                local dmg = BigNum.max("1", BigNum.add(BigNum.sub(monsterAtk_, playerDef), tostring(math.random(-1, 2))))
-                player.status.hp = BigNum.sub(BigNum.new(player.status.hp or "100"), dmg)
-                CombatUI.AddCombatLog(monsterName_ .. "趁机攻击，造成 " .. NumFormat.Short(dmg) .. " 伤害")
-
-                if BigNum.lte(player.status.hp, "0") then
-                    player.status.hp = "0"
-                    CombatUI.Defeat()
-                    return
-                end
-            end
-
-            CombatUI.Render()
-            return
         end
     end
 
-    CombatUI.AddCombatLog("没有可用的回复道具！")
+    if #usableItems == 0 then
+        CombatUI.AddCombatLog("没有可用的回复道具！")
+        return
+    end
+
+    -- 弹出选择弹框
+    CombatUI.ShowItemSelectDialog(usableItems)
+end
+
+--- 显示道具选择弹框
+---@param items table[]
+function CombatUI.ShowItemSelectDialog(items)
+    if itemDialog_ then itemDialog_:Remove(); itemDialog_ = nil end
+
+    local itemButtons = {}
+    for _, info in ipairs(items) do
+        local typeLabel = info.type:find("恢复血量") and "回血" or "回灵"
+        local btnText = info.name .. " x" .. BigNum.toShort(info.count) .. "（" .. typeLabel .. " +" .. BigNum.toShort(info.value) .. "）"
+        table.insert(itemButtons, UI.Button {
+            text = btnText,
+            width = "100%",
+            variant = info.type:find("恢复血量") and "danger" or "primary",
+            onClick = function()
+                CombatUI.HideItemSelectDialog()
+                CombatUI.ConsumeItem(info.index, info.name, info.type, info.value)
+            end,
+        })
+    end
+
+    -- 取消按钮
+    table.insert(itemButtons, UI.Button {
+        text = "取 消",
+        width = "100%",
+        variant = "secondary",
+        onClick = function()
+            CombatUI.HideItemSelectDialog()
+        end,
+    })
+
+    itemDialog_ = UI.Panel {
+        id = "combatItemSelectOverlay",
+        position = "absolute",
+        left = 0, top = 0, right = 0, bottom = 0,
+        justifyContent = "center", alignItems = "center",
+        backgroundColor = { 0, 0, 0, 160 },
+        children = {
+            UI.Panel {
+                width = "80%",
+                maxWidth = 300,
+                maxHeight = "70%",
+                padding = 14,
+                backgroundColor = { 25, 20, 45, 245 },
+                borderRadius = 12,
+                borderWidth = 1,
+                borderColor = { 100, 80, 160, 200 },
+                flexDirection = "column",
+                alignItems = "center",
+                gap = 8,
+                onClick = function() end,  -- 阻止穿透
+                children = {
+                    UI.Label { text = "选择使用道具", fontSize = 16, fontColor = { 200, 180, 255, 255 }, textAlign = "center" },
+                    UI.Panel { width = "100%", height = 1, backgroundColor = { 80, 60, 120, 200 } },
+                    UI.Panel {
+                        width = "100%",
+                        flexDirection = "column",
+                        gap = 6,
+                        flexShrink = 1,
+                        overflow = "scroll",
+                        children = itemButtons,
+                    },
+                },
+            },
+        },
+    }
+
+    local GameUI = require("UI.GameUI")
+    local root = GameUI.rootPanel
+    if root then
+        root:AddChild(itemDialog_)
+    end
+end
+
+--- 隐藏道具选择弹框
+function CombatUI.HideItemSelectDialog()
+    if itemDialog_ then
+        itemDialog_:Remove()
+        itemDialog_ = nil
+    end
+end
+
+--- 实际消耗道具并触发怪物反击
+---@param bagIndex number
+---@param itemName string
+---@param itemType string
+---@param itemValue string
+function CombatUI.ConsumeItem(bagIndex, itemName, itemType, itemValue)
+    local player = DataManager.playerData
+    if not player then return end
+
+    local item = player.bag[bagIndex]
+    if not item then
+        CombatUI.AddCombatLog("道具不存在")
+        return
+    end
+
+    -- 使用道具效果
+    if itemType:find("恢复血量") then
+        local healValue = BigNum.new(itemValue)
+        local maxHp = CalcPlayerMaxHp()
+        player.status.hp = BigNum.min(BigNum.add(player.status.hp or "0", healValue), maxHp)
+        CombatUI.AddCombatLog("使用了" .. itemName .. "，恢复" .. NumFormat.Short(healValue) .. "生命")
+    elseif itemType:find("恢复灵力") then
+        local healValue = BigNum.new(itemValue)
+        local maxMp = BigNum.new(player.status.max_mp or "50")
+        player.status.mp = BigNum.min(BigNum.add(player.status.mp or "0", healValue), maxMp)
+        CombatUI.AddCombatLog("使用了" .. itemName .. "，恢复" .. NumFormat.Short(healValue) .. "灵力")
+    end
+
+    -- 消耗数量
+    item.count = BigNum.sub(item.count or "1", "1")
+    if BigNum.lte(item.count, "0") then
+        table.remove(player.bag, bagIndex)
+    end
+
+    CombatUI.Render()
 end
 
 --- 逃跑
@@ -620,10 +749,11 @@ function CombatUI.Defeat()
     local player = DataManager.playerData
     if not player then return end
 
-    -- 死亡惩罚：恢复到满血，扣少量金币（10%）
+    -- 死亡惩罚：扣少量金币（10%），不再自动回血
     local goldLoss = BigNum.div(BigNum.new(player.status.gold or "0"), "10")
     player.status.gold = BigNum.sub(BigNum.new(player.status.gold or "0"), goldLoss)
-    player.status.hp = CalcPlayerMaxHp()
+    -- 血量归零（不自动回满，只有升级才回满）
+    player.status.hp = "0"
 
     if parentRef_ then
         parentRef_:ClearChildren()
@@ -637,7 +767,7 @@ function CombatUI.Defeat()
                 UI.Label { text = "战斗失败...", fontSize = 18, fontColor = { 255, 80, 80, 255 }, textAlign = "center" },
                 UI.Label { text = "你被【" .. monsterName_ .. "】击败了", fontSize = 14, fontColor = { 200, 150, 150, 255 } },
                 UI.Label { text = "损失金币：" .. NumFormat.Short(goldLoss), fontSize = 13, fontColor = { 255, 150, 50, 255 } },
-                UI.Label { text = "你的伤口已恢复", fontSize = 12, fontColor = { 150, 200, 150, 255 } },
+                UI.Label { text = "你已倒下，使用复活石或回城恢复", fontSize = 12, fontColor = { 255, 200, 100, 255 } },
             },
         })
     end
@@ -646,9 +776,31 @@ function CombatUI.Defeat()
     if callback_ then callback_("defeat") end
 end
 
---- 添加战斗日志（以弹窗形式显示）
+--- 添加战斗日志（显示在战斗面板内 + 游戏日志）
 ---@param msg string
-function CombatUI.AddCombatLog(msg)
+---@param color? number[]
+function CombatUI.AddCombatLog(msg, color)
+    -- 自动根据内容判断颜色
+    if not color then
+        if msg:find("你对") or msg:find("宠物【") then
+            color = { 100, 200, 255, 255 }  -- 蓝色 - 我方攻击
+        elseif msg:find(monsterName_) and (msg:find("攻击") or msg:find("造成")) then
+            color = { 255, 120, 80, 255 }   -- 红色 - 怪物攻击
+        elseif msg:find("恢复") or msg:find("使用了") then
+            color = { 100, 255, 100, 255 }  -- 绿色 - 恢复
+        elseif msg:find("阵亡") then
+            color = { 255, 80, 80, 255 }    -- 深红 - 阵亡
+        else
+            color = { 200, 200, 200, 255 }  -- 灰白 - 其他
+        end
+    end
+
+    table.insert(combatMessages_, { text = msg, color = color })
+    -- 限制最多保存20条
+    if #combatMessages_ > 20 then
+        table.remove(combatMessages_, 1)
+    end
+
     local GameUI = require("UI.GameUI")
     if GameUI.AddLog then GameUI.AddLog(msg) end
     print("[Combat] " .. msg)

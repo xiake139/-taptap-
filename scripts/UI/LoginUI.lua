@@ -166,6 +166,53 @@ function LoginUI.DoLogin()
             playerData.account.username = username
             playerData.account.password = password
             playerData.account.char_name = charName or playerData.status.name or username
+
+            -- 懒迁移：检查部署版本，自动传送到目标地图
+            local deployCfg = (DataManager.gameConfig or {})["deploy"]
+            local needSave = false
+            if deployCfg and deployCfg.version and deployCfg.version > 0 then
+                local playerVer = tonumber(playerData.status.last_deploy_version) or 0
+                if playerVer < deployCfg.version then
+                    local targetMap = deployCfg.target_map or ""
+                    if targetMap ~= "" and DataManager.maps[targetMap] then
+                        playerData.status.current_map = targetMap
+                        print("[LoginUI] 部署迁移: v" .. playerVer .. " -> v" .. deployCfg.version .. " 传送至【" .. targetMap .. "】")
+                    end
+                    playerData.status.last_deploy_version = tostring(deployCfg.version)
+                    needSave = true
+                end
+            end
+
+            -- 容错：如果玩家当前地图在系统数据中不存在，自动回退到有效地图
+            local curMap = playerData.status.current_map or ""
+            if curMap == "" or not DataManager.maps[curMap] then
+                local fallbackMap = nil
+                -- 优先选 deploy 目标地图
+                if deployCfg and deployCfg.target_map and deployCfg.target_map ~= "" and DataManager.maps[deployCfg.target_map] then
+                    fallbackMap = deployCfg.target_map
+                end
+                -- 其次选新手村
+                if not fallbackMap and DataManager.maps["新手村"] then
+                    fallbackMap = "新手村"
+                end
+                -- 最后取第一个可用地图
+                if not fallbackMap then
+                    for name, _ in pairs(DataManager.maps) do
+                        fallbackMap = name
+                        break
+                    end
+                end
+                if fallbackMap then
+                    print("[LoginUI] 当前地图【" .. curMap .. "】不存在，自动回退到【" .. fallbackMap .. "】")
+                    playerData.status.current_map = fallbackMap
+                    needSave = true
+                end
+            end
+
+            if needSave then
+                DataManager.SaveToCloud(playerData)
+            end
+
             print("[LoginUI] 登录成功!")
             msgLabel_:SetText("")
             SwitchState("game")

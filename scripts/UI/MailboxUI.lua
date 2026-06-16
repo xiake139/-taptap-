@@ -41,13 +41,18 @@ local function SerializeMails(list)
         -- 多货币：格式 "货币名:数量,货币名2:数量"
         local currStr = ""
         if mail.currencies then
-            local parts = {}
-            for cname, val in pairs(mail.currencies) do
-                if val ~= "0" and val ~= "" then
-                    table.insert(parts, cname .. ":" .. val)
+            if type(mail.currencies) == "string" then
+                -- 已经是序列化格式，直接使用
+                currStr = mail.currencies
+            elseif type(mail.currencies) == "table" then
+                local parts = {}
+                for cname, val in pairs(mail.currencies) do
+                    if val ~= "0" and val ~= "" then
+                        table.insert(parts, cname .. ":" .. val)
+                    end
                 end
+                currStr = table.concat(parts, ",")
             end
-            currStr = table.concat(parts, ",")
         end
         table.insert(lines, "currencies=" .. currStr)
         table.insert(lines, "items=" .. (mail.items or ""))
@@ -89,6 +94,8 @@ local function DeserializeMails(str)
                 sender = data["sender"] or "系统",
                 claimed = data["claimed"] == "1",
                 timestamp = tonumber(data["timestamp"]) or 0,
+                exp = data["exp"] or "0",
+                soul = data["soul"] or "0",
             })
         end
     end
@@ -466,6 +473,18 @@ function MailboxUI.ClaimMail(index)
         end
     end
 
+    -- 发放经验
+    if mail.exp and mail.exp ~= "0" and BigNum.gt(mail.exp, "0") then
+        player.status.exp = BigNum.add(player.status.exp or "0", mail.exp)
+        local GameUI = require("UI.GameUI")
+        if GameUI.CheckLevelUp then GameUI.CheckLevelUp() end
+    end
+
+    -- 发放战魂经验
+    if mail.soul and mail.soul ~= "0" and BigNum.gt(mail.soul, "0") then
+        player.status.battle_soul_exp = BigNum.add(player.status.battle_soul_exp or "0", mail.soul)
+    end
+
     -- 标记已领取
     mail.claimed = true
     mails_[index] = mail
@@ -483,9 +502,12 @@ function MailboxUI.ClaimAll()
     if not player then return end
 
     local claimedCount = 0
+    local hasExpGain = false
     for _, mail in ipairs(mails_) do
         local hasCurr = mail.currencies and next(mail.currencies)
-        if not mail.claimed and (mail.gold ~= "0" or hasCurr or mail.items ~= "") then
+        local hasExp = mail.exp and mail.exp ~= "0" and BigNum.gt(mail.exp, "0")
+        local hasSoul = mail.soul and mail.soul ~= "0" and BigNum.gt(mail.soul, "0")
+        if not mail.claimed and (mail.gold ~= "0" or hasCurr or mail.items ~= "" or hasExp or hasSoul) then
             -- 发放多货币
             if hasCurr then
                 for cname, val in pairs(mail.currencies) do
@@ -511,9 +533,24 @@ function MailboxUI.ClaimAll()
                     end
                 end
             end
+            -- 发放经验
+            if hasExp then
+                player.status.exp = BigNum.add(player.status.exp or "0", mail.exp)
+                hasExpGain = true
+            end
+            -- 发放战魂经验
+            if hasSoul then
+                player.status.battle_soul_exp = BigNum.add(player.status.battle_soul_exp or "0", mail.soul)
+            end
             mail.claimed = true
             claimedCount = claimedCount + 1
         end
+    end
+
+    -- 批量领取后统一检查升级
+    if hasExpGain then
+        local GameUI = require("UI.GameUI")
+        if GameUI.CheckLevelUp then GameUI.CheckLevelUp() end
     end
 
     if claimedCount > 0 then

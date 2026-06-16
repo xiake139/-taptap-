@@ -124,7 +124,10 @@ function BagUI.Refresh()
             itemData = equipData
         end
         local desc = itemData and (itemData.desc or "") or ""
-        local sellPrice = itemData and (itemData.price_sell or "0") or "0"
+        local rawSellPrice = itemData and (itemData.price_sell or "0") or "0"
+        -- 出售价 = 购买价的10%
+        local sellPrice = BigNum.gt(rawSellPrice, "0") and BigNum.div(rawSellPrice, "10") or "0"
+        if not BigNum.gt(sellPrice, "0") and BigNum.gt(rawSellPrice, "0") then sellPrice = "1" end
 
         local itemType = itemData and itemData.type or "材料"
         local isPetEquip = itemType:find("宠物装备") ~= nil
@@ -366,6 +369,20 @@ function BagUI.UseItem(index)
         return
     end
 
+    -- 复活类：仅在血量为0时可用，回满血量
+    if itemType:find("复活") then
+        if not BigNum.lte(player.status.hp or "0", "0") then
+            -- 血量不为0，弹出提示
+            BagUI.ShowReviveRejectDialog()
+            return
+        end
+        -- 血量为0，执行复活（通过GameUI统一处理）
+        local GameUI = require("UI.GameUI")
+        GameUI.ReviveWithItem(index)
+        BagUI.Refresh()
+        return
+    end
+
     local val = itemData.value or "0"  -- 保留字符串，大数安全
     local valNum = tonumber(val) or 0  -- 用于倍率等小数场景
     local duration = tonumber(itemData.duration) or 0  -- 分钟，0=永久
@@ -595,9 +612,20 @@ function BagUI.SellItem(index)
     if not item then return end
 
     local itemData = DataManager.GetItem(item.name)
-    local sellPrice = itemData and (itemData.price_sell or "0") or "0"
+    -- 优先从装备数据获取出售价格，实际获得 = 出售价的10%
+    local equipData = DataManager.GetEquipData(item.name)
+    local basePrice = "0"
+    if equipData and equipData.price_sell and equipData.price_sell ~= "" and equipData.price_sell ~= "0" then
+        basePrice = equipData.price_sell
+    elseif itemData and itemData.price_sell then
+        basePrice = itemData.price_sell
+    end
 
-    if not BigNum.gt(sellPrice, "0") then return end
+    if not BigNum.gt(basePrice, "0") then return end
+
+    -- 出售获得货币 = 出售价的10%
+    local sellPrice = BigNum.div(basePrice, "10")
+    if not BigNum.gt(sellPrice, "0") then sellPrice = "1" end
 
     player.status.gold = BigNum.add(player.status.gold or "0", sellPrice)
     item.count = BigNum.sub(item.count or "1", "1")
@@ -737,6 +765,58 @@ function BagUI.OpenChest(index, chestName)
             BagUI.ShowTip("加载宝箱配置失败: " .. tostring(reason))
         end,
     })
+end
+
+--- 显示"玩家未死亡无需使用该道具"提示弹框
+function BagUI.ShowReviveRejectDialog()
+    if not parentRef_ then
+        BagUI.ShowTip("玩家未死亡无需使用该道具")
+        return
+    end
+
+    local dialog = UI.Panel {
+        id = "reviveRejectOverlay",
+        position = "absolute",
+        left = 0, top = 0, right = 0, bottom = 0,
+        justifyContent = "center", alignItems = "center",
+        backgroundColor = { 0, 0, 0, 140 },
+        children = {
+            UI.Panel {
+                width = "75%",
+                maxWidth = 280,
+                padding = 16,
+                backgroundColor = { 30, 25, 50, 245 },
+                borderRadius = 10,
+                borderWidth = 1,
+                borderColor = { 100, 80, 160, 200 },
+                flexDirection = "column",
+                alignItems = "center",
+                gap = 12,
+                onClick = function() end,  -- 阻止穿透
+                children = {
+                    UI.Label {
+                        text = "玩家未死亡无需使用该道具",
+                        fontSize = 14,
+                        fontColor = { 255, 200, 100, 255 },
+                        textAlign = "center",
+                    },
+                    UI.Button {
+                        text = "确 定",
+                        variant = "default",
+                        onClick = function()
+                            dialog:Remove()
+                        end,
+                    },
+                },
+            },
+        },
+    }
+
+    local GameUI = require("UI.GameUI")
+    local root = GameUI.rootPanel
+    if root then
+        root:AddChild(dialog)
+    end
 end
 
 return BagUI

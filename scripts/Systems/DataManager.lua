@@ -159,6 +159,38 @@ local function ParseGameConfig(sections)
     else
         config["currencies"] = { "金币" }
     end
+    -- 初始货币配置
+    local initCurrSec = sections["初始货币"]
+    if initCurrSec then
+        local initCurr = {}
+        local count = tonumber(initCurrSec["数量"]) or 0
+        for i = 1, count do
+            local name = initCurrSec["货币_" .. i .. "_名称"]
+            local amount = initCurrSec["货币_" .. i .. "_数量"] or "0"
+            if name and name ~= "" then
+                initCurr[name] = amount
+            end
+        end
+        config["initial_currencies"] = initCurr
+    else
+        config["initial_currencies"] = {}
+    end
+    -- 初始背包配置
+    local initBagSec = sections["初始背包"]
+    if initBagSec then
+        local initBag = {}
+        local count = tonumber(initBagSec["物品数量"]) or 0
+        for i = 1, count do
+            local name = initBagSec["物品_" .. i .. "_名称"]
+            local cnt = initBagSec["物品_" .. i .. "_数量"] or "1"
+            if name and name ~= "" then
+                table.insert(initBag, { name = name, count = tonumber(cnt) or 1 })
+            end
+        end
+        config["initial_bag"] = initBag
+    else
+        config["initial_bag"] = {}
+    end
     -- 怪物生成区间配置
     local monGenSec = sections["怪物生成配置"]
     if monGenSec then
@@ -211,6 +243,16 @@ local function ParseGameConfig(sections)
         if #types > 0 then
             config["monster_gen"] = types
         end
+    end
+    -- 部署版本配置（懒迁移用）
+    local deploySec = sections["部署版本"]
+    if deploySec then
+        config["deploy"] = {
+            version = tonumber(deploySec["版本号"]) or 0,
+            target_map = deploySec["目标地图"] or "",
+        }
+    else
+        config["deploy"] = { version = 0, target_map = "" }
     end
     return config
 end
@@ -368,7 +410,6 @@ local function ParseEquipment(sections)
             def = data["防御"] or "0",
             hp = data["生命"] or "0",
             level_req = data["等级需求"] or "1",
-            price_buy = data["购买价"] or "0",
             price_sell = data["出售价"] or "0",
         }
         equipment[sectionName] = entry
@@ -416,10 +457,17 @@ local function ParseShops(sections)
                     -- 兼容旧格式 "物品名:价格"
                     itemName, price = raw:match("^(.+):(%d+)$")
                 end
+                if not itemName then
+                    -- 兼容空价格格式 "物品名::描述" 或 "物品名:"
+                    local n, d = raw:match("^(.+)::(.*)$")
+                    if n then
+                        itemName, price, itemDesc = n, "0", d
+                    end
+                end
                 if itemName then
                     table.insert(entry.items, {
                         name = itemName,
-                        price = price or "0",
+                        price = (price and price ~= "") and price or "0",
                         desc = itemDesc or "",
                     })
                 end
@@ -706,6 +754,7 @@ local SYSTEM_CLOUD_KEYS = {
     "系统配置/realm_pills.ini",
     "系统配置/pet_types.ini",
     "系统配置/battle_soul.ini",
+
 }
 
 --- 延迟加载的键（打开对应面板时才拉取，减少启动压力）
@@ -842,6 +891,7 @@ function DataManager.LoadSystemData(callback)
                 DataManager.battleSoulConfig = ParseBattleSoul(IniParser.Parse(v))
                 hasCloud = true
             end
+
             -- leaderboards/ranking_data/chat_messages 改为按需加载，不在启动时拉取
 
             if hasCloud then
@@ -963,7 +1013,7 @@ function DataManager.CreateNewPlayer(username, charName)
             battle_soul_level = "0",  -- 战魂等级
             battle_soul_exp = "0",    -- 战魂经验
         },
-        bag = {},       -- { {name="物品名", count=数量}, ... }
+        bag = {},       -- { {name="物品名", count=数量}, ... } （下方会填入初始背包）
         equip = {       -- 装备槽（13部位）
             weapon = "",
             helmet = "",
@@ -985,6 +1035,20 @@ function DataManager.CreateNewPlayer(username, charName)
         },
         redeemed_codes = {},  -- { "code1", "code2", ... }
     }
+
+    -- 应用初始货币配置
+    local initCurrencies = DataManager.gameConfig["initial_currencies"] or {}
+    for name, amount in pairs(initCurrencies) do
+        playerData.status.currencies[name] = tostring(amount)
+    end
+
+    -- 应用初始背包配置
+    local initBag = DataManager.gameConfig["initial_bag"] or {}
+    for _, item in ipairs(initBag) do
+        if item.name and item.name ~= "" then
+            table.insert(playerData.bag, { name = item.name, count = item.count or 1 })
+        end
+    end
 
     return playerData
 end
@@ -1025,6 +1089,7 @@ function DataManager.PlayerDataToFiles(playerData)
         realm_exp = "境界经验",
         battle_soul_level = "战魂等级",
         battle_soul_exp = "战魂经验",
+        last_deploy_version = "部署版本",
     }
     for k, v in pairs(playerData.status) do
         if k == "currencies" then
@@ -1183,6 +1248,7 @@ function DataManager.FilesToPlayerData(fileMap)
         ["境界经验"] = "realm_exp",
         ["战魂等级"] = "battle_soul_level",
         ["战魂经验"] = "battle_soul_exp",
+        ["部署版本"] = "last_deploy_version",
     }
 
     -- 账号配置已集中存储，从 currentAccount/currentPassword 获取
@@ -1719,6 +1785,79 @@ function DataManager.SavePlayerDataForAdmin(username, playerData, callback)
             if callback then callback(false) end
         end,
     })
+end
+
+--- 批量重置所有玩家位置（高效：仅读写状态数据.ini，2次云请求）
+---@param targetMap string 目标地图名称
+---@param callback fun(success: number, total: number)
+function DataManager.BatchResetPlayerLocation(targetMap, callback)
+    if not cloud_ then
+        if callback then callback(0, 0) end
+        return
+    end
+
+    DataManager.GetAllPlayers(function(players)
+        if #players == 0 then
+            if callback then callback(0, 0) end
+            return
+        end
+
+        -- 用一个 BatchGet 批量读取所有玩家的状态数据.ini
+        local batch = cloud_:BatchGet()
+        local keyMap = {} -- key -> username
+        for _, p in ipairs(players) do
+            local key = DataManager.GetCloudPath(p.username) .. "状态数据.ini"
+            batch:Key(key)
+            keyMap[key] = p.username
+        end
+
+        batch:Fetch({
+            ok = function(values)
+                -- 修改每个玩家的当前地图
+                local saveBatch = cloud_:BatchSet()
+                local count = 0
+
+                for key, content in pairs(values) do
+                    if content and content ~= "" then
+                        local raw = content
+                        -- 提取字符串（兼容 extractString）
+                        if type(raw) ~= "string" then
+                            raw = tostring(raw)
+                        end
+                        -- 解析 INI 并修改当前地图字段
+                        local sections = IniParser.Parse(raw)
+                        if sections and sections["角色属性"] then
+                            sections["角色属性"]["当前地图"] = targetMap
+                            local newContent = IniParser.Serialize(sections)
+                            saveBatch:Set(key, newContent)
+                            count = count + 1
+                        end
+                    end
+                end
+
+                if count == 0 then
+                    if callback then callback(0, #players) end
+                    return
+                end
+
+                -- 用一个 BatchSet 批量写回
+                saveBatch:Save("批量重置玩家位置", {
+                    ok = function()
+                        print("[DataManager] 批量重置玩家位置成功: " .. count .. " 人 -> " .. targetMap)
+                        if callback then callback(count, #players) end
+                    end,
+                    error = function(code, reason)
+                        print("[DataManager] 批量重置玩家位置失败: " .. tostring(reason))
+                        if callback then callback(0, #players) end
+                    end,
+                })
+            end,
+            error = function(code, reason)
+                print("[DataManager] 批量读取玩家状态失败: " .. tostring(reason))
+                if callback then callback(0, #players) end
+            end,
+        })
+    end)
 end
 
 --- 删除玩家（从账号注册表移除 + 删除云端游戏数据）

@@ -23,6 +23,7 @@ local msgLabel_ = nil
 local currentCategory_ = "players"  -- 当前选中分类
 local searchKeyword_ = ""  -- 当前搜索关键词
 local editDialog_ = nil
+local selectDialog_ = nil
 
 -- 分类定义
 local CATEGORIES = {
@@ -70,23 +71,123 @@ local function CloseDialog()
     end
 end
 
---- 创建表单字段（标签 + 输入框）
----@param label string
+--- 装备选择弹窗（带搜索，NPC商店和系统商店共用）
+---@param editItems table 商品列表引用
+---@param rebuildCallback function 重建列表回调
+local function ShowEquipSelectDialog(editItems, rebuildCallback)
+    -- 收集所有装备
+    local allEquips = {}
+    for eId, eData in pairs(DataManager.equipment) do
+        table.insert(allEquips, { id = eId, name = eData.name or eId, price_sell = eData.price_sell or "0" })
+    end
+    table.sort(allEquips, function(a, b) return a.name < b.name end)
+    if #allEquips == 0 then return end
+
+    local listPanel = UI.Panel { width = "100%", flexDirection = "column" }
+
+    local function RenderEquipList(keyword)
+        listPanel:ClearChildren()
+        local kw = (keyword or ""):lower()
+        local count = 0
+        for _, eq in ipairs(allEquips) do
+            if kw == "" or eq.name:lower():find(kw, 1, true) or eq.id:lower():find(kw, 1, true) then
+                count = count + 1
+                local priceText = eq.price_sell ~= "0" and ("出售价: " .. NumFormat.Short(eq.price_sell)) or "无定价"
+                listPanel:AddChild(UI.Panel {
+                    flexDirection = "column", width = "100%",
+                    marginBottom = 3, backgroundColor = { 50, 45, 80, 200 }, borderRadius = 4, padding = 6,
+                    children = {
+                        UI.Panel {
+                            flexDirection = "row", width = "100%", alignItems = "center",
+                            children = {
+                                UI.Label { text = eq.name, fontSize = 12, fontColor = { 220, 220, 255, 255 }, flex = 1, flexShrink = 1 },
+                                UI.Button {
+                                    text = "添加", fontSize = 10, width = 42, height = 22, variant = "primary",
+                                    onClick = function()
+                                        -- 自动使用装备出售价作为商店价格（价格为0时游戏内也会回退到出售价）
+                                        local autoPrice = (eq.price_sell ~= "0" and eq.price_sell ~= "") and eq.price_sell or "0"
+                                        table.insert(editItems, { name = eq.name, price = autoPrice, desc = "装备" })
+                                        rebuildCallback()
+                                        if selectDialog_ then selectDialog_:Remove(); selectDialog_ = nil end
+                                    end,
+                                },
+                            },
+                        },
+                        UI.Label { text = priceText, fontSize = 10, fontColor = { 140, 200, 140, 255 }, marginTop = 2 },
+                    },
+                })
+            end
+        end
+        if count == 0 then
+            listPanel:AddChild(UI.Label { text = "无匹配装备", fontSize = 11, fontColor = { 160, 160, 160, 255 }, textAlign = "center", marginTop = 10 })
+        end
+    end
+
+    RenderEquipList("")
+
+    local searchField = UI.TextField {
+        placeholder = "搜索装备名...", width = "100%", height = 30, fontSize = 11,
+        onChange = function(_, text) RenderEquipList(text) end,
+    }
+
+    selectDialog_ = UI.Panel {
+        width = "100%", height = "100%", position = "absolute",
+        justifyContent = "center", alignItems = "center", backgroundColor = { 0, 0, 0, 160 },
+        children = {
+            UI.Panel {
+                width = 300, maxHeight = 450, backgroundColor = { 30, 25, 55, 250 },
+                borderRadius = 10, padding = 12, flexDirection = "column",
+                children = {
+                    UI.Label { text = "选择装备添加到商店", fontSize = 13, fontColor = { 255, 220, 100, 255 }, textAlign = "center", marginBottom = 6 },
+                    searchField,
+                    UI.ScrollView { width = "100%", maxHeight = 320, marginTop = 6, children = { listPanel } },
+                    UI.Button {
+                        text = "关闭", variant = "secondary", width = 70, height = 26, marginTop = 8, alignSelf = "center",
+                        onClick = function()
+                            if selectDialog_ then selectDialog_:Remove(); selectDialog_ = nil end
+                        end,
+                    },
+                },
+            },
+        },
+    }
+    if rootPanel_ then rootPanel_:AddChild(selectDialog_) end
+end
+
 ---@param value string
 ---@param opts table|nil {width, placeholder, multiline}
 ---@return Widget panel, Widget field
 local function CreateFormField(label, value, opts)
     opts = opts or {}
+    local unitLabel = nil
     local field = UI.TextField {
         value = tostring(value or ""),
         placeholder = opts.placeholder or "",
         width = opts.width or 200,
         height = opts.height or 32,
         fontSize = 12,
+        onChange = opts.showUnit and function(_, t)
+            if unitLabel then
+                local v = (t == nil or t == "") and "0" or t
+                unitLabel:SetText(NumFormat.Short(v))
+            end
+        end or nil,
     }
+    -- 输入框+单位标签组合（单位在输入框下方换行显示）
+    local fieldGroup
+    if opts.showUnit then
+        local initVal = (value == nil or value == "") and "0" or tostring(value)
+        unitLabel = UI.Label { text = NumFormat.Short(initVal), fontSize = 9, fontColor = { 140, 200, 140, 255 }, marginTop = 1 }
+        fieldGroup = UI.Panel {
+            flexDirection = "column",
+            children = { field, unitLabel },
+        }
+    else
+        fieldGroup = field
+    end
     local panel = UI.Panel {
         flexDirection = "row",
-        alignItems = "center",
+        alignItems = "flex-start",
         gap = 8,
         marginBottom = 4,
         children = {
@@ -95,8 +196,9 @@ local function CreateFormField(label, value, opts)
                 fontSize = 12,
                 fontColor = { 180, 180, 200, 255 },
                 width = opts.labelWidth or 80,
+                marginTop = 6,
             },
-            field,
+            fieldGroup,
         },
     }
     return panel, field
@@ -316,7 +418,6 @@ local function SaveCategoryToCloud(category, onDoneExtra)
                 ["防御"] = NumFormat.Int(data.def or 0),
                 ["生命"] = NumFormat.Int(data.hp or 0),
                 ["等级需求"] = NumFormat.Int(data.level_req or 1),
-                ["购买价"] = NumFormat.Int(data.price_buy or 0),
                 ["出售价"] = NumFormat.Int(data.price_sell or 0),
             }
         end
@@ -353,7 +454,9 @@ local function SaveCategoryToCloud(category, onDoneExtra)
                 ["商品数量"] = tostring(#(data.items or {})),
             }
             for i, item in ipairs(data.items or {}) do
-                sec["商品_" .. i] = (item.name or "") .. ":" .. tostring(item.price or 0) .. ":" .. (item.desc or "")
+                local p = item.price or "0"
+                if p == "" then p = "0" end
+                sec["商品_" .. i] = (item.name or "") .. ":" .. p .. ":" .. (item.desc or "")
             end
             sections[id] = sec
         end
@@ -371,7 +474,9 @@ local function SaveCategoryToCloud(category, onDoneExtra)
                 ["商品数量"] = tostring(#(data.items or {})),
             }
             for i, item in ipairs(data.items or {}) do
-                sec["商品_" .. i] = (item.name or "") .. ":" .. tostring(item.price or 0) .. ":" .. (item.desc or "")
+                local p = item.price or "0"
+                if p == "" then p = "0" end
+                sec["商品_" .. i] = (item.name or "") .. ":" .. p .. ":" .. (item.desc or "")
             end
             sections[id] = sec
         end
@@ -519,6 +624,25 @@ local function SaveCategoryToCloud(category, onDoneExtra)
             currSec["货币_" .. i] = name
         end
         sections["货币配置"] = currSec
+        -- 初始货币配置
+        local initCurrData = gc["initial_currencies"] or {}
+        local initCurrCount = 0
+        local initCurrSec = {}
+        for name, amount in pairs(initCurrData) do
+            initCurrCount = initCurrCount + 1
+            initCurrSec["货币_" .. initCurrCount .. "_名称"] = name
+            initCurrSec["货币_" .. initCurrCount .. "_数量"] = tostring(amount)
+        end
+        initCurrSec["数量"] = tostring(initCurrCount)
+        sections["初始货币"] = initCurrSec
+        -- 初始背包配置
+        local initBagData = gc["initial_bag"] or {}
+        local initBagSec = { ["物品数量"] = tostring(#initBagData) }
+        for i, item in ipairs(initBagData) do
+            initBagSec["物品_" .. i .. "_名称"] = item.name or ""
+            initBagSec["物品_" .. i .. "_数量"] = tostring(item.count or 1)
+        end
+        sections["初始背包"] = initBagSec
         -- 怪物生成区间配置
         local monGenSec = { ["类型数量"] = tostring(#MONSTER_TYPES) }
         for i, mt in ipairs(MONSTER_TYPES) do
@@ -547,10 +671,18 @@ local function SaveCategoryToCloud(category, onDoneExtra)
             monGenSec["类型" .. i .. "_描述"] = mt.desc or ""
         end
         sections["怪物生成配置"] = monGenSec
+        -- 部署版本配置（懒迁移）
+        local deployCfg = gc["deploy"] or {}
+        sections["部署版本"] = {
+            ["版本号"] = tostring(deployCfg.version or 0),
+            ["目标地图"] = deployCfg.target_map or "",
+        }
         content = IniParser.Serialize(sections)
         SaveConfigToCloud("系统配置/game_config.ini", content, function(ok)
             ShowMsg(ok and "游戏设置已保存到云端" or "保存失败")
+            if onDoneExtra then onDoneExtra(ok) end
         end)
+        return  -- 提前返回，避免下方重复调用 onDoneExtra
     elseif category == "admins" then
         -- 管理员列表序列化为逗号分隔字符串
         local list = {}
@@ -935,7 +1067,23 @@ local function ShowEditDialog(title, fields, onSave)
     })
 
     for _, f in ipairs(fields) do
-        if f.type == "selector" and f.opts and f.opts.options then
+        if f.type == "action" then
+            -- 动作按钮类型：渲染可点击按钮（不参与表单数据收集）
+            table.insert(formChildren, UI.Panel {
+                flexDirection = "row",
+                gap = 8,
+                marginTop = 4,
+                marginBottom = 4,
+                children = f.buttons or {
+                    UI.Button {
+                        text = f.label,
+                        variant = f.variant or "secondary",
+                        width = f.width or 120,
+                        onClick = f.onClick,
+                    },
+                },
+            })
+        elseif f.type == "selector" and f.opts and f.opts.options then
             -- 选择器类型：使用按钮选择组件
             local selectorPanel, getSelected = CreateButtonSelector(f.opts.options, f.value or f.opts.options[1], f.label, false)
             -- 包装成与 TextField 兼容的接口（有 GetValue 方法）
@@ -1012,6 +1160,9 @@ local function ShowEditDialog(title, fields, onSave)
             },
         },
     }
+
+    -- 暴露 fieldWidgets 供动态按钮读取当前值
+    editDialog_._fieldWidgets = fieldWidgets
 
     if rootPanel_ then
         rootPanel_:AddChild(editDialog_)
@@ -1101,21 +1252,21 @@ local function ShowPlayerDetailDialog(username, accountInfo, editMode)
         local st = playerData.status or {}
         local statusFields = {
             { label = "姓名", key = "st_name", value = st.name or "" },
-            { label = "等级", key = "st_level", value = st.level or "1" },
-            { label = "经验", key = "st_exp", value = st.exp or "0" },
-            { label = "生命值", key = "st_hp", value = st.hp or "100" },
-            { label = "最大生命", key = "st_max_hp", value = st.max_hp or "100" },
-            { label = "法力值", key = "st_mp", value = st.mp or "50" },
-            { label = "最大法力", key = "st_max_mp", value = st.max_mp or "50" },
-            { label = "攻击力", key = "st_atk", value = st.atk or "5" },
-            { label = "防御力", key = "st_def", value = st.def or "3" },
-            { label = "金币", key = "st_gold", value = st.gold or "50" },
+            { label = "等级", key = "st_level", value = st.level or "1", showUnit = true },
+            { label = "经验", key = "st_exp", value = st.exp or "0", showUnit = true },
+            { label = "生命值", key = "st_hp", value = st.hp or "100", showUnit = true },
+            { label = "最大生命", key = "st_max_hp", value = st.max_hp or "100", showUnit = true },
+            { label = "法力值", key = "st_mp", value = st.mp or "50", showUnit = true },
+            { label = "最大法力", key = "st_max_mp", value = st.max_mp or "50", showUnit = true },
+            { label = "攻击力", key = "st_atk", value = st.atk or "5", showUnit = true },
+            { label = "防御力", key = "st_def", value = st.def or "3", showUnit = true },
+            { label = "金币", key = "st_gold", value = st.gold or "50", showUnit = true },
             { label = "当前地图", key = "st_current_map", value = st.current_map or "新手村" },
-            { label = "战魂等级", key = "st_battle_soul_level", value = st.battle_soul_level or "0" },
-            { label = "战魂经验", key = "st_battle_soul_exp", value = st.battle_soul_exp or "0" },
+            { label = "战魂等级", key = "st_battle_soul_level", value = st.battle_soul_level or "0", showUnit = true },
+            { label = "战魂经验", key = "st_battle_soul_exp", value = st.battle_soul_exp or "0", showUnit = true },
         }
         for _, f in ipairs(statusFields) do
-            local panel, field = CreateFormField(f.label, f.value, { width = 150 })
+            local panel, field = CreateFormField(f.label, f.value, { width = 150, showUnit = f.showUnit })
             if not editMode then field:SetDisabled(true) end
             fieldWidgets[f.key] = field
             table.insert(formChildren, panel)
@@ -1141,7 +1292,7 @@ local function ShowPlayerDetailDialog(username, accountInfo, editMode)
             })
             for _, cName in ipairs(customCurrencies) do
                 local cValue = tostring(stCurrencies[cName] or "0")
-                local panel, field = CreateFormField(cName, cValue, { width = 150 })
+                local panel, field = CreateFormField(cName, cValue, { width = 150, showUnit = true })
                 if not editMode then field:SetDisabled(true) end
                 fieldWidgets["currency_" .. cName] = field
                 table.insert(formChildren, panel)
@@ -1886,6 +2037,250 @@ local function RenderGameConfig()
             if rootPanel_ then rootPanel_:AddChild(editDialog_) end
         end, 4))
 
+    -- 初始货币配置
+    local initCurrData = gc["initial_currencies"] or {}
+    local initCurrSummary = ""
+    for name, amount in pairs(initCurrData) do
+        if initCurrSummary ~= "" then initCurrSummary = initCurrSummary .. ", " end
+        initCurrSummary = initCurrSummary .. name .. ":" .. amount
+    end
+    if initCurrSummary == "" then initCurrSummary = "未配置" end
+    contentPanel_:AddChild(CreateListRow("初始货币",
+        initCurrSummary,
+        function()
+            CloseDialog()
+            local formChildren = {}
+            table.insert(formChildren, UI.Label {
+                text = "初始货币配置",
+                fontSize = 16,
+                fontColor = { 200, 170, 100, 255 },
+                textAlign = "center",
+                marginBottom = 8,
+            })
+            table.insert(formChildren, UI.Label {
+                text = "新玩家注册时每种货币的初始数量",
+                fontSize = 11,
+                fontColor = { 140, 140, 160, 255 },
+                textAlign = "center",
+                marginBottom = 8,
+            })
+
+            -- 从已配置的货币列表读取
+            local currencyNames = gc["currencies"] or { "金币" }
+            local editInitCurr = {}
+            for _, name in ipairs(currencyNames) do
+                editInitCurr[name] = initCurrData[name] or "0"
+            end
+
+            local listPanel = UI.Panel { width = "100%", flexDirection = "column", gap = 6 }
+
+            local currFields = {}
+            local function RebuildInitCurrList()
+                listPanel:ClearChildren()
+                currFields = {}
+                for _, name in ipairs(currencyNames) do
+                    local field = UI.TextField {
+                        text = editInitCurr[name] or "0",
+                        width = 100, height = 28,
+                        placeholder = "0",
+                    }
+                    currFields[name] = field
+                    listPanel:AddChild(UI.Panel {
+                        flexDirection = "row",
+                        width = "100%",
+                        gap = 8,
+                        alignItems = "center",
+                        children = {
+                            UI.Label { text = name, fontSize = 13, fontColor = { 220, 220, 240, 255 }, width = 80 },
+                            field,
+                            UI.Label { text = "个", fontSize = 11, fontColor = { 140, 140, 160, 255 } },
+                        },
+                    })
+                end
+            end
+            RebuildInitCurrList()
+            table.insert(formChildren, listPanel)
+
+            local dialogMsg = UI.Label { text = "", fontSize = 11, fontColor = { 100, 255, 100, 255 }, textAlign = "center", height = 16 }
+            table.insert(formChildren, dialogMsg)
+
+            table.insert(formChildren, UI.Panel {
+                flexDirection = "row", gap = 12, marginTop = 8, justifyContent = "center",
+                children = {
+                    UI.Button {
+                        text = "保存", variant = "primary", width = 80,
+                        onClick = function()
+                            local result = {}
+                            for name, field in pairs(currFields) do
+                                local val = tonumber(field:GetValue()) or 0
+                                if val > 0 then
+                                    result[name] = tostring(val)
+                                end
+                            end
+                            gc["initial_currencies"] = result
+                            SaveCategoryToCloud("game_config")
+                            dialogMsg:SetText("已保存")
+                            CloseDialog()
+                            RenderGameConfig()
+                        end,
+                    },
+                    UI.Button {
+                        text = "关闭", variant = "secondary", width = 80,
+                        onClick = function() CloseDialog() end,
+                    },
+                },
+            })
+
+            editDialog_ = UI.Panel {
+                width = "100%", height = "100%", position = "absolute",
+                justifyContent = "center", alignItems = "center",
+                backgroundColor = { 0, 0, 0, 180 },
+                children = {
+                    UI.Panel {
+                        width = 360,
+                        backgroundColor = { 30, 25, 55, 250 },
+                        borderRadius = 12, padding = 16,
+                        flexDirection = "column", gap = 4,
+                        children = formChildren,
+                    },
+                },
+            }
+            if rootPanel_ then rootPanel_:AddChild(editDialog_) end
+        end, 5))
+
+    -- 初始背包配置
+    local initBagData = gc["initial_bag"] or {}
+    local initBagSummary = ""
+    for i, item in ipairs(initBagData) do
+        if i > 1 then initBagSummary = initBagSummary .. ", " end
+        initBagSummary = initBagSummary .. item.name .. "x" .. item.count
+    end
+    if initBagSummary == "" then initBagSummary = "未配置" end
+    contentPanel_:AddChild(CreateListRow("初始背包",
+        initBagSummary,
+        function()
+            CloseDialog()
+            local formChildren = {}
+            table.insert(formChildren, UI.Label {
+                text = "初始背包配置",
+                fontSize = 16,
+                fontColor = { 200, 170, 100, 255 },
+                textAlign = "center",
+                marginBottom = 8,
+            })
+            table.insert(formChildren, UI.Label {
+                text = "新玩家注册时背包中默认携带的物品",
+                fontSize = 11,
+                fontColor = { 140, 140, 160, 255 },
+                textAlign = "center",
+                marginBottom = 8,
+            })
+
+            local editBag = {}
+            for _, item in ipairs(initBagData) do
+                table.insert(editBag, { name = item.name, count = item.count })
+            end
+
+            local listPanel = UI.Panel { width = "100%", flexDirection = "column", gap = 4 }
+
+            local function RebuildInitBagList()
+                listPanel:ClearChildren()
+                for i, item in ipairs(editBag) do
+                    listPanel:AddChild(UI.Panel {
+                        flexDirection = "row",
+                        width = "100%",
+                        gap = 6,
+                        alignItems = "center",
+                        children = {
+                            UI.Label { text = i .. ".", fontSize = 12, fontColor = { 160, 160, 180, 255 }, width = 20 },
+                            UI.Label { text = item.name, fontSize = 13, fontColor = { 220, 220, 240, 255 }, flexGrow = 1 },
+                            UI.Label { text = "x" .. item.count, fontSize = 12, fontColor = { 180, 180, 200, 255 }, width = 40 },
+                            UI.Button {
+                                text = "×",
+                                variant = "danger",
+                                width = 24, height = 24, fontSize = 12,
+                                onClick = function()
+                                    table.remove(editBag, i)
+                                    RebuildInitBagList()
+                                end,
+                            },
+                        },
+                    })
+                end
+            end
+            RebuildInitBagList()
+            table.insert(formChildren, listPanel)
+
+            -- 添加新物品行
+            local newItemField = UI.TextField { placeholder = "物品名称", width = "50%", height = 28 }
+            local newCountField = UI.TextField { placeholder = "数量", text = "1", width = 60, height = 28 }
+            table.insert(formChildren, UI.Panel {
+                flexDirection = "row",
+                width = "100%",
+                gap = 6,
+                marginTop = 8,
+                alignItems = "center",
+                children = {
+                    newItemField,
+                    newCountField,
+                    UI.Button {
+                        text = "+ 添加",
+                        variant = "outline",
+                        height = 28,
+                        onClick = function()
+                            local itemName = newItemField:GetValue() or ""
+                            local itemCount = tonumber(newCountField:GetValue()) or 1
+                            if itemName ~= "" and itemCount > 0 then
+                                table.insert(editBag, { name = itemName, count = itemCount })
+                                newItemField:SetText("")
+                                newCountField:SetText("1")
+                                RebuildInitBagList()
+                            end
+                        end,
+                    },
+                },
+            })
+
+            local dialogMsg = UI.Label { text = "", fontSize = 11, fontColor = { 100, 255, 100, 255 }, textAlign = "center", height = 16 }
+            table.insert(formChildren, dialogMsg)
+
+            table.insert(formChildren, UI.Panel {
+                flexDirection = "row", gap = 12, marginTop = 8, justifyContent = "center",
+                children = {
+                    UI.Button {
+                        text = "保存", variant = "primary", width = 80,
+                        onClick = function()
+                            gc["initial_bag"] = editBag
+                            SaveCategoryToCloud("game_config")
+                            dialogMsg:SetText("已保存")
+                            CloseDialog()
+                            RenderGameConfig()
+                        end,
+                    },
+                    UI.Button {
+                        text = "关闭", variant = "secondary", width = 80,
+                        onClick = function() CloseDialog() end,
+                    },
+                },
+            })
+
+            editDialog_ = UI.Panel {
+                width = "100%", height = "100%", position = "absolute",
+                justifyContent = "center", alignItems = "center",
+                backgroundColor = { 0, 0, 0, 180 },
+                children = {
+                    UI.Panel {
+                        width = 380,
+                        backgroundColor = { 30, 25, 55, 250 },
+                        borderRadius = 12, padding = 16,
+                        flexDirection = "column", gap = 4,
+                        children = formChildren,
+                    },
+                },
+            }
+            if rootPanel_ then rootPanel_:AddChild(editDialog_) end
+        end, 6))
+
 end
 
 -- =============== 通用列表配置管理 ===============
@@ -2072,7 +2467,7 @@ end
 
 --- 渲染物品列表
 -- 道具类型选项
-local ITEM_TYPES = { "攻击", "防御", "生命上限", "恢复血量", "恢复灵力", "经验倍率", "货币倍率", "材料" }
+local ITEM_TYPES = { "攻击", "防御", "生命上限", "恢复血量", "恢复灵力", "经验倍率", "货币倍率", "复活", "材料" }
 
 --- 物品类型英文→中文（兼容旧数据）
 local ITEM_TYPE_EN_TO_CN = {
@@ -2080,7 +2475,7 @@ local ITEM_TYPE_EN_TO_CN = {
     defense = "防御", hp = "生命上限", mp = "恢复灵力",
     exp = "经验倍率", gold = "货币倍率", recover_hp = "恢复血量",
     recover_mp = "恢复灵力", exp_boost = "经验倍率", gold_boost = "货币倍率",
-    currency_boost = "货币倍率", max_hp = "生命上限",
+    currency_boost = "货币倍率", max_hp = "生命上限", revive = "复活",
 }
 
 --- 创建道具类型选择器
@@ -2231,7 +2626,7 @@ local function ShowItemEditDialog(title, itemData, itemId, isNew)
     table.insert(formChildren, descPanel)
 
     -- 数值
-    local valuePanel, valueField = CreateFormField("数值", tostring(data.value or "0"), { width = 120 })
+    local valuePanel, valueField = CreateFormField("数值", tostring(data.value or "0"), { width = 120, showUnit = true })
     fieldWidgets["value"] = valueField
     table.insert(formChildren, valuePanel)
 
@@ -2529,15 +2924,15 @@ local function RenderEquipment()
                 fieldWidgets["desc"] = descField
                 table.insert(formChildren, descPanel)
 
-                local atkPanel, atkField = CreateFormField("攻击", tostring(data.atk or 0), { width = 120 })
+                local atkPanel, atkField = CreateFormField("攻击", tostring(data.atk or 0), { width = 120, showUnit = true })
                 fieldWidgets["atk"] = atkField
                 table.insert(formChildren, atkPanel)
 
-                local defPanel, defField = CreateFormField("防御", tostring(data.def or 0), { width = 120 })
+                local defPanel, defField = CreateFormField("防御", tostring(data.def or 0), { width = 120, showUnit = true })
                 fieldWidgets["def"] = defField
                 table.insert(formChildren, defPanel)
 
-                local hpPanel, hpField = CreateFormField("生命", tostring(data.hp or 0), { width = 120 })
+                local hpPanel, hpField = CreateFormField("生命", tostring(data.hp or 0), { width = 120, showUnit = true })
                 fieldWidgets["hp"] = hpField
                 table.insert(formChildren, hpPanel)
 
@@ -2545,11 +2940,7 @@ local function RenderEquipment()
                 fieldWidgets["level_req"] = lvlField
                 table.insert(formChildren, lvlPanel)
 
-                local buyPanel, buyField = CreateFormField("购买价", tostring(data.price_buy or 0), { width = 120 })
-                fieldWidgets["price_buy"] = buyField
-                table.insert(formChildren, buyPanel)
-
-                local sellPanel, sellField = CreateFormField("出售价", tostring(data.price_sell or 0), { width = 120 })
+                local sellPanel, sellField = CreateFormField("出售价", tostring(data.price_sell or 0), { width = 120, showUnit = true })
                 fieldWidgets["price_sell"] = sellField
                 table.insert(formChildren, sellPanel)
 
@@ -2571,7 +2962,6 @@ local function RenderEquipment()
                                     def = fieldWidgets["def"]:GetValue() or "0",
                                     hp = fieldWidgets["hp"]:GetValue() or "0",
                                     level_req = fieldWidgets["level_req"]:GetValue() or "1",
-                                    price_buy = fieldWidgets["price_buy"]:GetValue() or "0",
                                     price_sell = fieldWidgets["price_sell"]:GetValue() or "0",
                                 }
                                 SaveCategoryToCloud("equipment")
@@ -2633,15 +3023,15 @@ local function RenderEquipment()
             fieldWidgets["desc"] = descField
             table.insert(formChildren, descPanel)
 
-            local atkPanel, atkField = CreateFormField("攻击", "5", { width = 120 })
+            local atkPanel, atkField = CreateFormField("攻击", "5", { width = 120, showUnit = true })
             fieldWidgets["atk"] = atkField
             table.insert(formChildren, atkPanel)
 
-            local defPanel, defField = CreateFormField("防御", "0", { width = 120 })
+            local defPanel, defField = CreateFormField("防御", "0", { width = 120, showUnit = true })
             fieldWidgets["def"] = defField
             table.insert(formChildren, defPanel)
 
-            local hpPanel, hpField = CreateFormField("生命", "0", { width = 120 })
+            local hpPanel, hpField = CreateFormField("生命", "0", { width = 120, showUnit = true })
             fieldWidgets["hp"] = hpField
             table.insert(formChildren, hpPanel)
 
@@ -2649,11 +3039,7 @@ local function RenderEquipment()
             fieldWidgets["level_req"] = lvlField
             table.insert(formChildren, lvlPanel)
 
-            local buyPanel, buyField = CreateFormField("购买价", "50", { width = 120 })
-            fieldWidgets["price_buy"] = buyField
-            table.insert(formChildren, buyPanel)
-
-            local sellPanel, sellField = CreateFormField("出售价", "20", { width = 120 })
+            local sellPanel, sellField = CreateFormField("出售价", "20", { width = 120, showUnit = true })
             fieldWidgets["price_sell"] = sellField
             table.insert(formChildren, sellPanel)
 
@@ -2680,7 +3066,6 @@ local function RenderEquipment()
                                 def = fieldWidgets["def"]:GetValue() or "0",
                                 hp = fieldWidgets["hp"]:GetValue() or "0",
                                 level_req = fieldWidgets["level_req"]:GetValue() or "1",
-                                price_buy = fieldWidgets["price_buy"]:GetValue() or "0",
                                 price_sell = fieldWidgets["price_sell"]:GetValue() or "0",
                             }
                             SaveCategoryToCloud("equipment")
@@ -2883,23 +3268,23 @@ local function ShowShopEditDialog(title, shopData, shopId, isNew)
     local function RebuildItemRows()
         itemsContainer:RemoveAllChildren()
         for i, item in ipairs(editItems) do
-            local rowNameField, rowPriceField, rowDescField
+            -- 价格单位标签（显示在价格输入框下方）
+            local initPrice = (item.price == nil or item.price == "") and "0" or tostring(item.price)
+            local priceUnitLabel = UI.Label { text = NumFormat.Short(initPrice), fontSize = 9, fontColor = { 140, 200, 140, 255 }, marginTop = 1 }
 
-            -- 物品名
-            local _, nf = CreateFormField("物品" .. i, item.name, { width = 100, placeholder = "物品名" })
-            rowNameField = nf
-
-            -- 价格
-            local _, pf = CreateFormField("价格", tostring(item.price), { width = 60, placeholder = "0" })
-            rowPriceField = pf
-
-            -- 描述
-            local _, df = CreateFormField("描述", item.desc, { width = 100, placeholder = "描述" })
-            rowDescField = df
+            local rowNameField = UI.TextField { value = item.name or "", placeholder = "物品名", width = 100, height = 28, fontSize = 11 }
+            local rowPriceField = UI.TextField {
+                value = tostring(item.price or "0"), placeholder = "0", width = 70, height = 28, fontSize = 11,
+                onChange = function(_, t)
+                    local v = (t == nil or t == "") and "0" or t
+                    priceUnitLabel:SetText(NumFormat.Short(v))
+                end,
+            }
+            local rowDescField = UI.TextField { value = item.desc or "", placeholder = "描述", width = 90, height = 28, fontSize = 11 }
 
             local row = UI.Panel {
                 flexDirection = "row",
-                alignItems = "center",
+                alignItems = "flex-start",
                 gap = 4,
                 width = "100%",
                 children = {
@@ -2910,6 +3295,7 @@ local function ShowShopEditDialog(title, shopData, shopId, isNew)
                     UI.Panel { flexDirection = "column", gap = 1, children = {
                         UI.Label { text = "价格", fontSize = 9, fontColor = { 150, 150, 170, 255 } },
                         rowPriceField,
+                        priceUnitLabel,
                     }},
                     UI.Panel { flexDirection = "column", gap = 1, children = {
                         UI.Label { text = "描述", fontSize = 9, fontColor = { 150, 150, 170, 255 } },
@@ -2921,14 +3307,8 @@ local function ShowShopEditDialog(title, shopData, shopId, isNew)
                         width = 24,
                         height = 24,
                         variant = "secondary",
+                        marginTop = 12,
                         onClick = function()
-                            -- 先保存当前所有行的值
-                            local rows = itemsContainer:GetChildren()
-                            for ri = 1, #editItems do
-                                if ri ~= i and rows[ri] then
-                                    -- 只更新没被删的行
-                                end
-                            end
                             table.remove(editItems, i)
                             RebuildItemRows()
                         end,
@@ -2947,28 +3327,49 @@ local function ShowShopEditDialog(title, shopData, shopId, isNew)
 
     RebuildItemRows()
 
-    -- 添加商品按钮
-    local addItemBtn = UI.Button {
-        text = "+ 添加商品",
-        fontSize = 11,
-        width = 100,
-        height = 26,
-        variant = "secondary",
-        marginTop = 4,
-        onClick = function()
-            -- 先收集当前行的值
-            for _, item in ipairs(editItems) do
-                if item._nameField then
-                    item.name = item._nameField:GetValue() or ""
-                    item.price = item._priceField:GetValue() or "0"
-                    item.desc = item._descField:GetValue() or ""
-                end
+    -- 收集当前行值的辅助函数
+    local function CollectCurrentRows()
+        for _, item in ipairs(editItems) do
+            if item._nameField then
+                item.name = item._nameField:GetValue() or ""
+                local p = item._priceField:GetValue() or "0"
+                if p == "" then p = "0" end
+                item.price = p
+                item.desc = item._descField:GetValue() or ""
             end
-            table.insert(editItems, { name = "", price = "0", desc = "" })
-            RebuildItemRows()
-        end,
+        end
+    end
+
+    -- 添加商品/装备按钮
+    local addBtnPanel = UI.Panel {
+        flexDirection = "row", gap = 6, marginTop = 4,
+        children = {
+            UI.Button {
+                text = "+ 添加商品",
+                fontSize = 11,
+                width = 90,
+                height = 26,
+                variant = "secondary",
+                onClick = function()
+                    CollectCurrentRows()
+                    table.insert(editItems, { name = "", price = "0", desc = "" })
+                    RebuildItemRows()
+                end,
+            },
+            UI.Button {
+                text = "+ 添加装备",
+                fontSize = 11,
+                width = 90,
+                height = 26,
+                variant = "primary",
+                onClick = function()
+                    CollectCurrentRows()
+                    ShowEquipSelectDialog(editItems, RebuildItemRows)
+                end,
+            },
+        },
     }
-    table.insert(formChildren, addItemBtn)
+    table.insert(formChildren, addBtnPanel)
 
     -- 已有物品提示
     if #existingItems > 0 then
@@ -3017,6 +3418,7 @@ local function ShowShopEditDialog(title, shopData, shopId, isNew)
                     for _, item in ipairs(editItems) do
                         local n = item._nameField and item._nameField:GetValue() or item.name or ""
                         local p = item._priceField and item._priceField:GetValue() or item.price or "0"
+                        if p == "" then p = "0" end
                         local d = item._descField and item._descField:GetValue() or item.desc or ""
                         if n ~= "" then
                             table.insert(finalItems, { name = n, price = p, desc = d })
@@ -3109,12 +3511,42 @@ RenderShops = function()
     end
     contentPanel_:AddChild(CreateVirtualDataList(dataArray))
 
-    contentPanel_:AddChild(UI.Button {
-        text = "+ 添加商店",
-        variant = "primary", width = 120, marginTop = 8, marginLeft = 12,
-        onClick = function()
-            ShowShopEditDialog("添加新商店", nil, nil, true)
-        end,
+    contentPanel_:AddChild(UI.Panel {
+        flexDirection = "row", gap = 8, marginTop = 8, marginLeft = 12,
+        children = {
+            UI.Button {
+                text = "+ 添加商店",
+                variant = "primary", width = 120,
+                onClick = function()
+                    ShowShopEditDialog("添加新商店", nil, nil, true)
+                end,
+            },
+            UI.Button {
+                text = "一键更新装备价格",
+                variant = "secondary", width = 140,
+                onClick = function()
+                    local updatedCount = 0
+                    for id, shopData in pairs(DataManager.shops) do
+                        for _, item in ipairs(shopData.items or {}) do
+                            local equipData = DataManager.GetEquipData(item.name)
+                            if equipData and equipData.price_sell and equipData.price_sell ~= "" and equipData.price_sell ~= "0" then
+                                if item.price ~= equipData.price_sell then
+                                    item.price = equipData.price_sell
+                                    updatedCount = updatedCount + 1
+                                end
+                            end
+                        end
+                    end
+                    if updatedCount > 0 then
+                        SaveCategoryToCloud("shops")
+                        ShowMsg("已更新 " .. updatedCount .. " 件装备价格")
+                    else
+                        ShowMsg("所有装备价格已是最新")
+                    end
+                    RenderShops()
+                end,
+            },
+        },
     })
 end
 
@@ -3176,8 +3608,18 @@ local function ShowSystemShopEditDialog(title, data, shopId, isNew)
     local function RebuildItemList()
         itemListPanel:ClearChildren()
         for i, item in ipairs(editItems) do
-            local nameField = UI.TextField { value = item.name or "", placeholder = "物品名", width = "45%", height = 28, fontSize = 11 }
-            local priceField = UI.TextField { value = tostring(item.price or "0"), placeholder = "价格", width = "25%", height = 28, fontSize = 11 }
+            -- 价格单位标签（显示在价格输入框下方）
+            local initP = (item.price == nil or item.price == "") and "0" or tostring(item.price)
+            local pUnitLabel = UI.Label { text = NumFormat.Short(initP), fontSize = 9, fontColor = { 140, 200, 140, 255 }, marginTop = 1 }
+
+            local nameField = UI.TextField { value = item.name or "", placeholder = "物品名", width = "40%", height = 28, fontSize = 11 }
+            local priceField = UI.TextField {
+                value = tostring(item.price or "0"), placeholder = "价格", width = "100%", height = 28, fontSize = 11,
+                onChange = function(_, t)
+                    local v = (t == nil or t == "") and "0" or t
+                    pUnitLabel:SetText(NumFormat.Short(v))
+                end,
+            }
             local descField = UI.TextField { value = item.desc or "", placeholder = "描述", width = "25%", height = 28, fontSize = 11 }
             item._nameField = nameField
             item._priceField = priceField
@@ -3187,13 +3629,13 @@ local function ShowSystemShopEditDialog(title, data, shopId, isNew)
                 flexDirection = "row",
                 width = "100%",
                 gap = 3,
-                alignItems = "center",
+                alignItems = "flex-start",
                 children = {
                     nameField,
-                    priceField,
+                    UI.Panel { flexDirection = "column", width = "25%", children = { priceField, pUnitLabel } },
                     descField,
                     UI.Button {
-                        text = "×", variant = "danger", width = 24, height = 24, fontSize = 12,
+                        text = "×", variant = "danger", width = 24, height = 24, fontSize = 12, marginTop = 3,
                         onClick = function()
                             table.remove(editItems, i)
                             RebuildItemList()
@@ -3207,12 +3649,38 @@ local function ShowSystemShopEditDialog(title, data, shopId, isNew)
     RebuildItemList()
     table.insert(formChildren, itemListPanel)
 
-    table.insert(formChildren, UI.Button {
-        text = "+ 添加商品", variant = "outline", width = 100, height = 26, fontSize = 11, marginTop = 4,
-        onClick = function()
-            table.insert(editItems, { name = "", price = "0", desc = "" })
-            RebuildItemList()
-        end,
+    -- 收集当前行值
+    local function CollectSysRows()
+        for _, item in ipairs(editItems) do
+            if item._nameField then
+                item.name = item._nameField:GetValue() or ""
+                local p = item._priceField:GetValue() or "0"
+                if p == "" then p = "0" end
+                item.price = p
+                item.desc = item._descField:GetValue() or ""
+            end
+        end
+    end
+
+    table.insert(formChildren, UI.Panel {
+        flexDirection = "row", gap = 6, marginTop = 4,
+        children = {
+            UI.Button {
+                text = "+ 添加商品", variant = "outline", width = 90, height = 26, fontSize = 11,
+                onClick = function()
+                    CollectSysRows()
+                    table.insert(editItems, { name = "", price = "0", desc = "" })
+                    RebuildItemList()
+                end,
+            },
+            UI.Button {
+                text = "+ 添加装备", variant = "primary", width = 90, height = 26, fontSize = 11,
+                onClick = function()
+                    CollectSysRows()
+                    ShowEquipSelectDialog(editItems, RebuildItemList)
+                end,
+            },
+        },
     })
 
     -- 状态消息
@@ -3252,6 +3720,7 @@ local function ShowSystemShopEditDialog(title, data, shopId, isNew)
                     for _, item in ipairs(editItems) do
                         local n = item._nameField and item._nameField:GetValue() or item.name or ""
                         local p = item._priceField and item._priceField:GetValue() or item.price or "0"
+                        if p == "" then p = "0" end
                         local d = item._descField and item._descField:GetValue() or item.desc or ""
                         if n ~= "" then
                             table.insert(finalItems, { name = n, price = p, desc = d })
@@ -3370,35 +3839,75 @@ local function RenderDungeons()
             text = data.name or id,
             subtext = "等级:" .. (data.level_req or 0) .. " 波数:" .. (data.waves or 0) .. " 首领:" .. (data.boss or "无"),
             onEdit = function()
-                local fields = {
-                    { label = "名称", key = "name", value = data.name },
-                    { label = "描述", key = "desc", value = data.desc, opts = { width = 220 } },
-                    { label = "等级需求", key = "level_req", value = data.level_req },
-                    { label = "波数", key = "waves", value = data.waves },
-                    { label = "首领", key = "boss", value = data.boss },
-                    { label = "奖励经验", key = "reward_exp", value = data.reward_exp },
-                    { label = "奖励金币", key = "reward_gold", value = data.reward_gold },
-                    { label = "奖励物品", key = "reward_items", value = data.reward_items, opts = { width = 220 } },
-                }
-                for i = 1, tonumber(data.waves) or 1 do
-                    table.insert(fields, { label = "第" .. i .. "波", key = "wave_" .. i, value = data["wave_" .. i] or "", opts = { width = 220, placeholder = "怪物,怪物,..." } })
-                end
-                ShowEditDialog("编辑副本 - " .. id, fields, function(v)
-                    local entry = {
-                        name = v.name, desc = v.desc,
-                        level_req = v.level_req or "1", waves = v.waves or "1",
-                        boss = v.boss,
-                        reward_exp = v.reward_exp or "0", reward_gold = v.reward_gold or "0",
-                        reward_items = v.reward_items,
+                local waveCount = tonumber(data.waves) or 1
+                local function openDungeonEdit(editData, numWaves)
+                    local fields = {
+                        { label = "名称", key = "name", value = editData.name },
+                        { label = "描述", key = "desc", value = editData.desc, opts = { width = 220 } },
+                        { label = "等级需求", key = "level_req", value = editData.level_req },
+                        { label = "首领", key = "boss", value = editData.boss },
+                        { label = "奖励经验", key = "reward_exp", value = editData.reward_exp },
+                        { label = "奖励金币", key = "reward_gold", value = editData.reward_gold },
+                        { label = "奖励物品", key = "reward_items", value = editData.reward_items, opts = { width = 220 } },
                     }
-                    for i = 1, tonumber(entry.waves) or 1 do  -- for-loop 需要 number
-                        entry["wave_" .. i] = v["wave_" .. i] or ""
+                    -- 动态波次字段
+                    for i = 1, numWaves do
+                        table.insert(fields, { label = "第" .. i .. "波", key = "wave_" .. i, value = editData["wave_" .. i] or "", opts = { width = 220, placeholder = "怪物,怪物,..." } })
                     end
-                    DataManager.dungeons[id] = entry
-                    SaveCategoryToCloud("dungeons")
-                    CloseDialog()
-                    RenderDungeons()
-                end)
+                    -- 添加/删除波次按钮
+                    table.insert(fields, {
+                        type = "action",
+                        buttons = {
+                            UI.Button {
+                                text = "+ 添加波次",
+                                variant = "primary",
+                                width = 100,
+                                onClick = function()
+                                    -- 收集当前输入值后重新打开
+                                    local cur = {}
+                                    for k, w in pairs(editDialog_ and editDialog_._fieldWidgets or {}) do
+                                        cur[k] = w:GetValue() or ""
+                                    end
+                                    -- 合并到 editData
+                                    for k, v in pairs(cur) do editData[k] = v end
+                                    openDungeonEdit(editData, numWaves + 1)
+                                end,
+                            },
+                            UI.Button {
+                                text = "- 删除最后波",
+                                variant = "danger",
+                                width = 100,
+                                disabled = numWaves <= 1,
+                                onClick = function()
+                                    local cur = {}
+                                    for k, w in pairs(editDialog_ and editDialog_._fieldWidgets or {}) do
+                                        cur[k] = w:GetValue() or ""
+                                    end
+                                    for k, v in pairs(cur) do editData[k] = v end
+                                    editData["wave_" .. numWaves] = nil
+                                    openDungeonEdit(editData, numWaves - 1)
+                                end,
+                            },
+                        },
+                    })
+                    ShowEditDialog("编辑副本 - " .. id .. " (波数:" .. numWaves .. ")", fields, function(v)
+                        local entry = {
+                            name = v.name, desc = v.desc,
+                            level_req = v.level_req or "1", waves = tostring(numWaves),
+                            boss = v.boss,
+                            reward_exp = v.reward_exp or "0", reward_gold = v.reward_gold or "0",
+                            reward_items = v.reward_items,
+                        }
+                        for i = 1, numWaves do
+                            entry["wave_" .. i] = v["wave_" .. i] or ""
+                        end
+                        DataManager.dungeons[id] = entry
+                        SaveCategoryToCloud("dungeons")
+                        CloseDialog()
+                        RenderDungeons()
+                    end)
+                end
+                openDungeonEdit(data, waveCount)
             end,
             onDelete = function()
                 DataManager.dungeons[id] = nil
@@ -3414,36 +3923,72 @@ local function RenderDungeons()
         text = "+ 添加副本",
         variant = "primary", width = 120, marginTop = 8, marginLeft = 12,
         onClick = function()
-            ShowEditDialog("添加副本", {
-                { label = "副本ID", key = "id", value = "", opts = { placeholder = "如: dungeon_006" } },
-                { label = "名称", key = "name", value = "" },
-                { label = "描述", key = "desc", value = "", opts = { width = 220 } },
-                { label = "等级需求", key = "level_req", value = "5" },
-                { label = "波数", key = "waves", value = "3" },
-                { label = "第1波", key = "wave_1", value = "", opts = { width = 220, placeholder = "怪物,怪物" } },
-                { label = "第2波", key = "wave_2", value = "", opts = { width = 220 } },
-                { label = "第3波", key = "wave_3", value = "", opts = { width = 220 } },
-                { label = "首领", key = "boss", value = "" },
-                { label = "奖励经验", key = "reward_exp", value = "50" },
-                { label = "奖励金币", key = "reward_gold", value = "80" },
-                { label = "奖励物品", key = "reward_items", value = "", opts = { width = 220 } },
-            }, function(v)
-                if v.id == "" then return end
-                local entry = {
-                    name = v.name, desc = v.desc,
-                    level_req = v.level_req or "1", waves = v.waves or "3",
-                    boss = v.boss,
-                    reward_exp = v.reward_exp or "0", reward_gold = v.reward_gold or "0",
-                    reward_items = v.reward_items,
+            local function openDungeonAdd(addData, numWaves)
+                local fields = {
+                    { label = "副本ID", key = "id", value = addData.id or "", opts = { placeholder = "如: dungeon_006" } },
+                    { label = "名称", key = "name", value = addData.name or "" },
+                    { label = "描述", key = "desc", value = addData.desc or "", opts = { width = 220 } },
+                    { label = "等级需求", key = "level_req", value = addData.level_req or "5" },
+                    { label = "首领", key = "boss", value = addData.boss or "" },
+                    { label = "奖励经验", key = "reward_exp", value = addData.reward_exp or "50" },
+                    { label = "奖励金币", key = "reward_gold", value = addData.reward_gold or "80" },
+                    { label = "奖励物品", key = "reward_items", value = addData.reward_items or "", opts = { width = 220 } },
                 }
-                for i = 1, tonumber(entry.waves) or 3 do  -- for-loop 需要 number
-                    entry["wave_" .. i] = v["wave_" .. i] or ""
+                for i = 1, numWaves do
+                    table.insert(fields, { label = "第" .. i .. "波", key = "wave_" .. i, value = addData["wave_" .. i] or "", opts = { width = 220, placeholder = "怪物,怪物,..." } })
                 end
-                DataManager.dungeons[v.id] = entry
-                SaveCategoryToCloud("dungeons")
-                CloseDialog()
-                RenderDungeons()
-            end)
+                table.insert(fields, {
+                    type = "action",
+                    buttons = {
+                        UI.Button {
+                            text = "+ 添加波次",
+                            variant = "primary",
+                            width = 100,
+                            onClick = function()
+                                local cur = {}
+                                for k, w in pairs(editDialog_ and editDialog_._fieldWidgets or {}) do
+                                    cur[k] = w:GetValue() or ""
+                                end
+                                for k, v in pairs(cur) do addData[k] = v end
+                                openDungeonAdd(addData, numWaves + 1)
+                            end,
+                        },
+                        UI.Button {
+                            text = "- 删除最后波",
+                            variant = "danger",
+                            width = 100,
+                            disabled = numWaves <= 1,
+                            onClick = function()
+                                local cur = {}
+                                for k, w in pairs(editDialog_ and editDialog_._fieldWidgets or {}) do
+                                    cur[k] = w:GetValue() or ""
+                                end
+                                for k, v in pairs(cur) do addData[k] = v end
+                                addData["wave_" .. numWaves] = nil
+                                openDungeonAdd(addData, numWaves - 1)
+                            end,
+                        },
+                    },
+                })
+                ShowEditDialog("添加副本 (波数:" .. numWaves .. ")", fields, function(v)
+                    if v.id == "" then return end
+                    local entry = {
+                        name = v.name, desc = v.desc,
+                        level_req = v.level_req or "1", waves = tostring(numWaves),
+                        boss = v.boss,
+                        reward_exp = v.reward_exp or "0", reward_gold = v.reward_gold or "0",
+                        reward_items = v.reward_items,
+                    }
+                    for i = 1, numWaves do
+                        entry["wave_" .. i] = v["wave_" .. i] or ""
+                    end
+                    DataManager.dungeons[v.id] = entry
+                    SaveCategoryToCloud("dungeons")
+                    CloseDialog()
+                    RenderDungeons()
+                end)
+            end
+            openDungeonAdd({}, 3)
         end,
     })
 end
@@ -3908,7 +4453,6 @@ local function GenerateEquipment(count, filterSlots, filterQualities)
             def = defVal,
             hp = hpVal,
             level_req = lvReq,
-            price_buy = price,
             price_sell = sell,
         }
         generated = generated + 1
@@ -3927,6 +4471,7 @@ local ITEM_TYPE_EFFECTS = {
     ["恢复灵力"] = { effect = "heal_mp", descFmt = "服用后可恢复%d点灵力" },
     ["经验倍率"] = { effect = "exp_mult", descFmt = "使用后经验获取提升%d倍持续一段时间" },
     ["货币倍率"] = { effect = "gold_mult", descFmt = "使用后金币获取提升%d倍持续一段时间" },
+    ["复活"] = { effect = "revive", descFmt = "死亡后使用可满血复活" },
     ["材料"] = { effect = "none", descFmt = "修炼用的珍贵材料" },
 }
 
@@ -4529,20 +5074,202 @@ local function DeployAll()
             if gameConfigMod.game then
                 gameConfigMod.game.start_map = newStart
             end
-            SaveCategoryToCloud("game_config")
             changes = changes + 1
         end
     end
 
-    -- 保存所有改动
-    SaveCategoryToCloud("maps")
-    SaveCategoryToCloud("monsters")
-    SaveCategoryToCloud("shops")
-    SaveCategoryToCloud("dungeons")
-    SaveCategoryToCloud("npcs")
-    SaveCategoryToCloud("quests")
-
+    -- 注意：不在此处保存，由调用方统一 BatchSet 批量保存（1次网络请求代替7次）
     return changes
+end
+
+--- 序列化指定分类为云端 key + INI content（不执行保存）
+---@param category string
+---@return string|nil cloudKey
+---@return string|nil content
+local function SerializeCategoryForCloud(category)
+    if category == "maps" then
+        local sections = {}
+        for id, data in pairs(DataManager.maps) do
+            sections[id] = {
+                ["名称"] = data.name or id,
+                ["描述"] = data.desc or "",
+                ["怪物"] = data.monsters or "",
+                ["NPC"] = data.npcs or "",
+                ["前方"] = data.front or "",
+                ["后方"] = data.back or "",
+                ["左方"] = data.left or "",
+                ["右方"] = data.right or "",
+                ["等级要求"] = NumFormat.Int(data.level_req or 0),
+            }
+        end
+        return "系统配置/maps.ini", IniParser.Serialize(sections)
+    elseif category == "monsters" then
+        local sections = {}
+        for id, data in pairs(DataManager.monsters) do
+            local sec = {
+                ["名称"] = data.name or id,
+                ["类型"] = data.type or "普通怪",
+                ["描述"] = data.desc or "",
+                ["生命值"] = NumFormat.Int(data.hp or 20),
+                ["攻击力"] = NumFormat.Int(data.atk or 3),
+                ["防御力"] = NumFormat.Int(data.def or 1),
+                ["经验值"] = NumFormat.Int(data.exp or 5),
+                ["金币"] = NumFormat.Int(data.gold or 2),
+                ["掉落"] = data.drops or "",
+            }
+            if data.currency_drops then
+                local cIdx = 0
+                for cName, cVal in pairs(data.currency_drops) do
+                    cIdx = cIdx + 1
+                    sec["货币" .. cIdx .. "_名称"] = cName
+                    sec["货币" .. cIdx .. "_数量"] = NumFormat.Int(cVal or 0)
+                end
+                sec["货币数量"] = tostring(cIdx)
+            else
+                sec["货币数量"] = "0"
+            end
+            sections[id] = sec
+        end
+        return "系统配置/monsters.ini", IniParser.Serialize(sections)
+    elseif category == "shops" then
+        local sections = {}
+        for id, data in pairs(DataManager.shops) do
+            local sec = {
+                ["名称"] = data.name or id,
+                ["描述"] = data.desc or "",
+                ["商品数量"] = tostring(#(data.items or {})),
+            }
+            for i, item in ipairs(data.items or {}) do
+                local p = item.price or "0"
+                if p == "" then p = "0" end
+                sec["商品_" .. i] = (item.name or "") .. ":" .. p .. ":" .. (item.desc or "")
+            end
+            sections[id] = sec
+        end
+        return "系统配置/shops.ini", IniParser.Serialize(sections)
+    elseif category == "dungeons" then
+        local sections = {}
+        for id, data in pairs(DataManager.dungeons) do
+            local sec = {
+                ["名称"] = data.name or id,
+                ["描述"] = data.desc or "",
+                ["等级需求"] = NumFormat.Int(data.level_req or 1),
+                ["波数"] = NumFormat.Int(data.waves or 1),
+                ["首领"] = data.boss or "",
+                ["奖励经验"] = NumFormat.Int(data.reward_exp or 0),
+                ["奖励金币"] = NumFormat.Int(data.reward_gold or 0),
+                ["奖励物品"] = data.reward_items or "",
+            }
+            for i = 1, (data.waves or 1) do
+                sec["第" .. i .. "波"] = data["wave_" .. i] or ""
+            end
+            sections[id] = sec
+        end
+        return "系统配置/dungeons.ini", IniParser.Serialize(sections)
+    elseif category == "npcs" then
+        local sections = {}
+        for id, data in pairs(DataManager.npcs) do
+            local sec = {
+                ["名称"] = data.name or id,
+                ["类型"] = data.type or "任务",
+                ["对话"] = data.dialog or "",
+                ["所在地"] = data.location or "",
+            }
+            if data.type == "商人" or data.type == "merchant" then
+                sec["商店编号"] = data.shop_id or ""
+            else
+                sec["任务编号"] = data.quest_id or ""
+            end
+            sections[id] = sec
+        end
+        return "系统配置/npcs.ini", IniParser.Serialize(sections)
+    elseif category == "quests" then
+        local sections = {}
+        for id, data in pairs(DataManager.quests) do
+            sections[id] = {
+                ["名称"] = data.name or id,
+                ["类型"] = data.type or "主线",
+                ["描述"] = data.desc or "",
+                ["目标类型"] = data.target_type or "击杀",
+                ["目标名称"] = data.target_name or "",
+                ["目标数量"] = NumFormat.Int(data.target_count or 1),
+                ["奖励经验"] = NumFormat.Int(data.reward_exp or 0),
+                ["奖励金币"] = NumFormat.Int(data.reward_gold or 0),
+                ["奖励物品"] = data.reward_items or "",
+                ["后续任务"] = data.next_quest or "",
+            }
+        end
+        return "系统配置/quests.ini", IniParser.Serialize(sections)
+    elseif category == "game_config" then
+        local gc = DataManager.gameConfig
+        local sections = {}
+        local gameSec = gc["game"] or {}
+        sections["游戏设置"] = {
+            ["标题"] = gameSec.title or "修仙游戏",
+            ["版本"] = gameSec.version or "1.0.0",
+            ["起始地图"] = gameSec.start_map or "新手村",
+            ["起始任务"] = gameSec.start_quest or "main_001",
+        }
+        local defSec = gc["player_default"] or {}
+        sections["玩家默认属性"] = {
+            ["生命值"] = NumFormat.Int(defSec.hp or 100),
+            ["法力值"] = NumFormat.Int(defSec.mp or 50),
+            ["攻击力"] = NumFormat.Int(defSec.atk or 5),
+            ["防御力"] = NumFormat.Int(defSec.def or 3),
+            ["等级"] = NumFormat.Int(defSec.level or 1),
+            ["经验"] = NumFormat.Int(defSec.exp or 0),
+            ["金币"] = NumFormat.Int(defSec.gold or 50),
+        }
+        local lvlSec = gc["level_up"] or {}
+        sections["升级配置"] = {
+            ["基础经验"] = NumFormat.Int(lvlSec.base_exp or 20),
+            ["经验系数"] = tostring(lvlSec.exp_factor or 2),
+            ["每级生命"] = NumFormat.Int(lvlSec.hp_per_level or 20),
+            ["每级法力"] = NumFormat.Int(lvlSec.mp_per_level or 10),
+            ["每级攻击"] = NumFormat.Int(lvlSec.atk_per_level or 3),
+            ["每级防御"] = NumFormat.Int(lvlSec.def_per_level or 2),
+            ["最高等级"] = NumFormat.Int(lvlSec.max_level or 100),
+        }
+        local currList = gc["currencies"] or { "金币" }
+        local currSec = { ["货币数量"] = tostring(#currList) }
+        for i, name in ipairs(currList) do
+            currSec["货币_" .. i] = name
+        end
+        sections["货币配置"] = currSec
+        local monGenSec = { ["类型数量"] = tostring(#MONSTER_TYPES) }
+        for i, mt in ipairs(MONSTER_TYPES) do
+            monGenSec["类型" .. i .. "_名称"] = mt.name
+            monGenSec["类型" .. i .. "_HP下限"] = mt.min_hp or "10"
+            monGenSec["类型" .. i .. "_HP上限"] = mt.max_hp or "2000"
+            monGenSec["类型" .. i .. "_攻击下限"] = mt.min_atk or "5"
+            monGenSec["类型" .. i .. "_攻击上限"] = mt.max_atk or "1000"
+            monGenSec["类型" .. i .. "_防御下限"] = mt.min_def or "3"
+            monGenSec["类型" .. i .. "_防御上限"] = mt.max_def or "800"
+            monGenSec["类型" .. i .. "_经验下限"] = mt.min_exp or "5"
+            monGenSec["类型" .. i .. "_经验上限"] = mt.max_exp or "500"
+            if mt.currency_ranges then
+                local cIdx = 0
+                for cName, cRange in pairs(mt.currency_ranges) do
+                    cIdx = cIdx + 1
+                    monGenSec["类型" .. i .. "_货币" .. cIdx .. "_名称"] = cName
+                    monGenSec["类型" .. i .. "_货币" .. cIdx .. "_下限"] = cRange.min or "0"
+                    monGenSec["类型" .. i .. "_货币" .. cIdx .. "_上限"] = cRange.max or "0"
+                end
+                monGenSec["类型" .. i .. "_货币数量"] = tostring(cIdx)
+            else
+                monGenSec["类型" .. i .. "_货币数量"] = "0"
+            end
+            monGenSec["类型" .. i .. "_描述"] = mt.desc or ""
+        end
+        sections["怪物生成配置"] = monGenSec
+        local deployCfg = gc["deploy"] or {}
+        sections["部署版本"] = {
+            ["版本号"] = tostring(deployCfg.version or 0),
+            ["目标地图"] = deployCfg.target_map or "",
+        }
+        return "系统配置/game_config.ini", IniParser.Serialize(sections)
+    end
+    return nil, nil
 end
 
 --- 渲染境界管理面板
@@ -4780,7 +5507,7 @@ local function RenderDistribute()
     local currFields = {}  -- { name = field } 映射
     local currPanels = {}  -- 面板列表用于 children
     for _, cname in ipairs(currList) do
-        local p, f = CreateFormField(cname .. "数量", "0", { placeholder = "0", width = 120 })
+        local p, f = CreateFormField(cname .. "数量", "0", { placeholder = "0", width = 120, showUnit = true })
         currFields[cname] = f
         table.insert(currPanels, p)
     end
@@ -5349,15 +6076,15 @@ local function RenderPetEquip()
                 fieldWidgets["desc"] = descField
                 table.insert(formChildren, descPanel)
 
-                local atkPanel, atkField = CreateFormField("宠物攻击", tostring(data.pet_atk or "10"), { width = 120 })
+                local atkPanel, atkField = CreateFormField("宠物攻击", tostring(data.pet_atk or "10"), { width = 120, showUnit = true })
                 fieldWidgets["pet_atk"] = atkField
                 table.insert(formChildren, atkPanel)
 
-                local defPanel, defField = CreateFormField("宠物防御", tostring(data.pet_def or "5"), { width = 120 })
+                local defPanel, defField = CreateFormField("宠物防御", tostring(data.pet_def or "5"), { width = 120, showUnit = true })
                 fieldWidgets["pet_def"] = defField
                 table.insert(formChildren, defPanel)
 
-                local hpPanel, hpField = CreateFormField("宠物生命", tostring(data.pet_hp or "20"), { width = 120 })
+                local hpPanel, hpField = CreateFormField("宠物生命", tostring(data.pet_hp or "20"), { width = 120, showUnit = true })
                 fieldWidgets["pet_hp"] = hpField
                 table.insert(formChildren, hpPanel)
 
@@ -5443,15 +6170,15 @@ local function RenderPetEquip()
             fieldWidgets["desc"] = descField
             table.insert(formChildren, descPanel)
 
-            local atkPanel, atkField = CreateFormField("宠物攻击", "10", { width = 120 })
+            local atkPanel, atkField = CreateFormField("宠物攻击", "10", { width = 120, showUnit = true })
             fieldWidgets["pet_atk"] = atkField
             table.insert(formChildren, atkPanel)
 
-            local defPanel, defField = CreateFormField("宠物防御", "5", { width = 120 })
+            local defPanel, defField = CreateFormField("宠物防御", "5", { width = 120, showUnit = true })
             fieldWidgets["pet_def"] = defField
             table.insert(formChildren, defPanel)
 
-            local hpPanel, hpField = CreateFormField("宠物生命", "20", { width = 120 })
+            local hpPanel, hpField = CreateFormField("宠物生命", "20", { width = 120, showUnit = true })
             fieldWidgets["pet_hp"] = hpField
             table.insert(formChildren, hpPanel)
 
@@ -5985,15 +6712,32 @@ local function RenderGenerator()
     local selectedMonsterType = 1  -- 默认普通怪
 
     -- 三组区间输入框：战斗属性 / 经验 / 金币
-    -- HP/ATK/DEF/EXP 独立区间输入框
-    local monsterMinHpField = UI.TextField { value = MONSTER_TYPES[1].min_hp, placeholder = "HP下限", width = 90, height = 24, fontSize = 10 }
-    local monsterMaxHpField = UI.TextField { value = MONSTER_TYPES[1].max_hp, placeholder = "HP上限", width = 90, height = 24, fontSize = 10 }
-    local monsterMinAtkField = UI.TextField { value = MONSTER_TYPES[1].min_atk, placeholder = "攻击下限", width = 90, height = 24, fontSize = 10 }
-    local monsterMaxAtkField = UI.TextField { value = MONSTER_TYPES[1].max_atk, placeholder = "攻击上限", width = 90, height = 24, fontSize = 10 }
-    local monsterMinDefField = UI.TextField { value = MONSTER_TYPES[1].min_def, placeholder = "防御下限", width = 90, height = 24, fontSize = 10 }
-    local monsterMaxDefField = UI.TextField { value = MONSTER_TYPES[1].max_def, placeholder = "防御上限", width = 90, height = 24, fontSize = 10 }
-    local monsterMinExpField = UI.TextField { value = MONSTER_TYPES[1].min_exp, placeholder = "经验下限", width = 90, height = 24, fontSize = 10 }
-    local monsterMaxExpField = UI.TextField { value = MONSTER_TYPES[1].max_exp, placeholder = "经验上限", width = 90, height = 24, fontSize = 10 }
+    -- 计数单位标签辅助函数
+    local function makeUnitLabel(val)
+        return UI.Label { text = NumFormat.Short(val), fontSize = 9, fontColor = { 140, 200, 140, 255 }, marginLeft = 2, width = 55 }
+    end
+    local function updateUnitLabel(label, text)
+        local v = text or "0"
+        if v == "" then v = "0" end
+        label:SetText(NumFormat.Short(v))
+    end
+    -- HP/ATK/DEF/EXP 独立区间输入框 + 单位标签
+    local monsterMinHpUnit = makeUnitLabel(MONSTER_TYPES[1].min_hp)
+    local monsterMaxHpUnit = makeUnitLabel(MONSTER_TYPES[1].max_hp)
+    local monsterMinAtkUnit = makeUnitLabel(MONSTER_TYPES[1].min_atk)
+    local monsterMaxAtkUnit = makeUnitLabel(MONSTER_TYPES[1].max_atk)
+    local monsterMinDefUnit = makeUnitLabel(MONSTER_TYPES[1].min_def)
+    local monsterMaxDefUnit = makeUnitLabel(MONSTER_TYPES[1].max_def)
+    local monsterMinExpUnit = makeUnitLabel(MONSTER_TYPES[1].min_exp)
+    local monsterMaxExpUnit = makeUnitLabel(MONSTER_TYPES[1].max_exp)
+    local monsterMinHpField = UI.TextField { value = MONSTER_TYPES[1].min_hp, placeholder = "HP下限", width = 90, height = 24, fontSize = 10, onChange = function(_, t) updateUnitLabel(monsterMinHpUnit, t) end }
+    local monsterMaxHpField = UI.TextField { value = MONSTER_TYPES[1].max_hp, placeholder = "HP上限", width = 90, height = 24, fontSize = 10, onChange = function(_, t) updateUnitLabel(monsterMaxHpUnit, t) end }
+    local monsterMinAtkField = UI.TextField { value = MONSTER_TYPES[1].min_atk, placeholder = "攻击下限", width = 90, height = 24, fontSize = 10, onChange = function(_, t) updateUnitLabel(monsterMinAtkUnit, t) end }
+    local monsterMaxAtkField = UI.TextField { value = MONSTER_TYPES[1].max_atk, placeholder = "攻击上限", width = 90, height = 24, fontSize = 10, onChange = function(_, t) updateUnitLabel(monsterMaxAtkUnit, t) end }
+    local monsterMinDefField = UI.TextField { value = MONSTER_TYPES[1].min_def, placeholder = "防御下限", width = 90, height = 24, fontSize = 10, onChange = function(_, t) updateUnitLabel(monsterMinDefUnit, t) end }
+    local monsterMaxDefField = UI.TextField { value = MONSTER_TYPES[1].max_def, placeholder = "防御上限", width = 90, height = 24, fontSize = 10, onChange = function(_, t) updateUnitLabel(monsterMaxDefUnit, t) end }
+    local monsterMinExpField = UI.TextField { value = MONSTER_TYPES[1].min_exp, placeholder = "经验下限", width = 90, height = 24, fontSize = 10, onChange = function(_, t) updateUnitLabel(monsterMinExpUnit, t) end }
+    local monsterMaxExpField = UI.TextField { value = MONSTER_TYPES[1].max_exp, placeholder = "经验上限", width = 90, height = 24, fontSize = 10, onChange = function(_, t) updateUnitLabel(monsterMaxExpUnit, t) end }
     local monsterRangeLabel = UI.Label { text = "当前类型: " .. MONSTER_TYPES[1].name, fontSize = 11, fontColor = { 180, 180, 255, 255 } }
 
     -- 货币区间输入框（动态，按 currencies 列表生成）
@@ -6006,17 +6750,19 @@ local function RenderGenerator()
         currencyFieldPanels = {}
         for _, cName in ipairs(currencies) do
             local cRange = (mtype.currency_ranges and mtype.currency_ranges[cName]) or { min = "0", max = "0" }
-            local minF = UI.TextField { value = cRange.min, placeholder = cName .. "下限", width = 90, height = 24, fontSize = 10 }
-            local maxF = UI.TextField { value = cRange.max, placeholder = cName .. "上限", width = 90, height = 24, fontSize = 10 }
-            currencyFields[cName] = { minField = minF, maxField = maxF }
+            local minUnit = makeUnitLabel(cRange.min)
+            local maxUnit = makeUnitLabel(cRange.max)
+            local minF = UI.TextField { value = cRange.min, placeholder = cName .. "下限", width = 90, height = 24, fontSize = 10, onChange = function(_, t) updateUnitLabel(minUnit, t) end }
+            local maxF = UI.TextField { value = cRange.max, placeholder = cName .. "上限", width = 90, height = 24, fontSize = 10, onChange = function(_, t) updateUnitLabel(maxUnit, t) end }
+            currencyFields[cName] = { minField = minF, maxField = maxF, minUnit = minUnit, maxUnit = maxUnit }
             table.insert(currencyFieldPanels, UI.Panel {
                 flexDirection = "row", alignItems = "center", gap = 4, marginTop = 3,
                 flexWrap = "wrap",
                 children = {
-                    UI.Label { text = cName .. ":", fontSize = 10, fontColor = { 200, 200, 220, 255 }, width = 60 },
-                    minF,
+                    UI.Label { text = cName .. ":", fontSize = 10, fontColor = { 200, 200, 220, 255 }, width = 40 },
+                    minF, minUnit,
                     UI.Label { text = "~", fontSize = 10, fontColor = { 200, 200, 220, 255 } },
-                    maxF,
+                    maxF, maxUnit,
                 },
             })
         end
@@ -6034,12 +6780,23 @@ local function RenderGenerator()
         monsterMaxDefField:SetValue(mtype.max_def or "800")
         monsterMinExpField:SetValue(mtype.min_exp or "5")
         monsterMaxExpField:SetValue(mtype.max_exp or "500")
+        -- 刷新单位标签
+        updateUnitLabel(monsterMinHpUnit, mtype.min_hp or "10")
+        updateUnitLabel(monsterMaxHpUnit, mtype.max_hp or "2000")
+        updateUnitLabel(monsterMinAtkUnit, mtype.min_atk or "5")
+        updateUnitLabel(monsterMaxAtkUnit, mtype.max_atk or "1000")
+        updateUnitLabel(monsterMinDefUnit, mtype.min_def or "3")
+        updateUnitLabel(monsterMaxDefUnit, mtype.max_def or "800")
+        updateUnitLabel(monsterMinExpUnit, mtype.min_exp or "5")
+        updateUnitLabel(monsterMaxExpUnit, mtype.max_exp or "500")
         -- 刷新货币字段
         for _, cName in ipairs(currencies) do
             local cRange = (mtype.currency_ranges and mtype.currency_ranges[cName]) or { min = "0", max = "0" }
             if currencyFields[cName] then
                 currencyFields[cName].minField:SetValue(cRange.min)
                 currencyFields[cName].maxField:SetValue(cRange.max)
+                updateUnitLabel(currencyFields[cName].minUnit, cRange.min)
+                updateUnitLabel(currencyFields[cName].maxUnit, cRange.max)
             end
         end
         monsterRangeLabel:SetText("当前类型: " .. mtype.name)
@@ -6175,10 +6932,10 @@ local function RenderGenerator()
                 flexDirection = "row", alignItems = "center", gap = 4, marginTop = 4,
                 flexWrap = "wrap",
                 children = {
-                    UI.Label { text = "生命:", fontSize = 10, fontColor = { 200, 200, 220, 255 }, width = 60 },
-                    monsterMinHpField,
+                    UI.Label { text = "生命:", fontSize = 10, fontColor = { 200, 200, 220, 255 }, width = 40 },
+                    monsterMinHpField, monsterMinHpUnit,
                     UI.Label { text = "~", fontSize = 10, fontColor = { 200, 200, 220, 255 } },
-                    monsterMaxHpField,
+                    monsterMaxHpField, monsterMaxHpUnit,
                 },
             },
             -- 攻击区间
@@ -6186,10 +6943,10 @@ local function RenderGenerator()
                 flexDirection = "row", alignItems = "center", gap = 4, marginTop = 3,
                 flexWrap = "wrap",
                 children = {
-                    UI.Label { text = "攻击:", fontSize = 10, fontColor = { 200, 200, 220, 255 }, width = 60 },
-                    monsterMinAtkField,
+                    UI.Label { text = "攻击:", fontSize = 10, fontColor = { 200, 200, 220, 255 }, width = 40 },
+                    monsterMinAtkField, monsterMinAtkUnit,
                     UI.Label { text = "~", fontSize = 10, fontColor = { 200, 200, 220, 255 } },
-                    monsterMaxAtkField,
+                    monsterMaxAtkField, monsterMaxAtkUnit,
                 },
             },
             -- 防御区间
@@ -6197,10 +6954,10 @@ local function RenderGenerator()
                 flexDirection = "row", alignItems = "center", gap = 4, marginTop = 3,
                 flexWrap = "wrap",
                 children = {
-                    UI.Label { text = "防御:", fontSize = 10, fontColor = { 200, 200, 220, 255 }, width = 60 },
-                    monsterMinDefField,
+                    UI.Label { text = "防御:", fontSize = 10, fontColor = { 200, 200, 220, 255 }, width = 40 },
+                    monsterMinDefField, monsterMinDefUnit,
                     UI.Label { text = "~", fontSize = 10, fontColor = { 200, 200, 220, 255 } },
-                    monsterMaxDefField,
+                    monsterMaxDefField, monsterMaxDefUnit,
                 },
             },
             -- 经验区间
@@ -6208,10 +6965,10 @@ local function RenderGenerator()
                 flexDirection = "row", alignItems = "center", gap = 4, marginTop = 3,
                 flexWrap = "wrap",
                 children = {
-                    UI.Label { text = "经验:", fontSize = 10, fontColor = { 200, 200, 220, 255 }, width = 60 },
-                    monsterMinExpField,
+                    UI.Label { text = "经验:", fontSize = 10, fontColor = { 200, 200, 220, 255 }, width = 40 },
+                    monsterMinExpField, monsterMinExpUnit,
                     UI.Label { text = "~", fontSize = 10, fontColor = { 200, 200, 220, 255 } },
-                    monsterMaxExpField,
+                    monsterMaxExpField, monsterMaxExpUnit,
                 },
             },
             -- 货币区间（动态，按配置的货币列表生成）
@@ -6414,7 +7171,7 @@ local function RenderGenerator()
                                 name = name, slot = slotCN, quality = quality,
                                 desc = prefix .. "套装之" .. name .. "，" .. quality .. "品质",
                                 atk = atkVal, def = defVal, hp = hpVal,
-                                level_req = lvReq, price_buy = price, price_sell = sell,
+                                level_req = lvReq, price_sell = sell,
                             }
                             generated = generated + 1
                             ::set_continue::
@@ -6642,15 +7399,70 @@ local function RenderGenerator()
                 marginBottom = 10,
             },
             UI.Button {
+                id = "deploy_btn",
                 text = "一键部署",
                 variant = "primary",
                 width = 120,
                 height = 36,
                 fontSize = 14,
-                onClick = function()
+                disabled = (DataManager.gameConfig and DataManager.gameConfig["deploy"] and DataManager.gameConfig["deploy"].version or 0) > 0,
+                onClick = function(self)
+                    -- 防止重复点击
+                    self:SetDisabled(true)
+                    self:SetText("部署中...")
+
                     local changes = DeployAll()
-                    deployResult:SetText("部署完成！共关联 " .. changes .. " 处数据")
-                    ShowMsg("一键部署完成: " .. changes .. " 处关联")
+
+                    -- 确定目标地图
+                    local targetMap = "新手村"
+                    if not DataManager.maps[targetMap] then
+                        local gc = DataManager.gameConfig or {}
+                        local gameSec = gc["game"] or {}
+                        targetMap = gameSec.start_map or ""
+                        if targetMap == "" or not DataManager.maps[targetMap] then
+                            for name, _ in pairs(DataManager.maps) do
+                                targetMap = name
+                                break
+                            end
+                        end
+                    end
+
+                    -- 懒迁移：递增部署版本号+记录目标地图
+                    local gc = DataManager.gameConfig
+                    if not gc["deploy"] then gc["deploy"] = { version = 0, target_map = "" } end
+                    gc["deploy"].version = (gc["deploy"].version or 0) + 1
+                    gc["deploy"].target_map = targetMap
+
+                    -- 批量保存：7个分类合并为1次网络请求（原来7次独立请求）
+                    local cloud = DataManager.GetCloudProvider()
+                    if not cloud then
+                        self:SetText("一键部署")
+                        self:SetDisabled(false)
+                        ShowMsg("云存储不可用，部署失败")
+                        return
+                    end
+                    local batch = cloud:BatchSet()
+                    local categories = { "maps", "monsters", "shops", "dungeons", "npcs", "quests", "game_config" }
+                    for _, cat in ipairs(categories) do
+                        local key, content = SerializeCategoryForCloud(cat)
+                        if key and content then
+                            batch:Set(key, content)
+                        end
+                    end
+                    batch:Save("一键部署批量保存", {
+                        ok = function()
+                            deployResult:SetText("部署完成！关联 " .. changes .. " 处，玩家登录时自动传送至【" .. targetMap .. "】(v" .. gc["deploy"].version .. ")")
+                            self:SetText("已部署 ✓")
+                            print("[Deploy] BatchSet 成功，7个分类1次写入")
+                        end,
+                        error = function(code, reason)
+                            deployResult:SetText("部署关联 " .. changes .. " 处，但保存失败: " .. tostring(reason))
+                            self:SetText("部署失败")
+                            self:SetDisabled(false)
+                            print("[Deploy] BatchSet 失败: " .. tostring(reason))
+                        end,
+                    })
+                    ShowMsg("一键部署完成: " .. changes .. " 处关联，正在保存...")
                 end,
             },
             deployResult,
@@ -6700,6 +7512,12 @@ local function RenderGenerator()
                     DataManager.dungeons = {}
                     DataManager.npcs = {}
                     DataManager.giftpacks = {}
+                    -- 重置部署版本号（允许重新部署）
+                    local gc = DataManager.gameConfig
+                    if gc and gc["deploy"] then
+                        gc["deploy"].version = 0
+                        gc["deploy"].target_map = ""
+                    end
                     -- 保存到云端
                     SaveCategoryToCloud("maps")
                     SaveCategoryToCloud("monsters")
@@ -6710,8 +7528,15 @@ local function RenderGenerator()
                     SaveCategoryToCloud("dungeons")
                     SaveCategoryToCloud("npcs")
                     SaveCategoryToCloud("giftpacks")
-                    deleteResult:SetText("已删除所有系统数据！")
+                    SaveCategoryToCloud("game_config")
+                    deleteResult:SetText("已删除所有系统数据！可重新部署")
                     ShowMsg("已删除所有系统数据")
+                    -- 解锁部署按钮
+                    local deployBtn = deploySection:FindById("deploy_btn")
+                    if deployBtn then
+                        deployBtn:SetDisabled(false)
+                        deployBtn:SetText("一键部署")
+                    end
                 end,
             },
             deleteResult,

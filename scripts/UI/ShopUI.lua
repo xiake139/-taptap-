@@ -161,9 +161,33 @@ function ShopUI.RefreshSystemShopDetail(shopId)
 
     for _, shopItem in ipairs(items) do
         local itemName = shopItem.name or ""
-        local price = shopItem.price or "0"
         local desc = shopItem.desc or ""
         if itemName == "" then goto continue_item end
+
+        -- 定价逻辑：单价不为0用输入价格，为0则采用装备数据的出售价
+        local itemData = DataManager.GetItem(itemName)
+        local shopPrice = shopItem.price or "0"
+        local price
+        if shopPrice ~= "" and shopPrice ~= "0" then
+            price = shopPrice
+        else
+            -- 回退：尝试从装备数据获取出售价
+            local priceSell = nil
+            if itemData and itemData.price_sell and itemData.price_sell ~= "" and itemData.price_sell ~= "0" then
+                priceSell = itemData.price_sell
+            else
+                local equipData = DataManager.GetEquipData(itemName)
+                if equipData and equipData.price_sell and equipData.price_sell ~= "" and equipData.price_sell ~= "0" then
+                    priceSell = equipData.price_sell
+                end
+            end
+            if priceSell then
+                price = priceSell
+            else
+                price = "0"
+                print("[ShopUI] 警告: 系统商品'" .. itemName .. "'价格为0且无法回退到出售价 (itemData=" .. tostring(itemData ~= nil) .. ", price_sell=" .. tostring(itemData and itemData.price_sell or "nil") .. ")")
+            end
+        end
 
         parentRef_:AddChild(UI.Panel {
             flexDirection = "row",
@@ -321,10 +345,35 @@ end
 ---@param shopItem table {name, price, desc}
 function ShopUI.RenderNpcShopItem(shopItem)
     local itemName = shopItem.name or ""
-    local price = shopItem.price or "0"
     local desc = shopItem.desc or ""
 
     if itemName == "" then return end
+
+    -- 定价逻辑：单价不为0用输入价格，为0则采用装备数据的出售价
+    local itemData = DataManager.GetItem(itemName)
+    local shopPrice = shopItem.price or "0"
+    local price
+    if shopPrice ~= "" and shopPrice ~= "0" then
+        price = shopPrice
+    else
+        -- 回退：尝试从装备数据获取出售价
+        local priceSell = nil
+        if itemData and itemData.price_sell and itemData.price_sell ~= "" and itemData.price_sell ~= "0" then
+            priceSell = itemData.price_sell
+        else
+            -- 再尝试专门从装备表查找
+            local equipData = DataManager.GetEquipData(itemName)
+            if equipData and equipData.price_sell and equipData.price_sell ~= "" and equipData.price_sell ~= "0" then
+                priceSell = equipData.price_sell
+            end
+        end
+        if priceSell then
+            price = priceSell
+        else
+            price = "0"
+            print("[ShopUI] 警告: 商品'" .. itemName .. "'价格为0且无法回退到出售价 (itemData=" .. tostring(itemData ~= nil) .. ", price_sell=" .. tostring(itemData and itemData.price_sell or "nil") .. ")")
+        end
+    end
 
     parentRef_:AddChild(UI.Panel {
         flexDirection = "row",

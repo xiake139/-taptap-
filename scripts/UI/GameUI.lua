@@ -45,6 +45,7 @@ local TradeUI = nil
 local MailboxUI = nil
 local PetUI = nil
 
+
 --- 创建主游戏界面
 ---@return Widget
 function GameUI.Create()
@@ -238,8 +239,32 @@ function GameUI.RefreshMap()
     local mapData = DataManager.GetMap(mapName)
 
     if not mapData then
-        mapNameLabel_:SetText("【未知地图】")
-        return
+        -- 自动回退到有效地图
+        local fallbackMap = nil
+        local deployCfg = (DataManager.gameConfig or {})["deploy"]
+        if deployCfg and deployCfg.target_map and deployCfg.target_map ~= "" and DataManager.maps[deployCfg.target_map] then
+            fallbackMap = deployCfg.target_map
+        end
+        if not fallbackMap and DataManager.maps["新手村"] then
+            fallbackMap = "新手村"
+        end
+        if not fallbackMap then
+            for name, _ in pairs(DataManager.maps) do
+                fallbackMap = name
+                break
+            end
+        end
+        if fallbackMap then
+            print("[GameUI] 当前地图【" .. tostring(mapName) .. "】不存在，自动回退到【" .. fallbackMap .. "】")
+            player.status.current_map = fallbackMap
+            DataManager.SaveToCloud(DataManager.playerData)
+            mapName = fallbackMap
+            mapData = DataManager.GetMap(fallbackMap)
+        end
+        if not mapData then
+            mapNameLabel_:SetText("【未知地图】")
+            return
+        end
     end
 
     -- 更新地图名和描述
@@ -342,6 +367,7 @@ function GameUI.Move(direction)
     -- 移动
     player.status.current_map = targetMap
     GameUI.AddLog("你来到了【" .. targetMap .. "】")
+
     GameUI.RefreshMap()
 
     -- 检查探索类任务
@@ -363,11 +389,20 @@ end
 --- 开始战斗
 ---@param monsterName string
 function GameUI.StartCombat(monsterName)
+    -- 死亡检测：血量为0时不允许战斗
+    local player = DataManager.playerData
+    if player and BigNum.lte(player.status.hp or "0", "0") then
+        GameUI.ShowDeathDialog()
+        return
+    end
     if not CombatUI then
         CombatUI = require("UI.CombatUI")
     end
     CombatUI.Start(monsterName, mainContent_, function(result)
         -- 战斗结束回调
+        if result == "defeat" then
+            GameUI.ShowDeathDialog()
+        end
         GameUI.RefreshMap()
     end)
 end
@@ -422,7 +457,11 @@ function GameUI.ShowPanel(panelType)
     elseif panelType == "chat" then
         GameUI.RenderChatPanel()
     elseif panelType == "logout" then
-        -- 退出登录：清除数据并返回登录界面
+        -- 退出登录：先保存当前数据到云端，再清除并返回登录界面
+        local player = DataManager.playerData
+        if player then
+            DataManager.SaveToCloud(player)
+        end
         DataManager.playerData = nil
         DataManager.currentAccount = nil
         DataManager.currentPassword = nil
@@ -752,7 +791,10 @@ function GameUI.RenderLeaderboardPanel()
                 flexGrow = 1,
                 marginRight = (i < #lbTabs) and 4 or 0,
                 onClick = function()
-                    GameUI.ShowLeaderboardDetail(tab.source)
+                    -- 每次点击tab都重新同步数据并从云端刷新
+                    DataManager.SyncLeaderboardScores(function()
+                        GameUI.ShowLeaderboardDetail(tab.source)
+                    end)
                 end,
             })
         end
@@ -1168,6 +1210,183 @@ function GameUI.HideLogDialog()
         logVirtualList_ = nil
     end
     logTexts_ = {}
+end
+
+-- 死亡弹框引用
+local deathDialog_ = nil
+
+--- 显示死亡弹框（道具复活 / 回新手村复活）
+function GameUI.ShowDeathDialog()
+    if deathDialog_ then return end
+
+    local player = DataManager.playerData
+    if not player then return end
+
+    -- 检查背包是否有复活类道具
+    local reviveItemIndex = nil
+    local reviveItemName = ""
+    for i, item in ipairs(player.bag or {}) do
+        local itemData = DataManager.GetItem(item.name)
+        if itemData and itemData.type and itemData.type:find("复活") then
+            if BigNum.gt(item.count or "0", "0") then
+                reviveItemIndex = i
+                reviveItemName = item.name
+                break
+            end
+        end
+    end
+
+    -- 道具复活按钮文本
+    local reviveBtnText = reviveItemIndex and ("使用道具复活 (" .. reviveItemName .. ")") or "使用道具复活 (无复活道具)"
+
+    deathDialog_ = UI.Panel {
+        id = "deathDialogOverlay",
+        position = "absolute",
+        left = 0, top = 0, right = 0, bottom = 0,
+        justifyContent = "center", alignItems = "center",
+        backgroundColor = { 0, 0, 0, 180 },
+        children = {
+            UI.Panel {
+                width = "80%",
+                maxWidth = 320,
+                padding = 20,
+                backgroundColor = { 40, 15, 15, 250 },
+                borderRadius = 12,
+                borderWidth = 2,
+                borderColor = { 180, 50, 50, 220 },
+                flexDirection = "column",
+                alignItems = "center",
+                gap = 14,
+                onClick = function() end,  -- 阻止穿透
+                children = {
+                    -- 标题
+                    UI.Label {
+                        text = "你已死亡",
+                        fontSize = 20,
+                        fontColor = { 255, 80, 80, 255 },
+                        textAlign = "center",
+                    },
+                    -- 分隔线
+                    UI.Panel { width = "100%", height = 1, backgroundColor = { 150, 50, 50, 180 } },
+                    -- 提示
+                    UI.Label {
+                        text = "请选择复活方式：",
+                        fontSize = 14,
+                        fontColor = { 220, 200, 200, 255 },
+                        textAlign = "center",
+                    },
+                    -- 道具复活按钮
+                    UI.Button {
+                        text = reviveBtnText,
+                        width = "100%",
+                        variant = reviveItemIndex and "primary" or "default",
+                        disabled = not reviveItemIndex,
+                        onClick = function()
+                            GameUI.ReviveWithItem(reviveItemIndex)
+                        end,
+                    },
+                    -- 回新手村复活按钮
+                    UI.Button {
+                        text = "回新手村复活",
+                        width = "100%",
+                        variant = "default",
+                        onClick = function()
+                            GameUI.ReviveAtStartVillage()
+                        end,
+                    },
+                },
+            },
+        },
+    }
+
+    local root = GameUI.rootPanel
+    if root then
+        root:AddChild(deathDialog_)
+    end
+end
+
+--- 隐藏死亡弹框
+function GameUI.HideDeathDialog()
+    if deathDialog_ then
+        deathDialog_:Remove()
+        deathDialog_ = nil
+    end
+end
+
+--- 计算当前最大生命值（含装备+buff+境界+战魂加成）
+---@return string maxHp 大数字符串
+function GameUI.CalcMaxHp()
+    local player = DataManager.playerData
+    if not player then return "100" end
+
+    if not StatusUI then StatusUI = require("UI.StatusUI") end
+    if not BagUI then BagUI = require("UI.BagUI") end
+
+    local _, _, eHp = StatusUI.GetEquipBonus()
+    local bHp = BagUI.GetBuffValue(player, "生命上限")
+    local _, _, rHp = DataManager.GetRealmBonus()
+    local soulBonus = DataManager.GetBattleSoulBonus(player.status.battle_soul_level)
+    local maxHp = BigNum.add(BigNum.add(BigNum.add(BigNum.add(player.status.max_hp or "100", tostring(eHp)), tostring(bHp)), rHp), soulBonus.max_hp)
+    return maxHp
+end
+
+--- 使用道具复活
+---@param itemIndex number|nil
+function GameUI.ReviveWithItem(itemIndex)
+    local player = DataManager.playerData
+    if not player then return end
+
+    if not itemIndex then
+        GameUI.AddLog("没有复活道具可使用")
+        return
+    end
+
+    -- 再次确认玩家已死亡
+    if not BigNum.lte(player.status.hp or "0", "0") then
+        GameUI.AddLog("当前未处于死亡状态")
+        GameUI.HideDeathDialog()
+        return
+    end
+
+    local item = player.bag[itemIndex]
+    if not item then
+        GameUI.AddLog("道具不存在")
+        return
+    end
+
+    -- 恢复满血
+    local maxHp = GameUI.CalcMaxHp()
+    player.status.hp = maxHp
+
+    -- 消耗道具
+    item.count = BigNum.sub(item.count or "1", "1")
+    if BigNum.lte(item.count, "0") then
+        table.remove(player.bag, itemIndex)
+    end
+
+    DataManager.SaveToCloud(player)
+    GameUI.AddLog("使用 " .. item.name .. " 复活成功，生命恢复满")
+    GameUI.HideDeathDialog()
+    GameUI.RefreshMap()
+end
+
+--- 回新手村复活
+function GameUI.ReviveAtStartVillage()
+    local player = DataManager.playerData
+    if not player then return end
+
+    -- 恢复满血
+    local maxHp = GameUI.CalcMaxHp()
+    player.status.hp = maxHp
+
+    -- 传送到新手村
+    local startMap = DataManager.gameConfig["game"] and DataManager.gameConfig["game"]["start_map"] or "新手村"
+    player.status.current_map = startMap
+
+    DataManager.SaveToCloud(player)
+    GameUI.AddLog("已传送至【" .. startMap .. "】，生命恢复满")
+    GameUI.HideDeathDialog()
+    GameUI.RefreshMap()
 end
 
 --- 检查探索类任务完成

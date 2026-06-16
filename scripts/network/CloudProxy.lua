@@ -43,8 +43,10 @@ function CloudProxy.Init()
     SubscribeToEvent(EVENTS.CLOUD_BATCH_GET_RESULT, "HandleCloudBatchGetResult")
     SubscribeToEvent(EVENTS.CLOUD_BATCH_SET_RESULT, "HandleCloudBatchSetResult")
 
-    -- 订阅连接成功事件（确保服务器连接建立后再发送 ClientReady）
+    -- 订阅连接成功事件（普通模式）
     SubscribeToEvent("ServerConnected", "HandleServerConnected")
+    -- 订阅 ServerReady 事件（后台匹配模式：background_match=true 时仅此事件触发）
+    SubscribeToEvent("ServerReady", "HandleCloudProxyServerReady")
 
     -- 如果连接已经建立，立即发送
     local serverConn = network:GetServerConnection()
@@ -52,6 +54,8 @@ function CloudProxy.Init()
         serverReady_ = true
         serverConn:SendRemoteEvent(EVENTS.CLIENT_READY, true)
         print("[CloudProxy] 连接已存在，立即发送 ClientReady")
+        -- 连接已存在时也要 flush（可能 LoadSystemData 已经排队）
+        CloudProxy.FlushPendingQueue()
     else
         print("[CloudProxy] 等待服务器连接...")
     end
@@ -59,13 +63,29 @@ function CloudProxy.Init()
     print("[CloudProxy] 初始化完成")
 end
 
---- 服务器连接成功后发送 ClientReady
+--- 服务器连接成功后发送 ClientReady（普通模式触发）
 function HandleServerConnected(eventType, eventData)
+    if serverReady_ then return end  -- 避免重复处理
     serverReady_ = true
     local serverConn = network:GetServerConnection()
     if serverConn then
         serverConn:SendRemoteEvent(EVENTS.CLIENT_READY, true)
-        print("[CloudProxy] 服务器连接成功，已发送 ClientReady")
+        print("[CloudProxy] ServerConnected - 已发送 ClientReady")
+    end
+    -- 处理等待队列中的请求
+    CloudProxy.FlushPendingQueue()
+end
+
+--- 后台匹配模式下服务器就绪（background_match=true 时触发）
+function HandleCloudProxyServerReady(eventType, eventData)
+    if serverReady_ then return end  -- 避免与 ServerConnected 重复
+    serverReady_ = true
+    local serverConn = network:GetServerConnection()
+    if serverConn then
+        serverConn:SendRemoteEvent(EVENTS.CLIENT_READY, true)
+        print("[CloudProxy] ServerReady(后台匹配) - 已发送 ClientReady")
+    else
+        print("[CloudProxy] ServerReady 触发但连接为空，等待重试...")
     end
     -- 处理等待队列中的请求
     CloudProxy.FlushPendingQueue()

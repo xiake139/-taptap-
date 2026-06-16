@@ -55,9 +55,16 @@ function Start()
 
         -- 后台匹配模式：订阅 ServerReady 事件（服务器连接就绪后触发）
         SubscribeToEvent("ServerReady", "HandleServerReady")
+        -- 订阅连接失败事件，给用户提示
+        SubscribeToEvent("ConnectFailed", "HandleConnectFailed")
     end
 
     -- 加载系统数据（异步，完成后显示登录界面）
+    -- 联网模式下 BatchGet 会排队等连接，文本保持"正在连接服务器..."
+    -- 非联网模式下立即加载本地数据
+    if not IsNetworkMode() then
+        UpdateLoadingText("正在加载游戏数据...")
+    end
     DataManager.LoadSystemData(function()
         ShowLogin()
     end)
@@ -67,8 +74,24 @@ function Start()
 end
 
 --- 后台匹配模式下服务器连接就绪回调
+local serverConnected_ = false
 function HandleServerReady(eventType, eventData)
-    print("[Main] ServerReady - 服务器连接已就绪")
+    serverConnected_ = true
+    connectFailCount_ = 0
+    print("[Main] ServerReady - 服务器连接已就绪，排队请求将自动执行")
+    UpdateLoadingText("连接成功，正在加载数据...")
+end
+
+--- 连接失败回调 - 显示友好提示
+local connectFailCount_ = 0
+local CONNECTION_FAIL_THRESHOLD = 5  -- 连续失败N次后提示用户
+function HandleConnectFailed(eventType, eventData)
+    if serverConnected_ then return end  -- 已连接成功则忽略
+    connectFailCount_ = connectFailCount_ + 1
+    print("[Main] ConnectFailed - 连接失败 (第" .. connectFailCount_ .. "次)")
+    if connectFailCount_ >= CONNECTION_FAIL_THRESHOLD then
+        UpdateLoadingText("网络连接失败，正在重试...\n请检查网络后等待自动重连")
+    end
 end
 
 local buffCheckTimer_ = 0
@@ -123,7 +146,32 @@ function InitUI()
         scale = UI.Scale.DEFAULT,
     })
 
+    -- 立即显示加载界面，避免后台匹配等待期间黑屏
+    ShowLoadingScreen("正在连接服务器...")
+end
 
+--- 加载/等待界面（防黑屏）
+---@type Widget|nil
+local loadingLabel_ = nil
+function ShowLoadingScreen(msg)
+    loadingLabel_ = UI.Label { text = msg or "加载中...", fontSize = 16, fontColor = {200,200,200,255} }
+    local root = UI.Panel {
+        width = "100%", height = "100%",
+        justifyContent = "center", alignItems = "center",
+        backgroundColor = {20, 20, 30, 255},
+        children = {
+            UI.Label { text = "创世修仙", fontSize = 28, fontColor = {255,215,0,255}, marginBottom = 20 },
+            loadingLabel_,
+        }
+    }
+    UI.SetRoot(root)
+end
+
+--- 更新加载状态文本
+function UpdateLoadingText(msg)
+    if loadingLabel_ then
+        loadingLabel_:SetText(msg)
+    end
 end
 
 --- 切换游戏状态
