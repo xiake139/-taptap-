@@ -381,7 +381,7 @@ function CombatUI.ShowItemSelectDialog(items)
     local itemButtons = {}
     for _, info in ipairs(items) do
         local typeLabel = info.type:find("恢复血量") and "回血" or "回灵"
-        local btnText = info.name .. " x" .. BigNum.toShort(info.count) .. "（" .. typeLabel .. " +" .. BigNum.toShort(info.value) .. "）"
+        local btnText = info.name .. " x" .. NumFormat.Short(info.count) .. "（" .. typeLabel .. " +" .. NumFormat.Short(info.value) .. "）"
         table.insert(itemButtons, UI.Button {
             text = btnText,
             width = "100%",

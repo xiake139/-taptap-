@@ -44,6 +44,7 @@ DataManager.realmsByStage = {} -- 按阶段索引 { [阶段数字] = realmData }
 DataManager.realmPills = {}   -- 境界经验丹配置 { [名称] = { name, desc, value } }
 DataManager.admins = {}  -- 管理员列表 { [username] = true }
 DataManager.leaderboards = {}
+DataManager.teleportMaps = { default_item = "", default_item_count = "1", maps = {} }
 DataManager.rankingData = {}  -- 所有玩家的排行数据 { [玩家名] = { 名称=xx, 等级=xx, ... } }
 DataManager.chatMessages = {} -- 聊天记录列表 { {sender=xx, content=xx, time=xx}, ... }
 DataManager.petConfig = {    -- 宠物成长配置（公式化）
@@ -372,6 +373,34 @@ local function ParseBattleSoul(sections)
             end
         end
     end
+    return config
+end
+
+--- 解析 teleport_maps.ini → 传送地图列表
+---@param sections table
+---@return table
+local function ParseTeleportMaps(sections)
+    local config = {
+        default_item = "",
+        default_item_count = "1",
+        maps = {},
+    }
+    for sectionName, data in pairs(sections) do
+        if sectionName == "_config" then
+            config.default_item = data["默认物品"] or ""
+            config.default_item_count = data["默认物品数量"] or "1"
+        else
+            table.insert(config.maps, {
+                name = data["名称"] or sectionName,
+                level_req = data["等级要求"] or "0",
+                custom_item = data["自定义物品"] or "",
+                custom_item_count = data["自定义物品数量"] or "1",
+                free = (data["免费"] == "true"),
+            })
+        end
+    end
+    -- 按名称排序
+    table.sort(config.maps, function(a, b) return a.name < b.name end)
     return config
 end
 
@@ -754,6 +783,7 @@ local SYSTEM_CLOUD_KEYS = {
     "系统配置/realm_pills.ini",
     "系统配置/pet_types.ini",
     "系统配置/battle_soul.ini",
+    "系统配置/teleport_maps.ini",
 
 }
 
@@ -891,6 +921,12 @@ function DataManager.LoadSystemData(callback)
                 DataManager.battleSoulConfig = ParseBattleSoul(IniParser.Parse(v))
                 hasCloud = true
             end
+            -- teleport_maps
+            v = values["系统配置/teleport_maps.ini"]
+            if v and v ~= "" then
+                DataManager.teleportMaps = ParseTeleportMaps(IniParser.Parse(v))
+                hasCloud = true
+            end
 
             -- leaderboards/ranking_data/chat_messages 改为按需加载，不在启动时拉取
 
@@ -1012,6 +1048,7 @@ function DataManager.CreateNewPlayer(username, charName)
             realm_exp = "0",   -- 当前层修炼经验
             battle_soul_level = "0",  -- 战魂等级
             battle_soul_exp = "0",    -- 战魂经验
+            num_format_mode = "unit", -- 数值显示模式: unit/raw
         },
         bag = {},       -- { {name="物品名", count=数量}, ... } （下方会填入初始背包）
         equip = {       -- 装备槽（13部位）
@@ -1090,6 +1127,7 @@ function DataManager.PlayerDataToFiles(playerData)
         battle_soul_level = "战魂等级",
         battle_soul_exp = "战魂经验",
         last_deploy_version = "部署版本",
+        num_format_mode = "数值模式",
     }
     for k, v in pairs(playerData.status) do
         if k == "currencies" then
@@ -1249,6 +1287,7 @@ function DataManager.FilesToPlayerData(fileMap)
         ["战魂等级"] = "battle_soul_level",
         ["战魂经验"] = "battle_soul_exp",
         ["部署版本"] = "last_deploy_version",
+        ["数值模式"] = "num_format_mode",
     }
 
     -- 账号配置已集中存储，从 currentAccount/currentPassword 获取

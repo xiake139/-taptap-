@@ -3,6 +3,7 @@
 ---------------------------------------------------
 local UI = require("urhox-libs/UI")
 local DataManager = require("Systems.DataManager")
+local NumFormat = require("Utils.NumFormat")
 
 local LoginUI = {}
 
@@ -162,6 +163,8 @@ function LoginUI.DoLogin()
                 DataManager.SaveToCloud(playerData)
             end
             DataManager.playerData = playerData
+            -- 恢复玩家数值显示模式偏好
+            NumFormat.SetMode(playerData.status.num_format_mode or "unit")
             -- 确保 account 字段正确
             playerData.account.username = username
             playerData.account.password = password

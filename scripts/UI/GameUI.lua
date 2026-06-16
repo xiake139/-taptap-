@@ -44,6 +44,7 @@ local RealmUI = nil
 local TradeUI = nil
 local MailboxUI = nil
 local PetUI = nil
+local MonsterGuideUI = nil
 
 
 --- 创建主游戏界面
@@ -166,9 +167,12 @@ function GameUI.Create()
                     { text = "交易", panel = "trade", variant = "secondary" },
                     { text = "宠物", panel = "pet", variant = "secondary" },
                     { text = "战魂", panel = "battle_soul", variant = "secondary" },
+                    { text = "传送", panel = "teleport", variant = "secondary" },
+                    { text = "图鉴", panel = "monster_guide", variant = "secondary" },
                     { text = "邮箱", panel = "mailbox", variant = "secondary" },
                     { text = "排行", panel = "leaderboard", variant = "secondary" },
                     { text = "聊天", panel = "chat", variant = "secondary" },
+                    { text = "数值:" .. NumFormat.GetModeLabel(), panel = "toggle_numformat", variant = "outline" },
                     { text = "退出", panel = "logout", variant = "danger" },
                 }
                 -- 每3个一排
@@ -447,6 +451,9 @@ function GameUI.ShowPanel(panelType)
         PetUI.Render(mainContent_)
     elseif panelType == "battle_soul" then
         GameUI.RenderBattleSoulPanel()
+    elseif panelType == "monster_guide" then
+        if not MonsterGuideUI then MonsterGuideUI = require("UI.MonsterGuideUI") end
+        MonsterGuideUI.Render(mainContent_)
     elseif panelType == "mailbox" then
         if not MailboxUI then MailboxUI = require("UI.MailboxUI") end
         MailboxUI.Render(mainContent_)
@@ -456,6 +463,22 @@ function GameUI.ShowPanel(panelType)
         GameUI.RenderLeaderboardPanel()
     elseif panelType == "chat" then
         GameUI.RenderChatPanel()
+    elseif panelType == "teleport" then
+        GameUI.RenderTeleportPanel()
+    elseif panelType == "toggle_numformat" then
+        NumFormat.ToggleMode()
+        -- 持久化到玩家数据并保存云端
+        if DataManager.playerData then
+            DataManager.playerData.status.num_format_mode = NumFormat.mode
+            DataManager.SaveToCloud(DataManager.playerData)
+        end
+        -- 重建整个GameUI以刷新按钮文字和数值显示
+        if ShowGame then
+            ShowGame()
+        end
+        -- 提示当前显示方式
+        GameUI.AddLog("【系统】数值显示已切换为: " .. NumFormat.GetModeLabel() .. " 模式")
+        return
     elseif panelType == "logout" then
         -- 退出登录：先保存当前数据到云端，再清除并返回登录界面
         local player = DataManager.playerData
@@ -1075,8 +1098,227 @@ function GameUI.RefreshChatList()
     chatListPanel_:AddChild(vList)
 end
 
-local LOG_ITEM_HEIGHT = 24
+local LOG_ITEM_HEIGHT = 40
 local LOG_ITEM_GAP = 2
+--- 获取某个传送地图需要的物品信息
+---@return string itemName, string itemCount, boolean isFree
+local function GetTeleportCost(tp)
+    local tc = DataManager.teleportMaps
+    if tp.free then
+        return "", "0", true
+    end
+    if tp.custom_item and tp.custom_item ~= "" then
+        return tp.custom_item, tp.custom_item_count or "1", false
+    end
+    if tc.default_item and tc.default_item ~= "" then
+        return tc.default_item, tc.default_item_count or "1", false
+    end
+    return "", "0", true  -- 无默认物品 = 免费
+end
+
+--- 检查玩家是否有足够物品
+---@return boolean hasEnough, string currentCount
+local function HasTeleportItem(player, itemName, needCount)
+    if itemName == "" then return true, "0" end
+    for _, item in ipairs(player.bag or {}) do
+        if item.name == itemName then
+            return BigNum.gte(item.count or "0", needCount), item.count or "0"
+        end
+    end
+    return false, "0"
+end
+
+--- 扣除传送物品
+local function ConsumeTeleportItem(player, itemName, needCount)
+    if itemName == "" then return end
+    for i, item in ipairs(player.bag or {}) do
+        if item.name == itemName then
+            item.count = BigNum.sub(item.count or "0", needCount)
+            if BigNum.lte(item.count, "0") then
+                table.remove(player.bag, i)
+            end
+            return
+        end
+    end
+end
+
+--- 渲染传送面板
+function GameUI.RenderTeleportPanel()
+    if not mainContent_ then return end
+
+    local player = DataManager.playerData
+    if not player then return end
+
+    local tc = DataManager.teleportMaps or { default_item = "", default_item_count = "1", maps = {} }
+    local teleportList = tc.maps or {}
+
+    if #teleportList == 0 then
+        mainContent_:AddChild(UI.Panel {
+            width = "100%", padding = 16, justifyContent = "center", alignItems = "center",
+            children = {
+                UI.Label { text = "暂无可传送地图", fontSize = 14, fontColor = { 180, 180, 180, 255 } },
+            }
+        })
+        return
+    end
+
+    -- 标题
+    mainContent_:AddChild(UI.Label {
+        text = "— 传送 —",
+        fontSize = 16,
+        fontColor = { 100, 200, 255, 255 },
+        textAlign = "center",
+        width = "100%",
+        marginBottom = 8,
+    })
+
+    local playerLevel = player.status.level or "1"
+    local currentMap = player.status.current_map or ""
+
+    -- 传送目的地列表
+    for i, tp in ipairs(teleportList) do
+        local mapName = tp.name or ""
+        local levelReq = tp.level_req or "0"
+        local levelReqNum = tonumber(levelReq) or 0
+        local isCurrent = (mapName == currentMap)
+        local levelOk = BigNum.gte(playerLevel, levelReq)
+        local costItem, costCount, isFree = GetTeleportCost(tp)
+        local hasItem, ownedCount = HasTeleportItem(player, costItem, costCount)
+
+        -- 行容器
+        local rowChildren = {}
+
+        -- 序号 + 地图名
+        local nameColor = isCurrent and { 100, 255, 100, 255 } or { 220, 220, 240, 255 }
+        table.insert(rowChildren, UI.Label {
+            text = i .. ". " .. mapName .. (isCurrent and " (当前)" or ""),
+            fontSize = 13,
+            fontColor = nameColor,
+            flexShrink = 1,
+            flexGrow = 1,
+        })
+
+        -- 物品消耗提示
+        if not isFree and not isCurrent then
+            local costColor = hasItem and { 180, 180, 100, 255 } or { 255, 100, 100, 255 }
+            table.insert(rowChildren, UI.Label {
+                text = costItem .. "x" .. costCount,
+                fontSize = 10,
+                fontColor = costColor,
+                marginRight = 4,
+            })
+        elseif isFree and not isCurrent then
+            table.insert(rowChildren, UI.Label {
+                text = "免费",
+                fontSize = 10,
+                fontColor = { 100, 200, 100, 255 },
+                marginRight = 4,
+            })
+        end
+
+        -- 等级需求提示
+        if levelReqNum > 0 then
+            table.insert(rowChildren, UI.Label {
+                text = "Lv." .. levelReq,
+                fontSize = 11,
+                fontColor = levelOk and { 150, 150, 150, 255 } or { 255, 100, 100, 255 },
+                marginRight = 4,
+            })
+        end
+
+        -- 传送按钮
+        if isCurrent then
+            table.insert(rowChildren, UI.Button {
+                text = "当前",
+                variant = "secondary",
+                height = 26,
+                disabled = true,
+            })
+        elseif not levelOk then
+            table.insert(rowChildren, UI.Button {
+                text = "等级不足",
+                variant = "danger",
+                height = 26,
+                disabled = true,
+            })
+        elseif not isFree and not hasItem then
+            table.insert(rowChildren, UI.Button {
+                text = "物品不足",
+                variant = "danger",
+                height = 26,
+                disabled = true,
+            })
+        else
+            local targetName = mapName
+            local cItem, cCount, cFree = costItem, costCount, isFree
+            table.insert(rowChildren, UI.Button {
+                text = "传送",
+                variant = "primary",
+                height = 26,
+                onClick = function()
+                    GameUI.DoTeleport(targetName, cItem, cCount, cFree)
+                end,
+            })
+        end
+
+        mainContent_:AddChild(UI.Panel {
+            width = "100%",
+            flexDirection = "row",
+            alignItems = "center",
+            paddingLeft = 8, paddingRight = 8,
+            paddingTop = 4, paddingBottom = 4,
+            backgroundColor = (i % 2 == 0) and { 30, 30, 50, 200 } or { 20, 20, 40, 200 },
+            gap = 4,
+            children = rowChildren,
+        })
+    end
+end
+
+--- 执行传送
+---@param targetMap string
+---@param costItem string
+---@param costCount string
+---@param isFree boolean
+function GameUI.DoTeleport(targetMap, costItem, costCount, isFree)
+    local player = DataManager.playerData
+    if not player then return end
+
+    local currentMap = player.status.current_map or ""
+    if targetMap == currentMap then
+        GameUI.AddLog("你已在【" .. targetMap .. "】")
+        return
+    end
+
+    -- 等级二次校验
+    local targetData = DataManager.GetMap(targetMap)
+    if targetData then
+        local levelReq = targetData.level_req or "0"
+        if BigNum.lt(player.status.level or "1", levelReq) then
+            GameUI.AddLog("等级不足！需要等级 " .. levelReq .. " 才能传送到 " .. targetMap)
+            return
+        end
+    end
+
+    -- 物品校验和扣除
+    if not isFree and costItem ~= "" then
+        local hasItem = HasTeleportItem(player, costItem, costCount)
+        if not hasItem then
+            GameUI.AddLog("物品不足！需要 " .. costItem .. " x" .. costCount)
+            return
+        end
+        ConsumeTeleportItem(player, costItem, costCount)
+        GameUI.AddLog("消耗 " .. costItem .. " x" .. costCount)
+    end
+
+    player.status.current_map = targetMap
+    GameUI.AddLog("传送成功！你来到了【" .. targetMap .. "】")
+    GameUI.RefreshMap()
+    DataManager.SaveToCloud(player)
+
+    -- 刷新传送面板显示当前位置
+    GameUI.ShowPanel("teleport")
+end
+
 local logVirtualList_ = nil
 
 --- 添加游戏日志（一体式弹窗显示）
@@ -1133,7 +1375,8 @@ function GameUI.ShowLogDialog()
                 text = "",
                 fontSize = 12,
                 fontColor = { 220, 220, 240, 255 },
-                maxLines = 1,
+                maxLines = 2,
+                whiteSpace = "normal",
                 width = "100%",
             }
             row:AddChild(label)

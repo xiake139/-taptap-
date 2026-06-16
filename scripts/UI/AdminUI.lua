@@ -47,6 +47,7 @@ local CATEGORIES = {
     { id = "system_shops", name = "系统商店" },
     { id = "battle_soul", name = "战魂管理" },
     { id = "leaderboards", name = "排行榜" },
+    { id = "teleport_maps", name = "传送地图" },
 
     { id = "generator", name = "一键生成" },
 }
@@ -750,6 +751,28 @@ local function SaveCategoryToCloud(category, onDoneExtra)
         content = IniParser.Serialize(sections)
         SaveConfigToCloud("系统配置/leaderboards.ini", content, function(ok)
             ShowMsg(ok and "排行榜配置已保存到云端" or "保存失败")
+            if onDoneExtra then onDoneExtra(ok) end
+        end)
+    elseif category == "teleport_maps" then
+        local tc = DataManager.teleportMaps
+        local sections = {}
+        -- 全局配置
+        sections["_config"] = {
+            ["默认物品"] = tc.default_item or "",
+            ["默认物品数量"] = tc.default_item_count or "1",
+        }
+        for i, data in ipairs(tc.maps) do
+            sections["tp_" .. i] = {
+                ["名称"] = data.name or "",
+                ["等级要求"] = data.level_req or "0",
+                ["自定义物品"] = data.custom_item or "",
+                ["自定义物品数量"] = data.custom_item_count or "1",
+                ["免费"] = data.free and "true" or "false",
+            }
+        end
+        content = IniParser.Serialize(sections)
+        SaveConfigToCloud("系统配置/teleport_maps.ini", content, function(ok)
+            ShowMsg(ok and "传送地图配置已保存到云端" or "保存失败")
             if onDoneExtra then onDoneExtra(ok) end
         end)
     end
@@ -7884,6 +7907,346 @@ local function RenderLeaderboards()
     end)
 end
 
+-- =============== 传送地图管理 ===============
+local RenderTeleportMapItemEdit  -- forward declaration
+
+--- 渲染传送地图管理面板（虚拟列表显示所有现有地图 + 添加按钮）
+local function RenderTeleportMaps()
+    ClearContent()
+
+    local tc = DataManager.teleportMaps
+
+    -- 标题
+    contentPanel_:AddChild(UI.Label {
+        text = "传送地图管理",
+        fontSize = 16,
+        fontColor = { 200, 170, 100, 255 },
+        marginBottom = 4,
+        marginLeft = 12,
+    })
+
+    -- ========== 默认传送物品配置 ==========
+    contentPanel_:AddChild(UI.Label {
+        text = "— 默认传送物品 —",
+        fontSize = 13,
+        fontColor = { 200, 180, 100, 255 },
+        marginLeft = 12,
+        marginTop = 4,
+    })
+    contentPanel_:AddChild(UI.Label {
+        text = "留空则所有地图默认免费传送(除非单独设置)",
+        fontSize = 11,
+        fontColor = { 140, 140, 160, 255 },
+        marginLeft = 12,
+        marginBottom = 4,
+    })
+
+    local defItemInput = UI.TextField {
+        placeholder = "物品名称(留空=免费)",
+        text = tc.default_item or "",
+        width = "100%",
+        height = 32,
+        marginLeft = 12, marginRight = 12,
+    }
+    contentPanel_:AddChild(defItemInput)
+
+    local defCountInput = UI.TextField {
+        placeholder = "消耗数量",
+        text = tc.default_item_count or "1",
+        width = 100,
+        height = 32,
+        marginLeft = 12, marginTop = 4,
+    }
+    contentPanel_:AddChild(defCountInput)
+
+    contentPanel_:AddChild(UI.Button {
+        text = "保存默认物品设置",
+        variant = "primary",
+        height = 30,
+        marginLeft = 12, marginTop = 6, marginBottom = 8,
+        onClick = function()
+            tc.default_item = defItemInput:GetText() or ""
+            tc.default_item_count = defCountInput:GetText() or "1"
+            SaveCategoryToCloud("teleport_maps")
+        end,
+    })
+
+    -- 分隔线
+    contentPanel_:AddChild(UI.Panel { width = "100%", height = 1, backgroundColor = { 60, 50, 80, 200 }, marginTop = 4, marginBottom = 8 })
+
+    -- ========== 已添加的传送地图列表 ==========
+    local teleportCount = #tc.maps
+    ShowMsg("已配置 " .. teleportCount .. " 个传送点")
+
+    if teleportCount > 0 then
+        contentPanel_:AddChild(UI.Label {
+            text = "— 已添加的传送地图 —",
+            fontSize = 13,
+            fontColor = { 150, 200, 150, 255 },
+            marginLeft = 12,
+            marginTop = 4, marginBottom = 4,
+        })
+
+        for i, data in ipairs(tc.maps) do
+            -- 每个地图一行：序号+名称+物品信息+免费切换+删除
+            local itemInfo = ""
+            if data.free then
+                itemInfo = "[免费]"
+            elseif data.custom_item and data.custom_item ~= "" then
+                itemInfo = "[" .. data.custom_item .. " x" .. (data.custom_item_count or "1") .. "]"
+            elseif tc.default_item ~= "" then
+                itemInfo = "(默认物品)"
+            else
+                itemInfo = "[免费]"
+            end
+
+            local row = UI.Panel {
+                width = "100%",
+                flexDirection = "row",
+                alignItems = "center",
+                paddingLeft = 12, paddingRight = 8,
+                paddingTop = 3, paddingBottom = 3,
+                backgroundColor = (i % 2 == 0) and { 30, 25, 50, 200 } or { 20, 15, 40, 200 },
+                gap = 4,
+            }
+            row:AddChild(UI.Label {
+                text = i .. ". " .. data.name,
+                fontSize = 12,
+                fontColor = { 220, 220, 240, 255 },
+                flexGrow = 1, flexShrink = 1,
+            })
+            row:AddChild(UI.Label {
+                text = itemInfo,
+                fontSize = 11,
+                fontColor = data.free and { 100, 220, 100, 255 } or { 180, 160, 100, 255 },
+            })
+            -- 免费切换按钮
+            local idx = i
+            row:AddChild(UI.Button {
+                text = data.free and "取消免费" or "设为免费",
+                fontSize = 10,
+                height = 24,
+                variant = data.free and "secondary" or "success",
+                onClick = function()
+                    tc.maps[idx].free = not tc.maps[idx].free
+                    if tc.maps[idx].free then
+                        tc.maps[idx].custom_item = ""
+                        tc.maps[idx].custom_item_count = "1"
+                    end
+                    SaveCategoryToCloud("teleport_maps")
+                    RenderTeleportMaps()
+                end,
+            })
+            -- 自定义物品按钮
+            if not data.free then
+                row:AddChild(UI.Button {
+                    text = "物品",
+                    fontSize = 10,
+                    height = 24,
+                    variant = "warning",
+                    onClick = function()
+                        RenderTeleportMapItemEdit(idx)
+                    end,
+                })
+            end
+            -- 删除按钮
+            row:AddChild(UI.Button {
+                text = "删除",
+                fontSize = 10,
+                height = 24,
+                variant = "danger",
+                onClick = function()
+                    table.remove(tc.maps, idx)
+                    SaveCategoryToCloud("teleport_maps")
+                    RenderTeleportMaps()
+                end,
+            })
+            contentPanel_:AddChild(row)
+        end
+    end
+
+    -- 分隔线
+    contentPanel_:AddChild(UI.Panel { width = "100%", height = 1, backgroundColor = { 60, 50, 80, 200 }, marginTop = 8, marginBottom = 8 })
+
+    -- ========== 从现有地图列表添加 ==========
+    contentPanel_:AddChild(UI.Label {
+        text = "— 从现有地图中添加传送点 —",
+        fontSize = 13,
+        fontColor = { 150, 150, 200, 255 },
+        marginLeft = 12,
+        marginBottom = 4,
+    })
+
+    contentPanel_:AddChild(CreateSearchBar("搜索地图名...", function() RenderTeleportMaps() end))
+
+    -- 构建现有地图列表，标记已添加的
+    local existingTpNames = {}
+    for _, tp in ipairs(tc.maps) do
+        existingTpNames[tp.name] = true
+    end
+
+    local mapArray = {}
+    local mapIdx = 0
+    for id, data in pairs(DataManager.maps) do
+        local mapName = data.name or id
+        if not MatchSearch(mapName) then goto continue_tp_maps end
+        mapIdx = mapIdx + 1
+        local alreadyAdded = existingTpNames[mapName]
+        table.insert(mapArray, {
+            text = mapIdx .. ". " .. mapName,
+            subtext = alreadyAdded and "已添加" or ("等级需求:" .. (data.level_req or "0")),
+            onEdit = (not alreadyAdded) and function()
+                table.insert(tc.maps, {
+                    name = mapName,
+                    level_req = data.level_req or "0",
+                    custom_item = "",
+                    custom_item_count = "1",
+                    free = false,
+                })
+                SaveCategoryToCloud("teleport_maps")
+                RenderTeleportMaps()
+            end or nil,
+            _isAdded = alreadyAdded,
+        })
+        ::continue_tp_maps::
+    end
+
+    if #mapArray > 0 then
+        local container = UI.Panel {
+            width = "100%",
+            flexGrow = 1,
+            flexBasis = 0,
+            overflow = "hidden",
+            marginTop = 4,
+        }
+        local vList = UI.VirtualList {
+            width = "100%",
+            height = "100%",
+            viewportHeight = (UI.GetHeight and UI.GetHeight() or 500) - 200,
+            data = mapArray,
+            itemHeight = VLIST_ITEM_HEIGHT,
+            itemGap = VLIST_ITEM_GAP,
+            poolBuffer = 5,
+            createItem = function()
+                local row = UI.Panel {
+                    width = "100%",
+                    height = VLIST_ITEM_HEIGHT,
+                    flexDirection = "row",
+                    alignItems = "center",
+                    paddingLeft = 12, paddingRight = 12,
+                    paddingTop = 4, paddingBottom = 4,
+                    backgroundColor = { 20, 15, 35, 200 },
+                }
+                local infoCol = UI.Panel {
+                    flexDirection = "column",
+                    flexGrow = 1, flexShrink = 1,
+                }
+                local titleLabel = UI.Label { text = "", fontSize = 13, fontColor = { 220, 220, 240, 255 }, maxLines = 1 }
+                local subLabel = UI.Label { text = "", fontSize = 11, fontColor = { 140, 140, 160, 255 }, maxLines = 1 }
+                infoCol:AddChild(titleLabel)
+                infoCol:AddChild(subLabel)
+                row:AddChild(infoCol)
+                local addBtn = UI.Button { text = "添加", fontSize = 11, width = 55, height = 26, variant = "success" }
+                row:AddChild(addBtn)
+                row._titleLabel = titleLabel
+                row._subLabel = subLabel
+                row._addBtn = addBtn
+                return row
+            end,
+            bindItem = function(widget, data, index)
+                widget._titleLabel:SetText(data.text or "")
+                widget._subLabel:SetText(data.subtext or "")
+                widget.props.backgroundColor = (index % 2 == 0) and { 25, 20, 45, 200 } or { 20, 15, 35, 200 }
+                if data._isAdded then
+                    widget._addBtn:SetText("已添加")
+                    widget._addBtn:SetDisabled(true)
+                    widget._subLabel:SetFontColor({ 100, 200, 100, 255 })
+                else
+                    widget._addBtn:SetText("添加")
+                    widget._addBtn:SetDisabled(false)
+                    widget._addBtn.props.onClick = data.onEdit
+                    widget._subLabel:SetFontColor({ 140, 140, 160, 255 })
+                end
+            end,
+        }
+        container:AddChild(vList)
+        contentPanel_:AddChild(container)
+    else
+        contentPanel_:AddChild(UI.Label {
+            text = "（无地图数据，请先在[地图]分类中添加地图）",
+            fontSize = 12,
+            fontColor = { 140, 140, 160, 255 },
+            textAlign = "center",
+            marginTop = 20,
+        })
+    end
+end
+
+--- 传送地图单独物品编辑子页面
+function RenderTeleportMapItemEdit(mapIndex)
+    ClearContent()
+    local tc = DataManager.teleportMaps
+    local data = tc.maps[mapIndex]
+    if not data then RenderTeleportMaps() return end
+
+    contentPanel_:AddChild(UI.Label {
+        text = "设置传送物品: " .. data.name,
+        fontSize = 15,
+        fontColor = { 200, 170, 100, 255 },
+        marginLeft = 12, marginBottom = 8,
+    })
+
+    contentPanel_:AddChild(UI.Label {
+        text = "留空则使用默认传送物品（当前默认: " .. (tc.default_item ~= "" and tc.default_item or "无/免费") .. "）",
+        fontSize = 11,
+        fontColor = { 140, 140, 160, 255 },
+        marginLeft = 12, marginBottom = 6,
+    })
+
+    local itemInput = UI.TextField {
+        placeholder = "自定义物品名(留空=用默认)",
+        text = data.custom_item or "",
+        width = "100%",
+        height = 32,
+        marginLeft = 12, marginRight = 12,
+    }
+    contentPanel_:AddChild(itemInput)
+
+    local countInput = UI.TextField {
+        placeholder = "数量",
+        text = data.custom_item_count or "1",
+        width = 100,
+        height = 32,
+        marginLeft = 12, marginTop = 4,
+    }
+    contentPanel_:AddChild(countInput)
+
+    contentPanel_:AddChild(UI.Panel {
+        width = "100%", flexDirection = "row", gap = 8,
+        marginLeft = 12, marginTop = 10,
+        children = {
+            UI.Button {
+                text = "保存",
+                variant = "primary",
+                height = 32,
+                onClick = function()
+                    tc.maps[mapIndex].custom_item = itemInput:GetText() or ""
+                    tc.maps[mapIndex].custom_item_count = countInput:GetText() or "1"
+                    tc.maps[mapIndex].free = false
+                    SaveCategoryToCloud("teleport_maps")
+                    RenderTeleportMaps()
+                end,
+            },
+            UI.Button {
+                text = "返回",
+                variant = "secondary",
+                height = 32,
+                onClick = function() RenderTeleportMaps() end,
+            },
+        }
+    })
+end
+
 -- =============== 分类切换 ===============
 
 --- 根据分类渲染内容
@@ -7912,6 +8275,7 @@ local function RenderCategory(catId)
     elseif catId == "system_shops" then RenderSystemShops()
     elseif catId == "battle_soul" then RenderBattleSoul()
     elseif catId == "leaderboards" then RenderLeaderboards()
+    elseif catId == "teleport_maps" then RenderTeleportMaps()
     elseif catId == "generator" then RenderGenerator()
     end
 end

@@ -5,6 +5,7 @@
 local UI = require("urhox-libs/UI")
 local DataManager = require("Systems.DataManager")
 local BigNum = require("Utils.BigNum")
+local NumFormat = require("Utils.NumFormat")
 
 local PetUI = {}
 
@@ -285,7 +286,7 @@ function PetUI.ShowList()
                             fontColor = qualityColor,
                         },
                         UI.Label {
-                            text = starStr .. " | " .. (pet.quality or "白") .. "品 | 阶:" .. (pet.stage or "0") .. " | 战力:" .. BigNum.toShort(power),
+                            text = starStr .. " | " .. (pet.quality or "白") .. "品 | 阶:" .. (pet.stage or "0") .. " | 战力:" .. NumFormat.Short(power),
                             fontSize = 11,
                             fontColor = { 160, 160, 180, 255 },
                         },
@@ -387,11 +388,11 @@ function PetUI.ShowDetail(index)
         marginBottom = 6,
         children = {
             UI.Label { text = "等级: " .. (pet.level or "1") .. "  经验: " .. (pet.exp or "0") .. "/" .. GetLevelUpExp(pet.level or "1"), fontSize = 12, fontColor = { 200, 200, 220, 255 } },
-            UI.Label { text = "攻击: " .. BigNum.toShort(petAtk) .. "  防御: " .. BigNum.toShort(petDef) .. "  生命: " .. BigNum.toShort(petHp), fontSize = 13, fontColor = { 100, 255, 200, 255 }, marginTop = 4 },
+            UI.Label { text = "攻击: " .. NumFormat.Short(petAtk) .. "  防御: " .. NumFormat.Short(petDef) .. "  生命: " .. NumFormat.Short(petHp), fontSize = 13, fontColor = { 100, 255, 200, 255 }, marginTop = 4 },
             UI.Label {
-                text = "  升星+" .. BigNum.toShort(curStarAtk) .. "/" .. BigNum.toShort(curStarDef) .. "/" .. BigNum.toShort(curStarHp)
-                    .. "  进阶+" .. BigNum.toShort(curAdvAtk) .. "/" .. BigNum.toShort(curAdvDef) .. "/" .. BigNum.toShort(curAdvHp)
-                    .. "  品质+" .. BigNum.toShort(curQualAtk) .. "/" .. BigNum.toShort(curQualDef) .. "/" .. BigNum.toShort(curQualHp),
+                text = "  升星+" .. NumFormat.Short(curStarAtk) .. "/" .. NumFormat.Short(curStarDef) .. "/" .. NumFormat.Short(curStarHp)
+                    .. "  进阶+" .. NumFormat.Short(curAdvAtk) .. "/" .. NumFormat.Short(curAdvDef) .. "/" .. NumFormat.Short(curAdvHp)
+                    .. "  品质+" .. NumFormat.Short(curQualAtk) .. "/" .. NumFormat.Short(curQualDef) .. "/" .. NumFormat.Short(curQualHp),
                 fontSize = 10, fontColor = { 160, 160, 180, 255 }, marginTop = 2,
             },
             UI.Label {

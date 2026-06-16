@@ -4,6 +4,7 @@
 local UI = require("urhox-libs/UI")
 local DataManager = require("Systems.DataManager")
 local BigNum = require("Utils.BigNum")
+local NumFormat = require("Utils.NumFormat")
 
 local EquipUI = {}
 
@@ -327,9 +328,9 @@ function EquipUI.ShowDetail(equipName)
 
     -- 属性列表
     local statRows = {}
-    if BigNum.gt(eData.atk or "0", "0") then table.insert(statRows, { label = "攻击力", value = "+" .. BigNum.toShort(eData.atk), color = { 255, 120, 120, 255 } }) end
-    if BigNum.gt(eData.def or "0", "0") then table.insert(statRows, { label = "防御力", value = "+" .. BigNum.toShort(eData.def), color = { 120, 180, 255, 255 } }) end
-    if BigNum.gt(eData.hp or "0", "0") then table.insert(statRows, { label = "生命值", value = "+" .. BigNum.toShort(eData.hp), color = { 120, 255, 120, 255 } }) end
+    if BigNum.gt(eData.atk or "0", "0") then table.insert(statRows, { label = "攻击力", value = "+" .. NumFormat.Short(eData.atk), color = { 255, 120, 120, 255 } }) end
+    if BigNum.gt(eData.def or "0", "0") then table.insert(statRows, { label = "防御力", value = "+" .. NumFormat.Short(eData.def), color = { 120, 180, 255, 255 } }) end
+    if BigNum.gt(eData.hp or "0", "0") then table.insert(statRows, { label = "生命值", value = "+" .. NumFormat.Short(eData.hp), color = { 120, 255, 120, 255 } }) end
 
     -- 等级需求
     local levelReq = eData.level_req or "0"

@@ -4,6 +4,7 @@
 local UI = require("urhox-libs/UI")
 local DataManager = require("Systems.DataManager")
 local BigNum = require("Utils.BigNum")
+local NumFormat = require("Utils.NumFormat")
 
 local BagUI = {}
 
@@ -11,7 +12,8 @@ local GameUI = nil  -- 延迟加载
 local EquipUI = nil -- 延迟加载
 
 --- 宝箱名称缓存（从云端加载后缓存，避免每次渲染都异步查询）
-local chestNamesCache_ = nil  -- nil=未加载, table=已加载的宝箱名称集合
+--- 格式: { [name] = "固定"|"随机" }
+local chestNamesCache_ = nil  -- nil=未加载, table=已加载的宝箱名称→类型映射
 
 --- 中文部位→英文key映射
 local SLOT_CN_TO_KEY = {
@@ -22,6 +24,127 @@ local SLOT_CN_TO_KEY = {
 }
 
 local parentRef_ = nil
+
+-- ===== 分页与分类状态 =====
+local currentMajorCategory_ = "道具类"  -- 当前大类
+local currentSubCategory_ = "全部"       -- 当前小类
+local currentPage_ = 1                   -- 当前页码
+local ITEMS_PER_PAGE = 10                -- 每页物品数
+
+--- 大类定义（顺序）
+local MAJOR_CATEGORIES = { "道具类", "装备类", "宝箱类", "宠物类", "境界类", "其他" }
+
+--- 判断背包物品属于哪个大类
+---@param item table 背包中的物品 {name, count}
+---@return string majorCategory 大类名
+---@return string subCategory 小类名
+local function ClassifyItem(item)
+    local itemData = DataManager.GetItem(item.name)
+    local equipData = DataManager.GetEquipData(item.name)
+
+    -- 优先用装备数据（有slot）
+    if equipData and equipData.slot then
+        -- 检查是否是宠物装备
+        local itemType = itemData and itemData.type or ""
+        if itemType:find("宠物装备") then
+            return "宠物类", "宠物装备"
+        end
+        return "装备类", equipData.slot
+    end
+
+    local itemType = itemData and itemData.type or "未知"
+
+    -- 宠物材料判断（升星石/进阶丹/品质精华）
+    if BagUI.IsPetMaterial(item.name) then
+        return "宠物类", "材料"
+    end
+
+    -- 宠物判断
+    if DataManager.petTypes[item.name] ~= nil then
+        return "宠物类", "宠物"
+    end
+    if itemType == "宠物" then
+        return "宠物类", "宠物"
+    end
+    if itemType:find("宠物装备") then
+        return "宠物类", "宠物装备"
+    end
+
+    -- 宝箱判断（小类按"固定"/"随机"分）
+    if itemType:find("宝箱") or BagUI.IsChest(item.name) then
+        local chestType = BagUI.GetChestType(item.name)
+        return "宝箱类", chestType
+    end
+
+    -- 境界类判断（经验丹/突破材料/提升材料）
+    local isPill, isBreak, isUpgrade = BagUI.IsRealmMaterial(item.name)
+    if isPill then
+        return "境界类", "经验丹"
+    end
+    if isBreak then
+        return "境界类", "突破材料"
+    end
+    if isUpgrade then
+        return "境界类", "提升材料"
+    end
+    if itemType:find("境界") then
+        return "境界类", "经验丹"
+    end
+
+    -- 传送材料判断
+    if BagUI.IsTeleportMaterial(item.name) then
+        return "其他", "传送材料"
+    end
+
+    -- 其余归入道具类
+    return "道具类", itemType
+end
+
+--- 获取当前大类下所有可用小类列表（动态收集）
+---@return string[] subCategories
+local function GetSubCategories()
+    local player = DataManager.playerData
+    if not player or not player.bag then return { "全部" } end
+
+    local subSet = {}
+    for _, item in ipairs(player.bag) do
+        local major, sub = ClassifyItem(item)
+        if major == currentMajorCategory_ then
+            subSet[sub] = true
+        end
+    end
+
+    -- 按固定顺序输出
+    local subs = { "全部" }
+    for sub in pairs(subSet) do
+        table.insert(subs, sub)
+    end
+    -- 对非"全部"的部分排序
+    table.sort(subs, function(a, b)
+        if a == "全部" then return true end
+        if b == "全部" then return false end
+        return a < b
+    end)
+    return subs
+end
+
+--- 获取当前分类+筛选后的物品列表（带原始索引）
+---@return table[] filteredItems { {index=原始背包索引, item=背包物品} }
+local function GetFilteredItems()
+    local player = DataManager.playerData
+    if not player or not player.bag then return {} end
+
+    local result = {}
+    for i, item in ipairs(player.bag) do
+        local major, sub = ClassifyItem(item)
+        if major == currentMajorCategory_ then
+            if currentSubCategory_ == "全部" or sub == currentSubCategory_ then
+                table.insert(result, { index = i, item = item })
+            end
+        end
+    end
+    return result
+end
 
 --- 加载宝箱名称缓存
 ---@param callback fun()|nil 加载完成回调
@@ -41,8 +164,8 @@ function BagUI.LoadChestNames(callback)
             chestNamesCache_ = {}
             if raw and raw ~= "" then
                 local sections = IniParser.Parse(raw)
-                for name, _ in pairs(sections) do
-                    chestNamesCache_[name] = true
+                for name, data in pairs(sections) do
+                    chestNamesCache_[name] = data["类型"] or "固定"
                 end
             end
             print("[BagUI] 宝箱缓存已加载，共 " .. tostring(BagUI.GetChestCount()) .. " 种宝箱")
@@ -73,6 +196,74 @@ function BagUI.IsChest(itemName)
     return false
 end
 
+--- 获取宝箱类型（"固定"|"随机"）
+---@param itemName string
+---@return string chestType
+function BagUI.GetChestType(itemName)
+    if chestNamesCache_ and chestNamesCache_[itemName] then
+        return chestNamesCache_[itemName]
+    end
+    return "固定"
+end
+
+--- 判断物品是否是宠物升星/升阶/品质材料
+---@param itemName string
+---@return boolean
+function BagUI.IsPetMaterial(itemName)
+    local cfg = DataManager.petConfig
+    if itemName == cfg.star_cost_material then return true end
+    if itemName == cfg.adv_cost_material then return true end
+    -- 品质消耗材料（从 quality_cost 解析出材料名）
+    for _, costStr in pairs(cfg.quality_cost) do
+        local matName = costStr:match("^(.+):")
+        if matName and matName == itemName then return true end
+    end
+    return false
+end
+
+--- 判断物品是否是境界相关材料（突破材料/提升材料/经验丹）
+---@param itemName string
+---@return boolean isPill 是否是经验丹
+---@return boolean isBreakthrough 是否是突破材料
+---@return boolean isUpgrade 是否是提升材料
+function BagUI.IsRealmMaterial(itemName)
+    -- 经验丹
+    if DataManager.realmPills[itemName] then
+        return true, false, false
+    end
+    -- 突破材料/提升材料（从所有境界配置中收集）
+    for _, realm in ipairs(DataManager.realms) do
+        if realm.breakthrough_material == itemName then
+            return false, true, false
+        end
+        if realm.upgrade_material == itemName then
+            return false, false, true
+        end
+    end
+    return false, false, false
+end
+
+--- 判断物品是否是传送所需材料
+---@param itemName string
+---@return boolean
+function BagUI.IsTeleportMaterial(itemName)
+    local tc = DataManager.teleportMaps
+    if not tc then return false end
+    -- 检查默认传送物品
+    if tc.default_item and tc.default_item ~= "" and tc.default_item == itemName then
+        return true
+    end
+    -- 检查各地图自定义传送物品
+    if tc.maps then
+        for _, map in ipairs(tc.maps) do
+            if map.custom_item and map.custom_item ~= "" and map.custom_item == itemName then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 --- 渲染背包面板
 ---@param parent Widget
 function BagUI.Render(parent)
@@ -97,15 +288,17 @@ function BagUI.Refresh()
     local player = DataManager.playerData
     if not player then return end
 
+    -- === 标题 ===
     parentRef_:AddChild(UI.Label {
         text = "— 背包 —",
         fontSize = 16,
         fontColor = { 200, 170, 100, 255 },
         textAlign = "center",
         marginTop = 8,
+        marginBottom = 6,
     })
 
-    if #player.bag == 0 then
+    if not player.bag or #player.bag == 0 then
         parentRef_:AddChild(UI.Label {
             text = "背包空空如也...",
             fontSize = 13,
@@ -116,107 +309,256 @@ function BagUI.Refresh()
         return
     end
 
-    for i, item in ipairs(player.bag) do
-        local itemData = DataManager.GetItem(item.name)
-        -- 如果items表找到但无slot，尝试从equipment表补充装备数据
-        local equipData = DataManager.GetEquipData(item.name)
-        if equipData and equipData.slot then
-            itemData = equipData
-        end
-        local desc = itemData and (itemData.desc or "") or ""
-        local rawSellPrice = itemData and (itemData.price_sell or "0") or "0"
-        -- 出售价 = 购买价的10%
-        local sellPrice = BigNum.gt(rawSellPrice, "0") and BigNum.div(rawSellPrice, "10") or "0"
-        if not BigNum.gt(sellPrice, "0") and BigNum.gt(rawSellPrice, "0") then sellPrice = "1" end
+    -- === 大类标签栏 ===
+    local majorBtns = {}
+    for _, cat in ipairs(MAJOR_CATEGORIES) do
+        local isActive = (cat == currentMajorCategory_)
+        table.insert(majorBtns, UI.Button {
+            text = cat,
+            height = 28,
+            fontSize = 12,
+            variant = isActive and "primary" or "default",
+            onClick = function()
+                currentMajorCategory_ = cat
+                currentSubCategory_ = "全部"
+                currentPage_ = 1
+                BagUI.Refresh()
+            end,
+        })
+    end
+    parentRef_:AddChild(UI.Panel {
+        flexDirection = "row",
+        flexWrap = "wrap",
+        width = "100%",
+        gap = 4,
+        paddingLeft = 4,
+        paddingRight = 4,
+        marginBottom = 6,
+        children = majorBtns,
+    })
 
-        local itemType = itemData and itemData.type or "材料"
-        local isPetEquip = itemType:find("宠物装备") ~= nil
-        local isPet = (not isPetEquip) and (itemType == "宠物" or DataManager.petTypes[item.name] ~= nil)
-        local isConsumable = itemData and itemType ~= "材料" and not itemData.slot and not isPetEquip and not isPet
-        local isEquip = itemData and itemData.slot and not isPetEquip
-        -- 宝箱判断：type含"宝箱"，或物品名匹配宝箱配置缓存
-        local isChest = (not isPetEquip and not isPet) and ((itemType:find("宝箱")) or BagUI.IsChest(item.name))
-
-        local btnChildren = {}
-
-        -- 装备类物品显示详情按钮（宠物装备不走人物装备流程）
-        if isEquip then
-            table.insert(btnChildren, UI.Button {
-                text = "详情",
-                variant = "secondary",
-                height = 26,
+    -- === 小类标签栏 ===
+    local subCategories = GetSubCategories()
+    if #subCategories > 1 then
+        local subBtns = {}
+        for _, sub in ipairs(subCategories) do
+            local isActive = (sub == currentSubCategory_)
+            table.insert(subBtns, UI.Button {
+                text = sub,
+                height = 24,
+                fontSize = 11,
+                variant = isActive and "secondary" or "default",
                 onClick = function()
-                    if not EquipUI then EquipUI = require("UI.EquipUI") end
-                    EquipUI.ShowDetail(item.name)
+                    currentSubCategory_ = sub
+                    currentPage_ = 1
+                    BagUI.Refresh()
                 end,
             })
         end
-
-        if isPet then
-            -- 宠物物品：激活按钮
-            table.insert(btnChildren, UI.Button {
-                text = "激活",
-                variant = "success",
-                height = 26,
-                onClick = function() BagUI.ActivatePet(i, item.name) end,
-            })
-        elseif isChest then
-            table.insert(btnChildren, UI.Button {
-                text = "打开",
-                variant = "success",
-                height = 26,
-                onClick = function() BagUI.OpenChest(i, item.name) end,
-            })
-        elseif isConsumable then
-            table.insert(btnChildren, UI.Button {
-                text = "使用",
-                variant = "success",
-                height = 26,
-                onClick = function() BagUI.UseItem(i) end,
-            })
-        end
-
-        if isEquip then
-            table.insert(btnChildren, UI.Button {
-                text = "装备",
-                variant = "primary",
-                height = 26,
-                onClick = function() BagUI.EquipItem(i) end,
-            })
-        end
-
-        if BigNum.gt(sellPrice, "0") then
-            table.insert(btnChildren, UI.Button {
-                text = "卖" .. BigNum.toShort(sellPrice),
-                variant = "danger",
-                height = 26,
-                onClick = function() BagUI.SellItem(i) end,
-            })
-        end
-
         parentRef_:AddChild(UI.Panel {
             flexDirection = "row",
+            flexWrap = "wrap",
+            width = "100%",
+            gap = 3,
+            paddingLeft = 4,
+            paddingRight = 4,
+            marginBottom = 6,
+            children = subBtns,
+        })
+    end
+
+    -- === 获取筛选后的物品 ===
+    local filteredItems = GetFilteredItems()
+    local totalItems = #filteredItems
+    local totalPages = math.max(1, math.ceil(totalItems / ITEMS_PER_PAGE))
+
+    -- 修正页码越界
+    if currentPage_ > totalPages then currentPage_ = totalPages end
+    if currentPage_ < 1 then currentPage_ = 1 end
+
+    if totalItems == 0 then
+        parentRef_:AddChild(UI.Label {
+            text = "该分类下无物品",
+            fontSize = 13,
+            fontColor = { 120, 120, 140, 255 },
+            textAlign = "center",
+            marginTop = 12,
+        })
+    else
+        -- === 分页物品列表 ===
+        local startIdx = (currentPage_ - 1) * ITEMS_PER_PAGE + 1
+        local endIdx = math.min(currentPage_ * ITEMS_PER_PAGE, totalItems)
+
+        for idx = startIdx, endIdx do
+            local entry = filteredItems[idx]
+            local i = entry.index  -- 原始背包索引
+            local item = entry.item
+
+            local itemData = DataManager.GetItem(item.name)
+            local equipData = DataManager.GetEquipData(item.name)
+            if equipData and equipData.slot then
+                itemData = equipData
+            end
+            local desc = itemData and (itemData.desc or "") or ""
+            local rawSellPrice = itemData and (itemData.price_sell or "0") or "0"
+            local sellPrice = BigNum.gt(rawSellPrice, "0") and BigNum.div(rawSellPrice, "10") or "0"
+            if not BigNum.gt(sellPrice, "0") and BigNum.gt(rawSellPrice, "0") then sellPrice = "1" end
+
+            local itemType = itemData and itemData.type or "材料"
+            local isPetEquip = itemType:find("宠物装备") ~= nil
+            local isPet = (not isPetEquip) and (itemType == "宠物" or DataManager.petTypes[item.name] ~= nil)
+            local isConsumable = itemData and itemType ~= "材料" and not itemData.slot and not isPetEquip and not isPet
+            local isEquip = itemData and itemData.slot and not isPetEquip
+            local isChest = (not isPetEquip and not isPet) and ((itemType:find("宝箱")) or BagUI.IsChest(item.name))
+
+            local btnChildren = {}
+
+            if isEquip then
+                table.insert(btnChildren, UI.Button {
+                    text = "详情",
+                    variant = "secondary",
+                    height = 26,
+                    onClick = function()
+                        if not EquipUI then EquipUI = require("UI.EquipUI") end
+                        EquipUI.ShowDetail(item.name)
+                    end,
+                })
+            end
+
+            if isPet then
+                table.insert(btnChildren, UI.Button {
+                    text = "激活",
+                    variant = "success",
+                    height = 26,
+                    onClick = function() BagUI.ActivatePet(i, item.name) end,
+                })
+            elseif isChest then
+                table.insert(btnChildren, UI.Button {
+                    text = "打开",
+                    variant = "success",
+                    height = 26,
+                    onClick = function() BagUI.OpenChest(i, item.name) end,
+                })
+            elseif isConsumable then
+                table.insert(btnChildren, UI.Button {
+                    text = "使用",
+                    variant = "success",
+                    height = 26,
+                    onClick = function() BagUI.UseItem(i) end,
+                })
+            end
+
+            if isEquip then
+                table.insert(btnChildren, UI.Button {
+                    text = "装备",
+                    variant = "primary",
+                    height = 26,
+                    onClick = function() BagUI.EquipItem(i) end,
+                })
+            end
+
+            if BigNum.gt(sellPrice, "0") then
+                table.insert(btnChildren, UI.Button {
+                    text = "卖" .. NumFormat.Short(sellPrice),
+                    variant = "danger",
+                    height = 26,
+                    onClick = function() BagUI.SellItem(i) end,
+                })
+            end
+
+            parentRef_:AddChild(UI.Panel {
+                flexDirection = "row",
+                alignItems = "center",
+                width = "100%",
+                padding = 6,
+                gap = 6,
+                backgroundColor = { 25, 20, 45, 200 },
+                borderRadius = 4,
+                marginBottom = 4,
+                children = {
+                    UI.Panel {
+                        flexGrow = 1,
+                        flexShrink = 1,
+                        flexDirection = "column",
+                        children = {
+                            UI.Label { text = item.name .. " x" .. item.count, fontSize = 14, fontColor = { 220, 220, 240, 255 } },
+                            UI.Label { text = desc, fontSize = 11, fontColor = { 140, 140, 160, 255 }, whiteSpace = "normal" },
+                        },
+                    },
+                    UI.Panel { flexDirection = "row", gap = 4, children = btnChildren },
+                },
+            })
+        end
+    end
+
+    -- === 分页控制栏 ===
+    if totalPages > 1 then
+        parentRef_:AddChild(UI.Panel {
+            flexDirection = "row",
+            justifyContent = "center",
             alignItems = "center",
             width = "100%",
-            padding = 6,
-            gap = 6,
-            backgroundColor = { 25, 20, 45, 200 },
-            borderRadius = 4,
+            gap = 8,
+            marginTop = 8,
             marginBottom = 4,
             children = {
-                UI.Panel {
-                    flexGrow = 1,
-                    flexShrink = 1,
-                    flexDirection = "column",
-                    children = {
-                        UI.Label { text = item.name .. " x" .. item.count, fontSize = 14, fontColor = { 220, 220, 240, 255 } },
-                        UI.Label { text = desc, fontSize = 11, fontColor = { 140, 140, 160, 255 }, whiteSpace = "normal" },
-                    },
+                UI.Button {
+                    text = "上一页",
+                    height = 26,
+                    fontSize = 12,
+                    variant = currentPage_ > 1 and "default" or "default",
+                    disabled = currentPage_ <= 1,
+                    onClick = function()
+                        if currentPage_ > 1 then
+                            currentPage_ = currentPage_ - 1
+                            BagUI.Refresh()
+                        end
+                    end,
                 },
-                UI.Panel { flexDirection = "row", gap = 4, children = btnChildren },
+                UI.Label {
+                    text = currentPage_ .. "/" .. totalPages,
+                    fontSize = 13,
+                    fontColor = { 180, 180, 200, 255 },
+                },
+                UI.Button {
+                    text = "下一页",
+                    height = 26,
+                    fontSize = 12,
+                    variant = currentPage_ < totalPages and "default" or "default",
+                    disabled = currentPage_ >= totalPages,
+                    onClick = function()
+                        if currentPage_ < totalPages then
+                            currentPage_ = currentPage_ + 1
+                            BagUI.Refresh()
+                        end
+                    end,
+                },
             },
         })
     end
+
+    -- === 底部：物品统计 + 回收按钮 ===
+    parentRef_:AddChild(UI.Panel {
+        width = "100%",
+        marginTop = 8,
+        alignItems = "center",
+        gap = 6,
+        children = {
+            UI.Label {
+                text = "当前分类: " .. totalItems .. " 件 | 背包总计: " .. #player.bag .. " 件",
+                fontSize = 11,
+                fontColor = { 140, 140, 160, 255 },
+                textAlign = "center",
+            },
+            UI.Button {
+                text = "一键回收无效物品",
+                variant = "danger",
+                height = 28,
+                width = "80%",
+                onClick = function() BagUI.RecycleInvalidItems() end,
+            },
+        },
+    })
 end
 
 --- 添加 buff 到玩家
@@ -398,41 +740,41 @@ function BagUI.UseItem(index)
         local soulBonus = DataManager.GetBattleSoulBonus(player.status.battle_soul_level)
         local maxHp = BigNum.add(BigNum.add(BigNum.add(BigNum.add(player.status.max_hp or "100", tostring(eHp)), tostring(bHp)), rHp), soulBonus.max_hp)
         player.status.hp = BigNum.min(BigNum.add(player.status.hp or "0", val), maxHp)
-        effectMsg = "恢复 " .. BigNum.toShort(val) .. " 生命"
+        effectMsg = "恢复 " .. NumFormat.Short(val) .. " 生命"
     end
     if itemType:find("恢复灵力") then
         local maxMp = BigNum.new(player.status.max_mp or "50")
         player.status.mp = BigNum.min(BigNum.add(player.status.mp or "0", val), maxMp)
-        effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "恢复 " .. BigNum.toShort(val) .. " 灵力"
+        effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "恢复 " .. NumFormat.Short(val) .. " 灵力"
     end
 
     -- 攻击/防御/生命上限：有 duration 则限时buff，否则永久
     if itemType:find("攻击") then
         if duration > 0 then
             AddBuff(player, "攻击", val, duration)
-            effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "攻击+" .. BigNum.toShort(val) .. "(" .. duration .. "分钟)"
+            effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "攻击+" .. NumFormat.Short(val) .. "(" .. duration .. "分钟)"
         else
             player.status.atk = BigNum.add(player.status.atk or "0", val)
-            effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "攻击永久+" .. BigNum.toShort(val)
+            effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "攻击永久+" .. NumFormat.Short(val)
         end
     end
     if itemType:find("防御") then
         if duration > 0 then
             AddBuff(player, "防御", val, duration)
-            effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "防御+" .. BigNum.toShort(val) .. "(" .. duration .. "分钟)"
+            effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "防御+" .. NumFormat.Short(val) .. "(" .. duration .. "分钟)"
         else
             player.status.def = BigNum.add(player.status.def or "0", val)
-            effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "防御永久+" .. BigNum.toShort(val)
+            effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "防御永久+" .. NumFormat.Short(val)
         end
     end
     if itemType:find("生命上限") then
         if duration > 0 then
             AddBuff(player, "生命上限", val, duration)
-            effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "生命上限+" .. BigNum.toShort(val) .. "(" .. duration .. "分钟)"
+            effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "生命上限+" .. NumFormat.Short(val) .. "(" .. duration .. "分钟)"
         else
             player.status.max_hp = BigNum.add(player.status.max_hp or "100", val)
             player.status.hp = BigNum.add(player.status.hp or "0", val)
-            effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "生命上限永久+" .. BigNum.toShort(val)
+            effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "生命上限永久+" .. NumFormat.Short(val)
         end
     end
 
@@ -461,7 +803,7 @@ function BagUI.UseItem(index)
     -- 境界经验类：增加修炼经验
     if itemType:find("境界经验") then
         player.status.realm_exp = BigNum.add(player.status.realm_exp or "0", val)
-        effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "获得修炼经验 +" .. BigNum.toShort(val)
+        effectMsg = effectMsg .. (effectMsg ~= "" and "，" or "") .. "获得修炼经验 +" .. NumFormat.Short(val)
     end
 
     if effectMsg == "" then
@@ -819,6 +1161,48 @@ function BagUI.ShowReviveRejectDialog()
     if root then
         root:AddChild(dialog)
     end
+end
+
+--- 一键回收无效物品（清理数据中不存在的物品）
+--- 排除：宠物升星/升阶/品质材料、境界经验丹/突破材料/提升材料、传送材料
+function BagUI.RecycleInvalidItems()
+    local player = DataManager.playerData
+    if not player or not player.bag then return end
+
+    local removedNames = {}
+    local i = 1
+    while i <= #player.bag do
+        local item = player.bag[i]
+        local itemData = DataManager.GetItem(item.name)
+        local equipData = DataManager.GetEquipData(item.name)
+        local isPet = DataManager.petTypes[item.name] ~= nil
+        local isChest = BagUI.IsChest(item.name)
+        local isPetMat = BagUI.IsPetMaterial(item.name)
+        local isRealmPill, isRealmBreak, isRealmUpgrade = BagUI.IsRealmMaterial(item.name)
+        local isRealmMat = isRealmPill or isRealmBreak or isRealmUpgrade
+        local isTeleportMat = BagUI.IsTeleportMaterial(item.name)
+
+        -- 如果在物品表、装备表、宠物表、宝箱表中都找不到，
+        -- 且不是宠物材料、不是境界材料、不是传送材料，才视为无效物品
+        if not itemData and not equipData and not isPet and not isChest
+            and not isPetMat and not isRealmMat and not isTeleportMat then
+            table.insert(removedNames, item.name .. " x" .. (item.count or "1"))
+            table.remove(player.bag, i)
+        else
+            i = i + 1
+        end
+    end
+
+    if #removedNames == 0 then
+        if not GameUI then GameUI = require("UI.GameUI") end
+        GameUI.AddLog("背包中没有无效物品")
+    else
+        if not GameUI then GameUI = require("UI.GameUI") end
+        GameUI.AddLog("已回收 " .. #removedNames .. " 种无效物品：" .. table.concat(removedNames, "、"))
+        DataManager.SaveToCloud(player)
+    end
+
+    BagUI.Refresh()
 end
 
 return BagUI

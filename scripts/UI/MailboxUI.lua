@@ -321,8 +321,29 @@ function MailboxUI.Refresh()
             variant = "primary",
             width = "100%",
             height = 36,
-            marginBottom = 8,
+            marginBottom = 4,
             onClick = function() MailboxUI.ClaimAll() end,
+        })
+    end
+
+    -- 统计已读邮件数（已领取 或 无附件）
+    local readCount = 0
+    for _, mail in ipairs(mails_) do
+        local hasCurr = mail.currencies and next(mail.currencies)
+        local hasAttachment = (mail.gold ~= "0" or hasCurr or mail.items ~= "")
+        if mail.claimed or not hasAttachment then
+            readCount = readCount + 1
+        end
+    end
+
+    if readCount > 0 then
+        parentRef_:AddChild(UI.Button {
+            text = "删除已读邮件 (" .. readCount .. ")",
+            variant = "danger",
+            width = "100%",
+            height = 36,
+            marginBottom = 8,
+            onClick = function() MailboxUI.DeleteRead() end,
         })
     end
 
@@ -559,6 +580,27 @@ function MailboxUI.ClaimAll()
             MailboxUI.Refresh()
         end)
     end
+end
+
+--- 一键删除已读邮件（已领取 或 无附件）
+function MailboxUI.DeleteRead()
+    local newMails = {}
+    for _, mail in ipairs(mails_) do
+        local hasCurr = mail.currencies and next(mail.currencies)
+        local hasAttachment = (mail.gold ~= "0" or hasCurr or mail.items ~= "")
+        -- 保留：有附件且未领取的邮件
+        if hasAttachment and not mail.claimed then
+            table.insert(newMails, mail)
+        end
+    end
+
+    local deleted = #mails_ - #newMails
+    mails_ = newMails
+
+    SaveMails(function()
+        print("[Mailbox] 已删除 " .. deleted .. " 封已读邮件")
+        MailboxUI.Refresh()
+    end)
 end
 
 return MailboxUI
