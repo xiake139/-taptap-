@@ -7,6 +7,7 @@ local DataManager = require("Systems.DataManager")
 local IniParser = require("Utils.IniParser")
 local NumFormat = require("Utils.NumFormat")
 local BigNum = require("Utils.BigNum")
+local EquipSlots = require("Systems.EquipSlots")
 
 local AdminUI = {}
 
@@ -48,6 +49,7 @@ local CATEGORIES = {
     { id = "battle_soul", name = "战魂管理" },
     { id = "leaderboards", name = "排行榜" },
     { id = "teleport_maps", name = "传送地图" },
+    { id = "mounts", name = "坐骑管理" },
 
     { id = "generator", name = "一键生成" },
 }
@@ -1350,21 +1352,11 @@ local function ShowPlayerDetailDialog(username, accountInfo, editMode)
             marginBottom = 2,
         })
         local eq = playerData.equip or {}
-        local equipFields = {
-            { label = "武器", key = "eq_weapon", value = eq.weapon or "" },
-            { label = "头盔", key = "eq_helmet", value = eq.helmet or "" },
-            { label = "铠甲", key = "eq_armor", value = eq.armor or "" },
-            { label = "护腕", key = "eq_bracer", value = eq.bracer or "" },
-            { label = "腰带", key = "eq_belt", value = eq.belt or "" },
-            { label = "战靴", key = "eq_boots", value = eq.boots or "" },
-            { label = "披风", key = "eq_cloak", value = eq.cloak or "" },
-            { label = "项链", key = "eq_necklace", value = eq.necklace or "" },
-            { label = "戒指", key = "eq_ring", value = eq.ring or "" },
-            { label = "法宝", key = "eq_artifact", value = eq.artifact or "" },
-            { label = "坐骑", key = "eq_mount", value = eq.mount or "" },
-            { label = "灵翼", key = "eq_wings", value = eq.wings or "" },
-            { label = "护盾", key = "eq_shield", value = eq.shield or "" },
-        }
+        -- 装备栏字段动态生成(从 EquipSlots 共享模块读取,管理员可自定义部位)
+        local equipFields = {}
+        for _, slot in ipairs(EquipSlots.slots) do
+            equipFields[#equipFields + 1] = { label = slot.label, key = "eq_" .. slot.key, value = eq[slot.key] or "" }
+        end
         for _, f in ipairs(equipFields) do
             local panel, field = CreateFormField(f.label, f.value, { width = 150 })
             if not editMode then field:SetDisabled(true) end
@@ -1439,48 +1431,53 @@ local function ShowPlayerDetailDialog(username, accountInfo, editMode)
                     local newAccPassword = fieldWidgets["acc_password"]:GetValue() or ""
                     local newAccCharName = fieldWidgets["acc_charName"]:GetValue() or ""
 
-                    -- 构建新的 playerData
-                    local newPlayerData = {
-                        account = {
-                            username = username,
-                            password = newAccPassword,
-                            char_name = newAccCharName,
-                        },
-                        status = {
-                            name = fieldWidgets["st_name"]:GetValue() or "",
-                            level = fieldWidgets["st_level"]:GetValue() or "1",
-                            exp = fieldWidgets["st_exp"]:GetValue() or "0",
-                            hp = fieldWidgets["st_hp"]:GetValue() or "100",
-                            max_hp = fieldWidgets["st_max_hp"]:GetValue() or "100",
-                            mp = fieldWidgets["st_mp"]:GetValue() or "50",
-                            max_mp = fieldWidgets["st_max_mp"]:GetValue() or "50",
-                            atk = fieldWidgets["st_atk"]:GetValue() or "5",
-                            def = fieldWidgets["st_def"]:GetValue() or "3",
-                            gold = fieldWidgets["st_gold"]:GetValue() or "50",
-                            current_map = fieldWidgets["st_current_map"]:GetValue() or "新手村",
-                            battle_soul_level = fieldWidgets["st_battle_soul_level"]:GetValue() or "0",
-                            battle_soul_exp = fieldWidgets["st_battle_soul_exp"]:GetValue() or "0",
-                            currencies = {},
-                        },
-                        bag = {},
-                        equip = {
-                            weapon = fieldWidgets["eq_weapon"]:GetValue() or "",
-                            helmet = fieldWidgets["eq_helmet"]:GetValue() or "",
-                            armor = fieldWidgets["eq_armor"]:GetValue() or "",
-                            bracer = fieldWidgets["eq_bracer"]:GetValue() or "",
-                            belt = fieldWidgets["eq_belt"]:GetValue() or "",
-                            boots = fieldWidgets["eq_boots"]:GetValue() or "",
-                            cloak = fieldWidgets["eq_cloak"]:GetValue() or "",
-                            necklace = fieldWidgets["eq_necklace"]:GetValue() or "",
-                            ring = fieldWidgets["eq_ring"]:GetValue() or "",
-                            artifact = fieldWidgets["eq_artifact"]:GetValue() or "",
-                            mount = fieldWidgets["eq_mount"]:GetValue() or "",
-                            wings = fieldWidgets["eq_wings"]:GetValue() or "",
-                            shield = fieldWidgets["eq_shield"]:GetValue() or "",
-                        },
-                        quests = { active = {}, completed = {} },
-                        redeemed_codes = {},
+                    -- 构建新的 playerData（基于原始数据合并，避免丢失不在表单中的字段）
+                    local newPlayerData = {}
+                    for k, v in pairs(playerData) do
+                        if type(v) == "table" then
+                            -- 浅拷贝一层
+                            newPlayerData[k] = {}
+                            for kk, vv in pairs(v) do
+                                newPlayerData[k][kk] = vv
+                            end
+                        else
+                            newPlayerData[k] = v
+                        end
+                    end
+
+                    -- 覆盖表单中可编辑的字段
+                    newPlayerData.account = {
+                        username = username,
+                        password = newAccPassword,
+                        char_name = newAccCharName,
                     }
+                    newPlayerData.status = newPlayerData.status or {}
+                    newPlayerData.status.name = fieldWidgets["st_name"]:GetValue() or ""
+                    newPlayerData.status.level = fieldWidgets["st_level"]:GetValue() or "1"
+                    newPlayerData.status.exp = fieldWidgets["st_exp"]:GetValue() or "0"
+                    newPlayerData.status.hp = fieldWidgets["st_hp"]:GetValue() or "100"
+                    newPlayerData.status.max_hp = fieldWidgets["st_max_hp"]:GetValue() or "100"
+                    newPlayerData.status.mp = fieldWidgets["st_mp"]:GetValue() or "50"
+                    newPlayerData.status.max_mp = fieldWidgets["st_max_mp"]:GetValue() or "50"
+                    newPlayerData.status.atk = fieldWidgets["st_atk"]:GetValue() or "5"
+                    newPlayerData.status.def = fieldWidgets["st_def"]:GetValue() or "3"
+                    newPlayerData.status.gold = fieldWidgets["st_gold"]:GetValue() or "50"
+                    newPlayerData.status.current_map = fieldWidgets["st_current_map"]:GetValue() or "新手村"
+                    newPlayerData.status.battle_soul_level = fieldWidgets["st_battle_soul_level"]:GetValue() or "0"
+                    newPlayerData.status.battle_soul_exp = fieldWidgets["st_battle_soul_exp"]:GetValue() or "0"
+                    newPlayerData.status.currencies = {}
+
+                    newPlayerData.bag = {}
+                    newPlayerData.equip = (function()
+                        local eq = {}
+                        for _, slot in ipairs(EquipSlots.slots) do
+                            local w = fieldWidgets["eq_" .. slot.key]
+                            eq[slot.key] = w and w:GetValue() or ""
+                        end
+                        return eq
+                    end)()
+                    newPlayerData.quests = { active = {}, completed = {} }
+                    newPlayerData.redeemed_codes = {}
 
                     -- 收集自定义货币数据
                     for _, cName in ipairs(customCurrencies) do
@@ -2304,6 +2301,59 @@ local function RenderGameConfig()
             if rootPanel_ then rootPanel_:AddChild(editDialog_) end
         end, 6))
 
+    -- ===== 装备部位管理 =====
+    contentPanel_:AddChild(UI.Label {
+        text = "— 装备部位管理 —", fontSize = 14, fontColor = {200,170,100,255},
+        textAlign = "center", marginTop = 16, marginBottom = 6,
+    })
+    contentPanel_:AddChild(UI.Label {
+        text = "当前部位列表(可增删,保存后全局生效):", fontSize = 11, fontColor = {150,150,170,255},
+        marginBottom = 4,
+    })
+    -- 当前部位列表
+    for _, slot in ipairs(EquipSlots.slots) do
+        contentPanel_:AddChild(UI.Panel {
+            width = "100%", flexDirection = "row", alignItems = "center", gap = 6, marginBottom = 2,
+            children = {
+                UI.Label { text = slot.label .. " (" .. slot.key .. ")", fontSize = 11, fontColor = {180,180,200,255}, flexGrow = 1 },
+                UI.Button { text = "删除", fontSize = 9, width = 42, height = 22, variant = "danger",
+                    onClick = function()
+                        EquipSlots.Remove(slot.key)
+                        -- 保存到 game_config
+                        local gc = DataManager.gameConfig
+                        if not gc["装备部位"] then gc["装备部位"] = {} end
+                        gc["装备部位"]["列表"] = EquipSlots.Serialize()
+                        SaveCategoryToCloud("game_config")
+                        RenderGameConfig()
+                    end },
+            },
+        })
+    end
+    -- 添加新部位
+    local newSlotKey = UI.TextField { placeholder = "英文key(如earring)", width = 100, height = 26, fontSize = 10 }
+    local newSlotLabel = UI.TextField { placeholder = "中文名(如耳环)", width = 100, height = 26, fontSize = 10 }
+    contentPanel_:AddChild(UI.Panel {
+        width = "100%", flexDirection = "row", alignItems = "center", gap = 4, marginTop = 6,
+        flexWrap = "wrap",
+        children = {
+            newSlotKey,
+            newSlotLabel,
+            UI.Button { text = "+ 添加", fontSize = 10, height = 26, variant = "primary",
+                onClick = function()
+                    local k = newSlotKey:GetValue() or ""
+                    local l = newSlotLabel:GetValue() or ""
+                    if k == "" or l == "" then ShowMsg("请输入英文key和中文名"); return end
+                    if not EquipSlots.Add(k, l) then ShowMsg("部位已存在"); return end
+                    local gc = DataManager.gameConfig
+                    if not gc["装备部位"] then gc["装备部位"] = {} end
+                    gc["装备部位"]["列表"] = EquipSlots.Serialize()
+                    SaveCategoryToCloud("game_config")
+                    ShowMsg("已添加部位「" .. l .. "」")
+                    RenderGameConfig()
+                end },
+        },
+    })
+
 end
 
 -- =============== 通用列表配置管理 ===============
@@ -2783,19 +2833,13 @@ RenderItems = function()
     })
 end
 
---- 装备部位选项
-local EQUIP_SLOTS = { "武器", "头盔", "铠甲", "护腕", "腰带", "战靴", "披风", "项链", "戒指", "法宝", "坐骑", "灵翼", "护盾" }
+--- 装备部位选项（从共享模块动态获取,管理员可后台增删）
+local function GetEquipSlotLabels() return EquipSlots.labels end
 --- 装备品质选项
 local EQUIP_QUALITIES = { "白色", "绿色", "橙色", "红色", "彩色", "地级", "天级", "帝级", "仙级", "神级", "创世级" }
 
---- 英文→中文翻译映射（兼容旧数据）
-local SLOT_EN_TO_CN = {
-    weapon = "武器", armor = "铠甲", accessory = "饰品",
-    helmet = "头盔", bracer = "护腕", belt = "腰带",
-    boots = "战靴", cloak = "披风", necklace = "项链",
-    ring = "戒指", artifact = "法宝", mount = "坐骑",
-    wings = "灵翼", shield = "护盾",
-}
+--- 英文→中文翻译映射（引用共享模块）
+local SLOT_EN_TO_CN = EquipSlots.keyToLabel
 local QUALITY_EN_TO_CN = {
     white = "白色", green = "绿色", blue = "蓝色", purple = "紫色",
     orange = "橙色", gold = "金色", red = "红色",
@@ -2935,7 +2979,7 @@ local function RenderEquipment()
                 table.insert(formChildren, namePanel)
 
                 -- 部位选择器
-                local slotPanel, getSlot = CreateButtonSelector(EQUIP_SLOTS, SlotToCN(data.slot or "武器"), "部位", false)
+                local slotPanel, getSlot = CreateButtonSelector(GetEquipSlotLabels(), SlotToCN(data.slot or "武器"), "部位", false)
                 table.insert(formChildren, slotPanel)
 
                 -- 品质选择器
@@ -3036,7 +3080,7 @@ local function RenderEquipment()
             fieldWidgets["id"] = idField
             table.insert(formChildren, idPanel)
 
-            local slotPanel, getSlot = CreateButtonSelector(EQUIP_SLOTS, "武器", "部位", false)
+            local slotPanel, getSlot = CreateButtonSelector(GetEquipSlotLabels(), "武器", "部位", false)
             table.insert(formChildren, slotPanel)
 
             local qualityPanel, getQuality = CreateButtonSelector(EQUIP_QUALITIES, "白色", "品质", false)
@@ -4181,6 +4225,252 @@ end
 
 
 
+-- =============== 坐骑管理 ===============
+
+local editingMount_ = nil  -- 当前正在编辑的坐骑名(nil=列表模式)
+local RenderMountEdit      -- 前向声明(RenderMounts 内部调用)
+
+--- 保存坐骑配置到云端
+local function SaveMountsToCloud(onDone)
+    local sections = {}
+    for name, m in pairs(DataManager.mounts) do
+        sections[name] = {
+            ["名称"] = m.name or name,
+            ["类型"] = m.type or "不可传送",
+            ["可传送地图"] = table.concat(m.maps or {}, ","),
+            ["攻击"] = m.atk or "0",
+            ["防御"] = m.def or "0",
+            ["生命上限"] = m.hp or "0",
+            ["经验倍率"] = m.exp_rate or "0",
+            ["货币倍率"] = m.gold_rate or "0",
+        }
+    end
+    local content = IniParser.Serialize(sections)
+    SaveConfigToCloud("系统配置/mounts.ini", content, onDone)
+end
+
+--- 渲染坐骑管理主界面
+local function RenderMounts()
+    ClearContent()
+    if not contentPanel_ then return end
+
+    -- 编辑模式
+    if editingMount_ then
+        RenderMountEdit(editingMount_)
+        return
+    end
+
+    -- 列表模式
+    local children = {}
+    children[#children + 1] = UI.Label {
+        text = "— 坐骑管理 —", fontSize = 16, fontColor = { 200, 170, 100, 255 },
+        textAlign = "center", marginTop = 8, marginBottom = 8,
+    }
+    children[#children + 1] = UI.Button {
+        text = "+ 添加坐骑", variant = "primary", width = "100%", height = 34, marginBottom = 8,
+        onClick = function()
+            ShowEditDialog("新增坐骑", {
+                { key = "name", label = "坐骑名称", default = "" },
+            }, function(values)
+                local n = values["name"] or ""
+                if n == "" then ShowMsg("请输入坐骑名称"); return end
+                if DataManager.mounts[n] then ShowMsg("坐骑「" .. n .. "」已存在"); return end
+                DataManager.mounts[n] = { name = n, type = "不可传送", maps = {}, atk = "0", def = "0", hp = "0", exp_rate = "0", gold_rate = "0" }
+                SaveMountsToCloud(function() ShowMsg("已添加坐骑「" .. n .. "」"); RenderMounts() end)
+            end)
+        end,
+    }
+
+    -- 坐骑列表
+    local typeColors = { ["不可传送"] = {150,150,150,255}, ["部分传送"] = {100,180,255,255}, ["全图传送"] = {100,255,150,255} }
+    local sortedNames = {}
+    for name in pairs(DataManager.mounts) do sortedNames[#sortedNames + 1] = name end
+    table.sort(sortedNames)
+
+    for _, name in ipairs(sortedNames) do
+        local m = DataManager.mounts[name]
+        local tc = typeColors[m.type] or {180,180,180,255}
+        children[#children + 1] = UI.Panel {
+            width = "100%", flexDirection = "row", alignItems = "center",
+            gap = 6, marginBottom = 4, padding = 4, borderRadius = 4,
+            backgroundColor = { 35, 30, 50, 200 },
+            children = {
+                UI.Label { text = name, fontSize = 12, fontColor = {220,210,170,255}, flexGrow = 1 },
+                UI.Label { text = tostring(m.type or "不可传送"), fontSize = 10, fontColor = tc },
+                UI.Button { text = "编辑", fontSize = 10, width = 50, height = 26, variant = "primary",
+                    onClick = function() editingMount_ = name; RenderMounts() end },
+                UI.Button { text = "删除", fontSize = 10, width = 50, height = 26, variant = "danger",
+                    onClick = function()
+                        DataManager.mounts[name] = nil
+                        SaveMountsToCloud(function() ShowMsg("已删除坐骑「" .. name .. "」"); RenderMounts() end)
+                    end },
+            },
+        }
+    end
+
+    if #sortedNames == 0 then
+        children[#children + 1] = UI.Label { text = "暂无坐骑配置", fontSize = 12, fontColor = {120,120,140,255}, textAlign = "center", marginTop = 20 }
+    end
+
+    contentPanel_:AddChild(UI.ScrollView {
+        width = "100%", height = "100%",
+        children = { UI.Panel { width = "100%", flexDirection = "column", padding = 12, children = children } },
+    })
+end
+
+--- 渲染坐骑编辑界面
+---@param mountName string
+function RenderMountEdit(mountName)
+    ClearContent()
+    if not contentPanel_ then return end
+
+    local m = DataManager.mounts[mountName]
+    if not m then editingMount_ = nil; RenderMounts(); return end
+
+    local MOUNT_TYPES = { "不可传送", "部分传送", "全图传送" }
+    local children = {}
+
+    -- 标题 + 返回
+    children[#children + 1] = UI.Panel { width = "100%", flexDirection = "row", alignItems = "center", marginBottom = 8, children = {
+        UI.Button { text = "← 返回", variant = "secondary", height = 28, onClick = function() editingMount_ = nil; RenderMounts() end },
+        UI.Label { text = "  编辑坐骑：" .. mountName, fontSize = 14, fontColor = {200,170,100,255}, flexGrow = 1 },
+    }}
+
+    -- 类型选择器
+    local typePanel, getType = CreateButtonSelector(MOUNT_TYPES, m.type or "不可传送", "类型", false)
+    children[#children + 1] = typePanel
+
+    -- 属性区(flexWrap 自动换行,每个属性 = 标签+输入框+单位)
+    local attrDefs = {
+        { key = "atk",       label = "攻击",     unit = "点",  value = m.atk },
+        { key = "def",       label = "防御",     unit = "点",  value = m.def },
+        { key = "hp",        label = "生命上限", unit = "点",  value = m.hp },
+        { key = "exp_rate",  label = "经验倍率", unit = "倍",  value = m.exp_rate },
+        { key = "gold_rate", label = "货币倍率", unit = "倍",  value = m.gold_rate },
+    }
+    local attrFields = {}
+    local attrChildren = {}
+    for _, a in ipairs(attrDefs) do
+        local field = UI.TextField { value = a.value or "0", width = 70, height = 28, fontSize = 11 }
+        attrFields[a.key] = field
+        attrChildren[#attrChildren + 1] = UI.Panel {
+            flexDirection = "row", alignItems = "center", gap = 2, marginRight = 8, marginBottom = 4,
+            children = {
+                UI.Label { text = a.label, fontSize = 11, fontColor = {180,180,200,255} },
+                field,
+                UI.Label { text = a.unit, fontSize = 10, fontColor = {140,140,160,255} },
+            },
+        }
+    end
+    children[#children + 1] = UI.Label { text = "属性加成:", fontSize = 12, fontColor = {160,160,180,255}, marginTop = 6, marginBottom = 2 }
+    children[#children + 1] = UI.Panel {
+        width = "100%", flexDirection = "row", flexWrap = "wrap", gap = 4,
+        children = attrChildren,
+    }
+
+    -- 部分传送地图管理(仅 type="部分传送" 时相关,但始终显示方便切换)
+    children[#children + 1] = UI.Label { text = "可传送地图(部分传送生效):", fontSize = 12, fontColor = {160,160,180,255}, marginTop = 10, marginBottom = 2 }
+
+    -- 搜索框
+    local searchField = UI.TextField { placeholder = "搜索地图名...", width = "100%", height = 30, fontSize = 11 }
+    children[#children + 1] = searchField
+
+    -- 已选地图列表(每个有删除按钮)
+    local selectedMaps = m.maps or {}
+    local selectedChildren = {}
+    for i, mapName in ipairs(selectedMaps) do
+        selectedChildren[#selectedChildren + 1] = UI.Panel {
+            flexDirection = "row", alignItems = "center", gap = 4, marginBottom = 2,
+            children = {
+                UI.Label { text = "✓ " .. mapName, fontSize = 11, fontColor = {100,255,150,255}, flexGrow = 1 },
+                UI.Button { text = "移除", fontSize = 9, width = 42, height = 22, variant = "danger",
+                    onClick = function()
+                        table.remove(selectedMaps, i)
+                        m.maps = selectedMaps
+                        RenderMountEdit(mountName)
+                    end },
+            },
+        }
+    end
+    if #selectedChildren > 0 then
+        children[#children + 1] = UI.Panel {
+            width = "100%", flexDirection = "column",
+            borderRadius = 4, padding = 4, marginTop = 4, backgroundColor = {25,35,25,180},
+            children = selectedChildren,
+        }
+    end
+
+    -- 可添加地图列表(虚拟列表:从 DataManager.maps 获取所有地图,排除已选,支持搜索)
+    local allMapNames = {}
+    for mapName in pairs(DataManager.maps) do
+        -- 排除已选
+        local already = false
+        for _, s in ipairs(selectedMaps) do if s == mapName then already = true; break end end
+        if not already then allMapNames[#allMapNames + 1] = mapName end
+    end
+    table.sort(allMapNames)
+
+    -- 搜索过滤逻辑:onChange 时重渲染(简化:保存搜索词到 upvalue,用 ScrollView + 只渲染匹配项)
+    -- 由于需动态过滤,用 VirtualList 组件 或 普通列表(地图数通常<100,普通列表可接受)
+    local mapListPanel = UI.Panel { width = "100%", flexDirection = "column", marginTop = 4 }
+    local function RefreshMapList(keyword)
+        mapListPanel:ClearChildren()
+        local kw = (keyword or ""):lower()
+        local count = 0
+        for _, mapName in ipairs(allMapNames) do
+            if kw == "" or mapName:lower():find(kw, 1, true) then
+                count = count + 1
+                if count > 50 then break end -- 限制显示数量避免卡顿
+                mapListPanel:AddChild(UI.Panel {
+                    flexDirection = "row", alignItems = "center", gap = 4, marginBottom = 2,
+                    children = {
+                        UI.Label { text = mapName, fontSize = 11, fontColor = {180,180,200,255}, flexGrow = 1 },
+                        UI.Button { text = "选择", fontSize = 9, width = 42, height = 22, variant = "primary",
+                            onClick = function()
+                                selectedMaps[#selectedMaps + 1] = mapName
+                                m.maps = selectedMaps
+                                RenderMountEdit(mountName)
+                            end },
+                    },
+                })
+            end
+        end
+        if count == 0 then
+            mapListPanel:AddChild(UI.Label { text = "(无匹配地图)", fontSize = 11, fontColor = {120,120,140,255} })
+        end
+    end
+    RefreshMapList("")
+    searchField.props.onChange = function(self, value) RefreshMapList(value) end
+    children[#children + 1] = mapListPanel
+
+    -- 保存按钮
+    children[#children + 1] = UI.Panel { width = "100%", flexDirection = "row", gap = 8, marginTop = 12, children = {
+        UI.Button { text = "保存", variant = "primary", height = 34, flexGrow = 1,
+            onClick = function()
+                m.type = getType()
+                m.atk = attrFields["atk"]:GetValue() or "0"
+                m.def = attrFields["def"]:GetValue() or "0"
+                m.hp = attrFields["hp"]:GetValue() or "0"
+                m.exp_rate = attrFields["exp_rate"]:GetValue() or "0"
+                m.gold_rate = attrFields["gold_rate"]:GetValue() or "0"
+                m.maps = selectedMaps
+                DataManager.mounts[mountName] = m
+                SaveMountsToCloud(function()
+                    ShowMsg("坐骑「" .. mountName .. "」已保存")
+                    editingMount_ = nil
+                    RenderMounts()
+                end)
+            end },
+        UI.Button { text = "取消", variant = "secondary", height = 34, width = 70,
+            onClick = function() editingMount_ = nil; RenderMounts() end },
+    }}
+
+    contentPanel_:AddChild(UI.ScrollView {
+        width = "100%", height = "100%",
+        children = { UI.Panel { width = "100%", flexDirection = "column", padding = 12, children = children } },
+    })
+end
+
 -- =============== 一键生成 ===============
 
 -- 修仙主题名称库
@@ -4201,7 +4491,6 @@ local GEN_NAMES = {
     equip_necklace = { "链", "坠", "珠串", "灵珠", "仙坠", "神链" },
     equip_ring = { "戒", "环", "指轮", "灵戒", "天环", "命戒" },
     equip_artifact = { "塔", "印", "镜", "铃", "葫芦", "玉如意" },
-    equip_mount = { "灵驹", "仙鹤", "飞龙", "麒麟", "神鹏", "天马" },
     equip_wings = { "灵翼", "羽翅", "龙翼", "凤翅", "光翼", "魔翼" },
     equip_shield = { "盾", "壁", "龟甲", "灵壁", "天盾", "圣壁" },
     item_prefix = { "灵", "仙", "妖", "魔", "圣", "玄", "冰", "火", "雷", "风" },
@@ -4385,12 +4674,8 @@ local function GenerateMonsters(count, monsterType)
     return generated, skipped
 end
 
---- 装备部位映射
-local EQUIP_SLOT_MAP = {
-    ["武器"] = "weapon", ["头盔"] = "helmet", ["铠甲"] = "armor", ["护腕"] = "bracer",
-    ["腰带"] = "belt", ["战靴"] = "boots", ["披风"] = "cloak", ["项链"] = "necklace",
-    ["戒指"] = "ring", ["法宝"] = "artifact", ["坐骑"] = "mount", ["灵翼"] = "wings", ["护盾"] = "shield",
-}
+--- 装备部位映射(引用共享模块,管理员自定义同步)
+local EQUIP_SLOT_MAP = EquipSlots.cnToKey
 
 --- 装备品质属性区间定义（min~max）
 local EQUIP_QUALITY_RANGES = {
@@ -4419,7 +4704,7 @@ local function GenerateEquipment(count, filterSlots, filterQualities)
             if EQUIP_SLOT_MAP[s] then table.insert(slots, s) end
         end
     end
-    if #slots == 0 then for _, s in ipairs(EQUIP_SLOTS) do table.insert(slots, s) end end
+    if #slots == 0 then for _, s in ipairs(GetEquipSlotLabels()) do table.insert(slots, s) end end
 
     -- 构建品质列表（中文）
     local qualities = {}
@@ -4458,7 +4743,7 @@ local function GenerateEquipment(count, filterSlots, filterQualities)
             defVal = baseVal
             atkVal = subVal
             hpVal = BigNumRandRange(range.min, subMax)
-        -- 生命/辅助型部位：腰带、战靴、披风、项链、坐骑、灵翼
+        -- 生命/辅助型部位：腰带、战靴、披风、项链、灵翼等
         else
             hpVal = baseVal
             atkVal = subVal
@@ -7044,14 +7329,14 @@ local function RenderGenerator()
     -- 部位多选
     local equipSlotBtns = {}
     local equipSlotSelected = {}
-    for _, s in ipairs(EQUIP_SLOTS) do equipSlotSelected[s] = true end
+    for _, s in ipairs(GetEquipSlotLabels()) do equipSlotSelected[s] = true end
     local function refreshEquipSlotBtns()
         for name, btn in pairs(equipSlotBtns) do
             btn:SetVariant(equipSlotSelected[name] and "primary" or "secondary")
         end
     end
     local equipSlotChildren = {}
-    for _, slotName in ipairs(EQUIP_SLOTS) do
+    for _, slotName in ipairs(GetEquipSlotLabels()) do
         local btn = UI.Button {
             text = slotName, fontSize = 9, width = 42, height = 20,
             variant = "primary",
@@ -7123,7 +7408,7 @@ local function RenderGenerator()
                         if n <= 0 then equipResultLabel:SetText("请输入有效数量"); return end
                         if n > 100 then n = 100 end
                         local selSlots = {}
-                        for _, s in ipairs(EQUIP_SLOTS) do
+                        for _, s in ipairs(GetEquipSlotLabels()) do
                             if equipSlotSelected[s] then table.insert(selSlots, s) end
                         end
                         local selQuals = {}
@@ -7164,10 +7449,10 @@ local function RenderGenerator()
                         local skipped = 0
                         -- 为每个选中的部位生成一件装备
                         local selSlots = {}
-                        for _, s in ipairs(EQUIP_SLOTS) do
+                        for _, s in ipairs(GetEquipSlotLabels()) do
                             if equipSlotSelected[s] then table.insert(selSlots, s) end
                         end
-                        if #selSlots == 0 then for _, s in ipairs(EQUIP_SLOTS) do table.insert(selSlots, s) end end
+                        if #selSlots == 0 then for _, s in ipairs(GetEquipSlotLabels()) do table.insert(selSlots, s) end end
                         for _, slotCN in ipairs(selSlots) do
                             local slot = EQUIP_SLOT_MAP[slotCN] or "weapon"
                             local suffixTable = GEN_NAMES["equip_" .. slot] or GEN_NAMES.equip_weapon
@@ -8276,7 +8561,9 @@ local function RenderCategory(catId)
     elseif catId == "battle_soul" then RenderBattleSoul()
     elseif catId == "leaderboards" then RenderLeaderboards()
     elseif catId == "teleport_maps" then RenderTeleportMaps()
+    elseif catId == "mounts" then RenderMounts()
     elseif catId == "generator" then RenderGenerator()
+    else RenderPlayers()  -- 兜底：未知分类默认显示玩家管理
     end
 end
 

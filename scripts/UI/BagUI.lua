@@ -5,6 +5,7 @@ local UI = require("urhox-libs/UI")
 local DataManager = require("Systems.DataManager")
 local BigNum = require("Utils.BigNum")
 local NumFormat = require("Utils.NumFormat")
+local EquipSlots = require("Systems.EquipSlots")
 
 local BagUI = {}
 
@@ -15,13 +16,8 @@ local EquipUI = nil -- 延迟加载
 --- 格式: { [name] = "固定"|"随机" }
 local chestNamesCache_ = nil  -- nil=未加载, table=已加载的宝箱名称→类型映射
 
---- 中文部位→英文key映射
-local SLOT_CN_TO_KEY = {
-    ["武器"] = "weapon", ["头盔"] = "helmet", ["铠甲"] = "armor", ["护腕"] = "bracer",
-    ["腰带"] = "belt", ["战靴"] = "boots", ["披风"] = "cloak", ["项链"] = "necklace",
-    ["戒指"] = "ring", ["法宝"] = "artifact", ["坐骑"] = "mount", ["灵翼"] = "wings",
-    ["护盾"] = "shield", ["防具"] = "armor", ["饰品"] = "accessory",
-}
+--- 中文部位→英文key映射(引用共享模块,管理员自定义部位自动同步)
+local SLOT_CN_TO_KEY = EquipSlots.cnToKey
 
 local parentRef_ = nil
 
@@ -32,7 +28,7 @@ local currentPage_ = 1                   -- 当前页码
 local ITEMS_PER_PAGE = 10                -- 每页物品数
 
 --- 大类定义（顺序）
-local MAJOR_CATEGORIES = { "道具类", "装备类", "宝箱类", "宠物类", "境界类", "其他" }
+local MAJOR_CATEGORIES = { "道具类", "装备类", "宝箱类", "宠物类", "境界类", "坐骑类", "其他" }
 
 --- 判断背包物品属于哪个大类
 ---@param item table 背包中的物品 {name, count}
@@ -89,6 +85,11 @@ local function ClassifyItem(item)
     end
     if itemType:find("境界") then
         return "境界类", "经验丹"
+    end
+
+    -- 坐骑判断
+    if DataManager.mounts[item.name] then
+        return "坐骑类", DataManager.mounts[item.name].type or "坐骑"
     end
 
     -- 传送材料判断
@@ -1164,7 +1165,7 @@ function BagUI.ShowReviveRejectDialog()
 end
 
 --- 一键回收无效物品（清理数据中不存在的物品）
---- 排除：宠物升星/升阶/品质材料、境界经验丹/突破材料/提升材料、传送材料
+--- 排除：宠物升星/升阶/品质材料、境界经验丹/突破材料/提升材料、传送材料、坐骑
 function BagUI.RecycleInvalidItems()
     local player = DataManager.playerData
     if not player or not player.bag then return end
@@ -1181,11 +1182,12 @@ function BagUI.RecycleInvalidItems()
         local isRealmPill, isRealmBreak, isRealmUpgrade = BagUI.IsRealmMaterial(item.name)
         local isRealmMat = isRealmPill or isRealmBreak or isRealmUpgrade
         local isTeleportMat = BagUI.IsTeleportMaterial(item.name)
+        local isMount = DataManager.mounts[item.name] ~= nil
 
         -- 如果在物品表、装备表、宠物表、宝箱表中都找不到，
-        -- 且不是宠物材料、不是境界材料、不是传送材料，才视为无效物品
+        -- 且不是宠物材料、不是境界材料、不是传送材料、不是坐骑，才视为无效物品
         if not itemData and not equipData and not isPet and not isChest
-            and not isPetMat and not isRealmMat and not isTeleportMat then
+            and not isPetMat and not isRealmMat and not isTeleportMat and not isMount then
             table.insert(removedNames, item.name .. " x" .. (item.count or "1"))
             table.remove(player.bag, i)
         else

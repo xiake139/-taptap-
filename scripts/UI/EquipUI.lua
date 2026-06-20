@@ -5,26 +5,16 @@ local UI = require("urhox-libs/UI")
 local DataManager = require("Systems.DataManager")
 local BigNum = require("Utils.BigNum")
 local NumFormat = require("Utils.NumFormat")
+local EquipSlots = require("Systems.EquipSlots")
 
 local EquipUI = {}
 
 local parentRef_ = nil
 local GameUI = nil -- 延迟加载避免循环引用
 
---- 中文部位→英文key映射（兼容玩家数据结构）
-local SLOT_CN_TO_KEY = {
-    ["武器"] = "weapon", ["头盔"] = "helmet", ["铠甲"] = "armor", ["护腕"] = "bracer",
-    ["腰带"] = "belt", ["战靴"] = "boots", ["披风"] = "cloak", ["项链"] = "necklace",
-    ["戒指"] = "ring", ["法宝"] = "artifact", ["坐骑"] = "mount", ["灵翼"] = "wings",
-    ["护盾"] = "shield", ["防具"] = "armor", ["饰品"] = "accessory",
-}
---- 英文key→中文显示名
-local SLOT_KEY_TO_LABEL = {
-    weapon = "武器", helmet = "头盔", armor = "铠甲", bracer = "护腕",
-    belt = "腰带", boots = "战靴", cloak = "披风", necklace = "项链",
-    ring = "戒指", artifact = "法宝", mount = "坐骑", wings = "灵翼",
-    shield = "护盾", accessory = "饰品",
-}
+--- 中英文映射直接引用共享模块(管理员自定义部位自动同步)
+local SLOT_CN_TO_KEY = EquipSlots.cnToKey
+local SLOT_KEY_TO_LABEL = EquipSlots.keyToLabel
 
 --- 渲染装备面板
 ---@param parent Widget
@@ -44,22 +34,8 @@ function EquipUI.Refresh()
     local EQUIP_ITEM_HEIGHT = 40
     local EQUIP_ITEM_GAP = 4
 
-    -- 构建统一数据列表：装备槽 + 可装备物品
-    local slots = {
-        { key = "weapon", label = "武器" },
-        { key = "helmet", label = "头盔" },
-        { key = "armor", label = "铠甲" },
-        { key = "bracer", label = "护腕" },
-        { key = "belt", label = "腰带" },
-        { key = "boots", label = "战靴" },
-        { key = "cloak", label = "披风" },
-        { key = "necklace", label = "项链" },
-        { key = "ring", label = "戒指" },
-        { key = "artifact", label = "法宝" },
-        { key = "mount", label = "坐骑" },
-        { key = "wings", label = "灵翼" },
-        { key = "shield", label = "护盾" },
-    }
+    -- 构建统一数据列表：装备槽（动态,从共享模块获取,管理员可自定义）
+    local slots = EquipSlots.slots
 
     local dataList = {}
 

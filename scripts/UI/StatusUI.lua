@@ -5,6 +5,7 @@ local UI = require("urhox-libs/UI")
 local DataManager = require("Systems.DataManager")
 local NumFormat = require("Utils.NumFormat")
 local BigNum = require("Utils.BigNum")
+local EquipSlots = require("Systems.EquipSlots")
 
 local StatusUI = {}
 
@@ -26,15 +27,24 @@ local function formatRemain(seconds)
     end
 end
 
---- 计算永久倍率显示文字
+--- 计算永久倍率显示文字（含坐骑倍率）
 local function calcPermRateStr(player, buffType)
     local BagUI = require("UI.BagUI")
-    if not player.buffs then return "x0" end
-    -- 永久buff的value相加
+    -- buff系统的永久倍率
     local total = 0
-    for _, b in ipairs(player.buffs) do
-        if b.type == buffType and BagUI.IsPermanentBuff(b) then
-            total = total + (tonumber(b.value) or 0)
+    if player.buffs then
+        for _, b in ipairs(player.buffs) do
+            if b.type == buffType and BagUI.IsPermanentBuff(b) then
+                total = total + (tonumber(b.value) or 0)
+            end
+        end
+    end
+    -- 叠加坐骑永久倍率
+    if player.mounts then
+        if buffType == "经验倍率" then
+            total = total + (tonumber(player.mounts.exp_rate) or 0)
+        elseif buffType == "货币倍率" then
+            total = total + (tonumber(player.mounts.gold_rate) or 0)
         end
     end
     return "x" .. total
@@ -223,7 +233,7 @@ function StatusUI.GetEquipBonus()
     if not player then return "0", "0", "0" end
 
     local totalAtk, totalDef, totalHp = "0", "0", "0"
-    for _, slot in ipairs({ "weapon", "helmet", "armor", "bracer", "belt", "boots", "cloak", "necklace", "ring", "artifact", "mount", "wings", "shield" }) do
+    for _, slot in ipairs(EquipSlots.keys) do
         local equipName = player.equip[slot]
         if equipName and equipName ~= "" then
             local eData = DataManager.GetEquipment(equipName)

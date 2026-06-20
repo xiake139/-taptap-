@@ -6,6 +6,7 @@ local IniParser = require("Utils.IniParser")
 local ConfigData = require("Config.ConfigData")
 local NumFormat = require("Utils.NumFormat")
 local BigNum = require("Utils.BigNum")
+local EquipSlots = require("Systems.EquipSlots")
 
 local DataManager = {}
 
@@ -45,6 +46,9 @@ DataManager.realmPills = {}   -- 境界经验丹配置 { [名称] = { name, desc
 DataManager.admins = {}  -- 管理员列表 { [username] = true }
 DataManager.leaderboards = {}
 DataManager.teleportMaps = { default_item = "", default_item_count = "1", maps = {} }
+--- 坐骑配置 { [坐骑名] = { name, type, maps={}, atk, def, hp, exp_rate, gold_rate } }
+--- type: "不可传送" | "部分传送" | "全图传送"
+DataManager.mounts = {}
 DataManager.rankingData = {}  -- 所有玩家的排行数据 { [玩家名] = { 名称=xx, 等级=xx, ... } }
 DataManager.chatMessages = {} -- 聊天记录列表 { {sender=xx, content=xx, time=xx}, ... }
 DataManager.petConfig = {    -- 宠物成长配置（公式化）
@@ -402,6 +406,34 @@ local function ParseTeleportMaps(sections)
     -- 按名称排序
     table.sort(config.maps, function(a, b) return a.name < b.name end)
     return config
+end
+
+--- 解析 mounts.ini → 坐骑配置表
+--- INI 格式: [坐骑名] 类型=不可传送|部分传送|全图传送, 可传送地图=地图1,地图2,...
+---           攻击=0, 防御=0, 生命上限=0, 经验倍率=0, 货币倍率=0
+local function ParseMounts(sections)
+    local mounts = {}
+    for sectionName, data in pairs(sections) do
+        local mapList = {}
+        local mapsStr = data["可传送地图"] or ""
+        if mapsStr ~= "" then
+            for m in mapsStr:gmatch("[^,]+") do
+                m = m:match("^%s*(.-)%s*$")
+                if m ~= "" then mapList[#mapList + 1] = m end
+            end
+        end
+        mounts[sectionName] = {
+            name      = data["名称"] or sectionName,
+            type      = data["类型"] or "不可传送",   -- "不可传送"|"部分传送"|"全图传送"
+            maps      = mapList,                       -- 部分传送时的地图列表
+            atk       = data["攻击"] or "0",
+            def       = data["防御"] or "0",
+            hp        = data["生命上限"] or "0",
+            exp_rate  = data["经验倍率"] or "0",
+            gold_rate = data["货币倍率"] or "0",
+        }
+    end
+    return mounts
 end
 
 --- 解析 items.ini → items 表
@@ -784,6 +816,7 @@ local SYSTEM_CLOUD_KEYS = {
     "系统配置/pet_types.ini",
     "系统配置/battle_soul.ini",
     "系统配置/teleport_maps.ini",
+    "系统配置/mounts.ini",
 
 }
 
@@ -830,6 +863,8 @@ function DataManager.LoadSystemData(callback)
             if v and v ~= "" then
                 DataManager.gameConfig = ParseGameConfig(IniParser.Parse(v))
                 hasCloud = true
+                -- 加载自定义装备部位配置（管理员可后台增删部位）
+                EquipSlots.LoadFromConfig(DataManager.gameConfig)
             end
             -- maps
             v = values["系统配置/maps.ini"]
@@ -925,6 +960,12 @@ function DataManager.LoadSystemData(callback)
             v = values["系统配置/teleport_maps.ini"]
             if v and v ~= "" then
                 DataManager.teleportMaps = ParseTeleportMaps(IniParser.Parse(v))
+                hasCloud = true
+            end
+            -- mounts
+            v = values["系统配置/mounts.ini"]
+            if v and v ~= "" then
+                DataManager.mounts = ParseMounts(IniParser.Parse(v))
                 hasCloud = true
             end
 
@@ -1051,21 +1092,11 @@ function DataManager.CreateNewPlayer(username, charName)
             num_format_mode = "unit", -- 数值显示模式: unit/raw
         },
         bag = {},       -- { {name="物品名", count=数量}, ... } （下方会填入初始背包）
-        equip = {       -- 装备槽（13部位）
-            weapon = "",
-            helmet = "",
-            armor = "",
-            bracer = "",
-            belt = "",
-            boots = "",
-            cloak = "",
-            necklace = "",
-            ring = "",
-            artifact = "",
-            mount = "",
-            wings = "",
-            shield = "",
-        },
+        equip = (function()  -- 装备槽（动态部位,由 EquipSlots 配置驱动）
+            local eq = {}
+            for _, key in ipairs(EquipSlots.keys) do eq[key] = "" end
+            return eq
+        end)(),
         quests = {
             active = {},     -- { {id="quest_id", progress=0}, ... }
             completed = {},  -- { "quest_id", ... }
@@ -1166,19 +1197,10 @@ function DataManager.PlayerDataToFiles(playerData)
     -- 装备数据.ini
     local equipSections = {}
     equipSections["装备栏"] = {}
-    equipSections["装备栏"]["武器"] = playerData.equip.weapon or ""
-    equipSections["装备栏"]["头盔"] = playerData.equip.helmet or ""
-    equipSections["装备栏"]["铠甲"] = playerData.equip.armor or ""
-    equipSections["装备栏"]["护腕"] = playerData.equip.bracer or ""
-    equipSections["装备栏"]["腰带"] = playerData.equip.belt or ""
-    equipSections["装备栏"]["战靴"] = playerData.equip.boots or ""
-    equipSections["装备栏"]["披风"] = playerData.equip.cloak or ""
-    equipSections["装备栏"]["项链"] = playerData.equip.necklace or ""
-    equipSections["装备栏"]["戒指"] = playerData.equip.ring or ""
-    equipSections["装备栏"]["法宝"] = playerData.equip.artifact or ""
-    equipSections["装备栏"]["坐骑"] = playerData.equip.mount or ""
-    equipSections["装备栏"]["灵翼"] = playerData.equip.wings or ""
-    equipSections["装备栏"]["护盾"] = playerData.equip.shield or ""
+    -- 动态序列化所有当前配置的装备部位
+    for _, slot in ipairs(EquipSlots.slots) do
+        equipSections["装备栏"][slot.label] = playerData.equip[slot.key] or ""
+    end
     files["装备数据.ini"] = IniParser.Serialize(equipSections)
 
     -- 任务数据.ini
@@ -1254,11 +1276,11 @@ function DataManager.FilesToPlayerData(fileMap)
         account = {},
         status = {},
         bag = {},
-        equip = {
-            weapon = "", helmet = "", armor = "", bracer = "",
-            belt = "", boots = "", cloak = "", necklace = "",
-            ring = "", artifact = "", mount = "", wings = "", shield = "",
-        },
+        equip = (function()
+            local eq = {}
+            for _, key in ipairs(EquipSlots.keys) do eq[key] = "" end
+            return eq
+        end)(),
         quests = { active = {}, completed = {} },
     }
 
@@ -1339,19 +1361,14 @@ function DataManager.FilesToPlayerData(fileMap)
         local sections = IniParser.Parse(fileMap["装备数据.ini"])
         local equipSection = sections["装备栏"] or sections["equip"]
         if equipSection then
-            playerData.equip.weapon = equipSection["武器"] or equipSection["weapon"] or ""
-            playerData.equip.helmet = equipSection["头盔"] or equipSection["helmet"] or ""
-            playerData.equip.armor = equipSection["铠甲"] or equipSection["防具"] or equipSection["armor"] or ""
-            playerData.equip.bracer = equipSection["护腕"] or equipSection["bracer"] or ""
-            playerData.equip.belt = equipSection["腰带"] or equipSection["belt"] or ""
-            playerData.equip.boots = equipSection["战靴"] or equipSection["boots"] or ""
-            playerData.equip.cloak = equipSection["披风"] or equipSection["cloak"] or ""
-            playerData.equip.necklace = equipSection["项链"] or equipSection["necklace"] or ""
-            playerData.equip.ring = equipSection["戒指"] or equipSection["ring"] or ""
-            playerData.equip.artifact = equipSection["法宝"] or equipSection["artifact"] or ""
-            playerData.equip.mount = equipSection["坐骑"] or equipSection["mount"] or ""
-            playerData.equip.wings = equipSection["灵翼"] or equipSection["wings"] or ""
-            playerData.equip.shield = equipSection["护盾"] or equipSection["shield"] or ""
+            -- 动态反序列化:按当前配置的部位读取,兼容中英文双写
+            for _, slot in ipairs(EquipSlots.slots) do
+                playerData.equip[slot.key] = equipSection[slot.label] or equipSection[slot.key] or ""
+            end
+            -- 兼容旧数据:防具→armor
+            if (equipSection["防具"] or "") ~= "" and (playerData.equip.armor or "") == "" then
+                playerData.equip.armor = equipSection["防具"]
+            end
         end
     end
 
@@ -2330,7 +2347,7 @@ function DataManager.CalcFullStatsFromPlayerData(playerData)
 
     -- 装备加成
     local equipAtk, equipDef, equipHp = "0", "0", "0"
-    for _, slot in ipairs({ "weapon", "helmet", "armor", "bracer", "belt", "boots", "cloak", "necklace", "ring", "artifact", "mount", "wings", "shield" }) do
+    for _, slot in ipairs(EquipSlots.keys) do
         local equipName = eq[slot]
         if equipName and equipName ~= "" then
             local eData = DataManager.GetEquipment(equipName)
@@ -2527,8 +2544,7 @@ function DataManager.RefreshAllPlayersRankingForAdmin(callback)
                                 rankEntry[key] = tostring(prev + (tonumber(item.count) or 1))
                             end
                             -- 装备栏（已穿戴装备计数）
-                            local eqSlots = { "weapon", "helmet", "armor", "bracer", "belt", "boots", "cloak", "necklace", "ring", "artifact", "mount", "wings", "shield" }
-                            for _, slot in ipairs(eqSlots) do
+                            for _, slot in ipairs(EquipSlots.keys) do
                                 local eName = playerData.equip and playerData.equip[slot]
                                 if eName and eName ~= "" then
                                     local key = "装备:" .. eName
@@ -2787,8 +2803,7 @@ function DataManager.SyncLeaderboardScores(callback)
                 rankEntry[key] = tostring(prev + (tonumber(item.count) or 1))
             end
             -- 装备栏（已穿戴装备计数）
-            local equipSlots = { "weapon", "helmet", "armor", "bracer", "belt", "boots", "cloak", "necklace", "ring", "artifact", "mount", "wings", "shield" }
-            for _, slot in ipairs(equipSlots) do
+            for _, slot in ipairs(EquipSlots.keys) do
                 local eName = pd.equip and pd.equip[slot]
                 if eName and eName ~= "" then
                     local key = "装备:" .. eName
@@ -2855,8 +2870,7 @@ function DataManager.SyncLeaderboardScores(callback)
                 rankEntry2[key] = tostring(prev + (tonumber(item.count) or 1))
             end
             -- 装备栏
-            local equipSlots2 = { "weapon", "helmet", "armor", "bracer", "belt", "boots", "cloak", "necklace", "ring", "artifact", "mount", "wings", "shield" }
-            for _, slot in ipairs(equipSlots2) do
+            for _, slot in ipairs(EquipSlots.keys) do
                 local eName = pd.equip and pd.equip[slot]
                 if eName and eName ~= "" then
                     local key = "装备:" .. eName

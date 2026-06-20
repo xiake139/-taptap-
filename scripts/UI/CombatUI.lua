@@ -528,6 +528,26 @@ function CombatUI.Victory()
     local BagUI = require("UI.BagUI")
     local expRate = BagUI.GetBuffValue(player, "经验倍率")
     local goldRate = BagUI.GetBuffValue(player, "货币倍率")
+    -- 叠加坐骑永久倍率
+    if player.mounts then
+        local mountExpR = tonumber(player.mounts.exp_rate) or 0
+        local mountGoldR = tonumber(player.mounts.gold_rate) or 0
+        if mountExpR > 0 then
+            -- GetBuffValue无buff时返回基础1，坐骑倍率替代此基础值
+            if expRate <= 1 then
+                expRate = mountExpR
+            else
+                expRate = expRate + mountExpR
+            end
+        end
+        if mountGoldR > 0 then
+            if goldRate <= 1 then
+                goldRate = mountGoldR
+            else
+                goldRate = goldRate + mountGoldR
+            end
+        end
+    end
     -- 使用缩放法处理小数倍率：乘以100再除以100
     local expRateScaled = math.floor(expRate * 100 + 0.5)
     local goldRateScaled = math.floor(goldRate * 100 + 0.5)
@@ -540,6 +560,31 @@ function CombatUI.Victory()
     -- 发放奖励
     player.status.exp = BigNum.add(player.status.exp or "0", expGain)
     player.status.gold = BigNum.add(player.status.gold or "0", goldGain)
+
+    -- 发放其他货币掉落（元宝/晶石/灵晶/仙石等，金币已单独处理）
+    -- currencyGains: { {name=, amount=}, ... } 供日志和胜利界面显示
+    local currencyGains = {}
+    if mData and mData.currency_drops then
+        local seen = {}
+        --- 发放单个货币（应用与金币相同的货币倍率）
+        local function grantCurrency(cName)
+            if cName == "金币" or seen[cName] then return end
+            seen[cName] = true
+            local cBase = mData.currency_drops[cName]
+            if not cBase or cBase == "" or cBase == "0" then return end
+            local cGain = BigNum.div(BigNum.mul(BigNum.new(cBase), tostring(goldRateScaled)), "100")
+            if BigNum.gte(cGain, "1") then
+                local cur = DataManager.GetPlayerCurrency(player, cName)
+                DataManager.SetPlayerCurrency(player, cName, BigNum.add(cur, cGain))
+                table.insert(currencyGains, { name = cName, amount = cGain })
+            end
+        end
+        -- 先按货币配置顺序遍历，保证显示顺序稳定
+        local currOrder = (DataManager.gameConfig and DataManager.gameConfig["currencies"]) or {}
+        for _, cName in ipairs(currOrder) do grantCurrency(cName) end
+        -- 补充：currency_drops 中存在但货币配置列表未包含的货币
+        for cName in pairs(mData.currency_drops) do grantCurrency(cName) end
+    end
 
     -- 战魂奖励
     local soulMin, soulMax = DataManager.GetBattleSoulRange(monsterName_)
@@ -563,14 +608,17 @@ function CombatUI.Victory()
         player.status.hp = CalcPlayerMaxHp()
     end
 
-    -- 掉落物品
+    -- 掉落物品（每个物品独立判定概率：100=必掉，其余为百分比概率）
     local drops = {}
     if mData and mData.drops then
         local dropList = IniParser.ParseList(mData.drops)
         for _, dropStr in ipairs(dropList) do
-            local itemName, chance = dropStr:match("^(.+):(%d+)$")
+            -- 支持中英文冒号
+            local itemName, chance = dropStr:match("^(.+)[:：](%d+)$")
             if itemName and chance then
-                if math.random(100) <= tonumber(chance) then
+                local chanceNum = tonumber(chance) or 0
+                -- 100 = 必定掉落，其他按概率
+                if chanceNum >= 100 or math.random(100) <= chanceNum then
                     table.insert(drops, itemName)
                     -- 添加到背包
                     local found = false
@@ -695,6 +743,14 @@ function CombatUI.Victory()
         goldLogStr = goldLogStr .. " (货币倍率×" .. goldRate .. ")"
     end
     GameUI.AddLog(goldLogStr)
+    -- 其他货币日志
+    for _, cg in ipairs(currencyGains) do
+        local cLogStr = "获得" .. cg.name .. " +" .. NumFormat.Short(cg.amount)
+        if goldRate > 1 then
+            cLogStr = cLogStr .. " (货币倍率×" .. goldRate .. ")"
+        end
+        GameUI.AddLog(cLogStr)
+    end
     -- 战魂日志
     GameUI.AddLog("获得战魂 +" .. NumFormat.Short(soulGain))
     if soulLeveledUp then
@@ -723,6 +779,18 @@ function CombatUI.Victory()
                 UI.Label { text = "击败了【" .. monsterName_ .. "】", fontSize = 14, fontColor = { 200, 200, 220, 255 } },
                 UI.Label { text = "获得经验：" .. NumFormat.Short(expGain), fontSize = 13, fontColor = { 100, 255, 100, 255 } },
                 UI.Label { text = "获得金币：" .. NumFormat.Short(goldGain), fontSize = 13, fontColor = { 255, 215, 0, 255 } },
+                #currencyGains > 0 and UI.Label {
+                    text = "其他货币：" .. (function()
+                        local parts = {}
+                        for _, cg in ipairs(currencyGains) do
+                            parts[#parts + 1] = cg.name .. " +" .. NumFormat.Short(cg.amount)
+                        end
+                        return table.concat(parts, "、")
+                    end)(),
+                    fontSize = 13,
+                    fontColor = { 255, 200, 120, 255 },
+                    whiteSpace = "normal",
+                } or UI.Panel { height = 0 },
                 UI.Label { text = "获得战魂：+" .. NumFormat.Short(soulGain) .. (soulLeveledUp and "  (战魂升级！Lv." .. player.status.battle_soul_level .. ")" or ""), fontSize = 13, fontColor = { 200, 150, 255, 255 } },
                 #petExpGainList > 0 and UI.Label {
                     text = "宠物经验：+" .. NumFormat.Short(expGain) .. "（" .. table.concat(petExpGainList, "、") .. "）",

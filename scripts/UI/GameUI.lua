@@ -168,6 +168,7 @@ function GameUI.Create()
                     { text = "宠物", panel = "pet", variant = "secondary" },
                     { text = "战魂", panel = "battle_soul", variant = "secondary" },
                     { text = "传送", panel = "teleport", variant = "secondary" },
+                    { text = "坐骑", panel = "mount", variant = "secondary" },
                     { text = "图鉴", panel = "monster_guide", variant = "secondary" },
                     { text = "邮箱", panel = "mailbox", variant = "secondary" },
                     { text = "排行", panel = "leaderboard", variant = "secondary" },
@@ -465,6 +466,8 @@ function GameUI.ShowPanel(panelType)
         GameUI.RenderChatPanel()
     elseif panelType == "teleport" then
         GameUI.RenderTeleportPanel()
+    elseif panelType == "mount" then
+        GameUI.RenderMountPanel()
     elseif panelType == "toggle_numformat" then
         NumFormat.ToggleMode()
         -- 持久化到玩家数据并保存云端
@@ -1318,6 +1321,271 @@ function GameUI.DoTeleport(targetMap, costItem, costCount, isFree)
     -- 刷新传送面板显示当前位置
     GameUI.ShowPanel("teleport")
 end
+
+--- 渲染坐骑面板(绑定/解绑单坐骑 + 独立传送)
+--- 坐骑绑定时加属性/倍率到玩家
+local function ApplyMountBonuses(player, mountData)
+    if not mountData then return end
+    local BigNum = require("Utils.BigNum")
+    local atkAdd = mountData.atk or "0"
+    local defAdd = mountData.def or "0"
+    local hpAdd  = mountData.hp or "0"
+    if atkAdd ~= "0" then
+        player.status.atk = BigNum.add(player.status.atk or "5", atkAdd)
+    end
+    if defAdd ~= "0" then
+        player.status.def = BigNum.add(player.status.def or "3", defAdd)
+    end
+    if hpAdd ~= "0" then
+        player.status.max_hp = BigNum.add(player.status.max_hp or "100", hpAdd)
+        player.status.hp = BigNum.add(player.status.hp or "100", hpAdd)
+    end
+    -- 永久倍率存储到 player.mounts 中供战斗系统读取
+    local expR = tonumber(mountData.exp_rate) or 0
+    local goldR = tonumber(mountData.gold_rate) or 0
+    player.mounts.exp_rate = expR
+    player.mounts.gold_rate = goldR
+end
+
+--- 坐骑解绑时减属性/倍率
+local function RemoveMountBonuses(player, mountData)
+    if not mountData then return end
+    local BigNum = require("Utils.BigNum")
+    local atkSub = mountData.atk or "0"
+    local defSub = mountData.def or "0"
+    local hpSub  = mountData.hp or "0"
+    if atkSub ~= "0" then
+        player.status.atk = BigNum.max("0", BigNum.sub(player.status.atk or "5", atkSub))
+    end
+    if defSub ~= "0" then
+        player.status.def = BigNum.max("0", BigNum.sub(player.status.def or "3", defSub))
+    end
+    if hpSub ~= "0" then
+        player.status.max_hp = BigNum.max("1", BigNum.sub(player.status.max_hp or "100", hpSub))
+        -- 当前HP不超过新上限
+        if BigNum.gt(player.status.hp or "0", player.status.max_hp) then
+            player.status.hp = player.status.max_hp
+        end
+    end
+    -- 清除坐骑倍率
+    player.mounts.exp_rate = 0
+    player.mounts.gold_rate = 0
+end
+
+--- 显示坐骑提示弹窗
+local function ShowMountTip(msg)
+    ---@type Widget
+    local dialog = nil
+    dialog = UI.Panel {
+        position = "absolute",
+        left = 0, top = 0, right = 0, bottom = 0,
+        justifyContent = "center", alignItems = "center",
+        backgroundColor = { 0, 0, 0, 140 },
+        children = {
+            UI.Panel {
+                width = "75%", maxWidth = 280, padding = 16,
+                backgroundColor = { 30, 25, 50, 245 }, borderRadius = 10,
+                borderWidth = 1, borderColor = { 100, 80, 160, 200 },
+                flexDirection = "column", alignItems = "center", gap = 12,
+                onClick = function() end,
+                children = {
+                    UI.Label { text = msg, fontSize = 14, fontColor = {255,200,100,255}, textAlign = "center", whiteSpace = "normal" },
+                    UI.Button { text = "确 定", variant = "default", onClick = function() dialog:Remove() end },
+                },
+            },
+        },
+    }
+    if GameUI.rootPanel then
+        GameUI.rootPanel:AddChild(dialog)
+    end
+end
+
+function GameUI.RenderMountPanel()
+    if not mainContent_ then return end
+    mainContent_:ClearChildren()
+
+    local player = DataManager.playerData
+    if not player then return end
+
+    -- 玩家坐骑数据: player.mounts = { bound = "坐骑名" or "", exp_rate = 0, gold_rate = 0 }
+    if not player.mounts then player.mounts = { bound = "", exp_rate = 0, gold_rate = 0 } end
+    local boundName = player.mounts.bound or ""
+    local boundMount = boundName ~= "" and DataManager.mounts[boundName] or nil
+
+    -- 兼容修复：已绑定坐骑但倍率/属性未应用（旧存档升级）
+    if boundMount and (tonumber(player.mounts.exp_rate) or 0) == 0 and (tonumber(player.mounts.gold_rate) or 0) == 0 then
+        local m = boundMount
+        if (m.exp_rate ~= "0" and m.exp_rate ~= "") or (m.gold_rate ~= "0" and m.gold_rate ~= "") then
+            -- 自动补全倍率
+            player.mounts.exp_rate = tonumber(m.exp_rate) or 0
+            player.mounts.gold_rate = tonumber(m.gold_rate) or 0
+            DataManager.SaveToCloud(player)
+        end
+    end
+
+    local children = {}
+    children[#children + 1] = UI.Label {
+        text = "— 坐骑 —", fontSize = 16, fontColor = {200,170,100,255}, textAlign = "center", marginBottom = 8,
+    }
+
+    -- 当前绑定的坐骑
+    if boundMount then
+        local m = boundMount
+        local info = boundName .. " [" .. (m.type or "不可传送") .. "]"
+        if m.atk ~= "0" then info = info .. " 攻+" .. m.atk end
+        if m.def ~= "0" then info = info .. " 防+" .. m.def end
+        if m.hp ~= "0" then info = info .. " 命+" .. m.hp end
+        if m.exp_rate ~= "0" then info = info .. " 经验×" .. m.exp_rate end
+        if m.gold_rate ~= "0" then info = info .. " 金币×" .. m.gold_rate end
+        children[#children + 1] = UI.Panel {
+            width = "100%", flexDirection = "column", padding = 8, borderRadius = 6,
+            backgroundColor = {30,50,40,200}, marginBottom = 8, gap = 4,
+            children = {
+                UI.Label { text = "当前坐骑", fontSize = 11, fontColor = {140,140,160,255} },
+                UI.Label { text = info, fontSize = 13, fontColor = {100,255,200,255}, whiteSpace = "normal" },
+                UI.Panel { flexDirection = "row", gap = 8, marginTop = 4, children = {
+                    UI.Button { text = "解绑(回背包)", fontSize = 10, height = 28, variant = "danger",
+                        onClick = function()
+                            -- 解绑:减去坐骑属性/倍率
+                            RemoveMountBonuses(player, boundMount)
+                            -- 坐骑回背包
+                            local bag = player.bag or {}
+                            local found = false
+                            for _, item in ipairs(bag) do
+                                if item.name == boundName then item.count = (tonumber(item.count) or 0) + 1; found = true; break end
+                            end
+                            if not found then bag[#bag + 1] = { name = boundName, count = 1 } end
+                            player.bag = bag
+                            player.mounts.bound = ""
+                            DataManager.SaveToCloud(player)
+                            GameUI.AddLog("解绑坐骑【" .. boundName .. "】，属性已移除")
+                            GameUI.ShowPanel("mount")
+                        end },
+                }},
+            },
+        }
+
+        -- 传送功能(按坐骑类型)
+        if m.type == "全图传送" or (m.type == "部分传送" and #(m.maps or {}) > 0) then
+            children[#children + 1] = UI.Label { text = "— 坐骑传送 —", fontSize = 13, fontColor = {200,170,100,255}, textAlign = "center", marginTop = 4, marginBottom = 4 }
+            local curMap = player.status.current_map or ""
+            local mapList = {}
+            if m.type == "全图传送" then
+                for mapName in pairs(DataManager.maps) do
+                    if mapName ~= curMap then mapList[#mapList + 1] = mapName end
+                end
+            else
+                for _, mapName in ipairs(m.maps or {}) do
+                    if mapName ~= curMap and DataManager.maps[mapName] then mapList[#mapList + 1] = mapName end
+                end
+            end
+            table.sort(mapList)
+            if #mapList > 0 then
+                local MOUNT_MAP_ITEM_H = 32
+                local MOUNT_MAP_ITEM_GAP = 2
+                local vList = UI.VirtualList {
+                    width = "100%",
+                    height = 200,
+                    viewportHeight = 200,
+                    data = mapList,
+                    itemHeight = MOUNT_MAP_ITEM_H,
+                    itemGap = MOUNT_MAP_ITEM_GAP,
+                    poolBuffer = 4,
+                    createItem = function()
+                        local row = UI.Panel {
+                            width = "100%", height = MOUNT_MAP_ITEM_H,
+                            flexDirection = "row", alignItems = "center", gap = 4,
+                            paddingLeft = 6, paddingRight = 6,
+                        }
+                        local nameLabel = UI.Label { id = "mapName", text = "", fontSize = 11, fontColor = {180,180,200,255}, flexGrow = 1 }
+                        local tpBtn = UI.Button { id = "tpBtn", text = "传送", fontSize = 9, width = 46, height = 22, variant = "primary" }
+                        row:AddChild(nameLabel)
+                        row:AddChild(tpBtn)
+                        row._nameLabel = nameLabel
+                        row._tpBtn = tpBtn
+                        return row
+                    end,
+                    bindItem = function(widget, mapName, index)
+                        widget._nameLabel:SetText(mapName)
+                        widget._tpBtn.props.onClick = function()
+                            player.status.current_map = mapName
+                            DataManager.SaveToCloud(player)
+                            GameUI.AddLog("坐骑【" .. boundName .. "】传送至【" .. mapName .. "】")
+                            if ShowGame then ShowGame() end
+                        end
+                        widget.props.backgroundColor = (index % 2 == 0) and {30,30,50,120} or {0,0,0,0}
+                    end,
+                }
+                children[#children + 1] = vList
+            else
+                children[#children + 1] = UI.Label { text = "(当前已在唯一可传送地图)", fontSize = 10, fontColor = {120,120,140,255} }
+            end
+        elseif m.type == "不可传送" then
+            children[#children + 1] = UI.Label { text = "此坐骑不可传送", fontSize = 11, fontColor = {150,150,150,255}, marginTop = 6 }
+        end
+    else
+        children[#children + 1] = UI.Label {
+            text = "未绑定坐骑", fontSize = 13, fontColor = {150,150,170,255}, marginBottom = 6,
+        }
+        children[#children + 1] = UI.Label {
+            text = "从背包「坐骑类」中选择坐骑使用即可绑定", fontSize = 11, fontColor = {120,120,140,255},
+            whiteSpace = "normal",
+        }
+    end
+
+    -- 背包中可绑定的坐骑列表(快捷入口)
+    local bagMounts = {}
+    for _, item in ipairs(player.bag or {}) do
+        if DataManager.mounts[item.name] and (tonumber(item.count) or 0) > 0 then
+            bagMounts[#bagMounts + 1] = item.name
+        end
+    end
+    if #bagMounts > 0 then
+        children[#children + 1] = UI.Label { text = "— 背包中的坐骑 —", fontSize = 12, fontColor = {160,160,180,255}, marginTop = 10, marginBottom = 4 }
+        table.sort(bagMounts)
+        for _, name in ipairs(bagMounts) do
+            local m = DataManager.mounts[name]
+            local typeColor = m.type == "全图传送" and {100,255,150,255} or (m.type == "部分传送" and {100,180,255,255} or {150,150,150,255})
+            children[#children + 1] = UI.Panel {
+                width = "100%", flexDirection = "row", alignItems = "center", gap = 4, marginBottom = 2,
+                padding = 4, borderRadius = 4, backgroundColor = {30,30,45,180},
+                children = {
+                    UI.Label { text = name, fontSize = 11, fontColor = {200,200,220,255}, flexGrow = 1 },
+                    UI.Label { text = tostring(m.type or ""), fontSize = 9, fontColor = typeColor },
+                    UI.Button { text = "绑定", fontSize = 9, width = 42, height = 22, variant = "primary",
+                        onClick = function()
+                            -- 限制：必须先解绑当前坐骑
+                            if boundName ~= "" then
+                                ShowMountTip("请先解绑当前坐骑【" .. boundName .. "】后再绑定新坐骑")
+                                return
+                            end
+                            -- 从背包扣除新坐骑
+                            for i, item in ipairs(player.bag) do
+                                if item.name == name then
+                                    item.count = (tonumber(item.count) or 0) - 1
+                                    if item.count <= 0 then table.remove(player.bag, i) end
+                                    break
+                                end
+                            end
+                            player.mounts.bound = name
+                            -- 绑定:加属性/倍率
+                            ApplyMountBonuses(player, m)
+                            DataManager.SaveToCloud(player)
+                            GameUI.AddLog("绑定坐骑【" .. name .. "】，属性已生效")
+                            GameUI.ShowPanel("mount")
+                        end },
+                },
+            }
+        end
+    end
+
+    mainContent_:AddChild(UI.ScrollView {
+        width = "100%", height = "100%",
+        children = { UI.Panel { width = "100%", flexDirection = "column", padding = 8, children = children } },
+    })
+end
+
+
 
 local logVirtualList_ = nil
 
