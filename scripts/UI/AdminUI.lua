@@ -1755,6 +1755,10 @@ RenderPlayers = function()
         })
 
         for i, info in ipairs(filtered) do
+            -- 普通管理员不可查看总管理员信息
+            if info.username == SUPER_ADMIN and not IsSuperAdmin(currentAdminUser_) then
+                goto continue_player_row
+            end
             local bgColor = (i % 2 == 0) and { 25, 20, 45, 200 } or { 20, 15, 35, 200 }
             local isPlayerAdmin = IsAdmin(info.username)
             local adminTag = ""
@@ -1775,7 +1779,7 @@ RenderPlayers = function()
                             fontColor = isPlayerAdmin and { 255, 200, 80, 255 } or { 220, 220, 240, 255 },
                         },
                         UI.Label {
-                            text = "密码: " .. info.password .. "  角色: " .. (info.charName or ""),
+                            text = "密码: " .. (info.username == SUPER_ADMIN and "******" or info.password) .. "  角色: " .. (info.charName or ""),
                             fontSize = 11,
                             fontColor = { 140, 140, 160, 255 },
                         },
@@ -1848,6 +1852,7 @@ RenderPlayers = function()
                 children = rowChildren,
             }
             contentPanel_:AddChild(row)
+            ::continue_player_row::
         end
     end)
     end) -- LoadAdminsFromCloud
@@ -8582,6 +8587,7 @@ function AdminUI.CreateLogin()
     local passwordField = UI.TextField {
         placeholder = "管理员密码",
         maxLength = 20, width = 250, height = 40,
+        password = true,
     }
     local loginMsg = UI.Label {
         text = "", fontSize = 13, fontColor = { 255, 100, 100, 255 },
